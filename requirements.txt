@@ -1,0 +1,8 @@
+volatility3>=2.5.0
+requests>=2.28.0
+yara-python>3.8.0
+jsonschema>=4.0.0
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+websockets>=11.0
+openai>=1.30.0

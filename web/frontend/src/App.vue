@@ -1,0 +1,577 @@
+<template>
+  <div class="app-layout">
+    <AppSidebar />
+    <div class="main-panel">
+      <!-- Top bar -->
+      <div class="topbar">
+        <div class="topbar-image-group">
+          <span class="topbar-image-label">镜像路径</span>
+          <div class="image-select-wrapper">
+            <input
+              class="topbar-image-input"
+              type="text"
+              v-model="localImagePath"
+              placeholder="输入镜像文件路径..."
+              @keydown.enter="doLoadImage"
+              @focus="showDropdown = true"
+            />
+            <!-- Dropdown for dumps/ files -->
+            <div
+              v-show="showDropdown && dumpFiles.length"
+              class="image-dropdown"
+            >
+              <div class="image-dropdown-header">dumps/ 目录镜像文件</div>
+              <button
+                v-for="file in dumpFiles"
+                :key="file.path"
+                class="image-dropdown-item"
+                @mousedown.prevent="selectImage(file)"
+              >
+                <span class="image-dropdown-name">{{ file.name }}</span>
+                <span class="image-dropdown-size">{{ file.size }}</span>
+              </button>
+              <div v-if="!dumpFiles.length" class="image-dropdown-empty">
+                dumps/ 目录中没有镜像文件
+              </div>
+            </div>
+          </div>
+          <button
+            class="topbar-load-btn"
+            :disabled="!localImagePath || store.pluginBusy"
+            @click="doLoadImage"
+          >加载</button>
+        </div>
+        <div class="topbar-spacer"></div>
+        <button
+          class="ai-toggle-btn"
+          @click="store.showArgsPanel = !store.showArgsPanel"
+          title="参数配置"
+        >
+          <span class="ai-toggle-icon">CFG</span>
+          <span class="ai-toggle-text">参数</span>
+        </button>
+        <button
+          class="ai-toggle-btn"
+          :class="{ active: showAiPanel }"
+          @click="showAiPanel = !showAiPanel"
+          title="取证分析助手"
+        >
+          <span class="ai-toggle-icon">IR</span>
+          <span class="ai-toggle-text">助手</span>
+        </button>
+        <button
+          class="ai-toggle-btn"
+          :class="{ active: showSymbolManager }"
+          @click="showSymbolManager = true"
+          title="符号表管理"
+        >
+          <span class="ai-toggle-icon">SYM</span>
+          <span class="ai-toggle-text">符号</span>
+        </button>
+        <button class="theme-toggle" @click="toggleTheme" :title="themeLabel">
+          {{ themeIcon }}
+        </button>
+      </div>
+
+      <div
+        v-if="store.initBusy || store.initError || !store.backendReady"
+        class="startup-banner"
+        :class="{ error: store.initError || !store.backendReady }"
+      >
+        <span class="startup-banner-dot" :class="{ busy: store.initBusy }"></span>
+        <span>{{ startupStatusText }}</span>
+      </div>
+
+      <WorkspaceOverview />
+
+      <!-- Content + AI Panel (docked mode) -->
+      <div class="content-with-ai">
+        <div class="content-area">
+          <FilterBar />
+          <DataTable />
+        </div>
+        <template v-if="showAiPanel && !aiFloating">
+          <div
+            class="ai-resize-handle"
+            title="拖动调整 AI 窗口宽度"
+            @mousedown="startAiResize"
+          />
+          <AiPanel
+            ref="aiPanelRef"
+            :open="showAiPanel"
+            :floating="false"
+            :prefill-text="pendingAiText"
+            :style="{ width: `${aiPanelWidth}px` }"
+            @close="showAiPanel = false"
+            @open-config="showAiConfig = true"
+            @prefill-consumed="pendingAiText = ''"
+            @toggle-pin="aiFloating = true"
+          />
+        </template>
+      </div>
+
+      <StatusBar />
+    </div>
+
+    <!-- AI Panel floating window -->
+    <div
+      v-if="showAiPanel && aiFloating"
+      class="ai-float-wrapper"
+      :style="{ left: aiFloatX + 'px', top: aiFloatY + 'px', width: aiFloatWidth + 'px', height: aiFloatHeight + 'px' }"
+    >
+      <AiPanel
+        ref="aiPanelRef"
+        :open="showAiPanel"
+        :floating="true"
+        :prefill-text="pendingAiText"
+        style="width: 100%; height: 100%;"
+        @close="showAiPanel = false"
+        @open-config="showAiConfig = true"
+        @prefill-consumed="pendingAiText = ''"
+        @toggle-pin="aiFloating = false"
+        @drag-start="startAiFloat"
+      />
+      <!-- Resize handle (bottom-right corner) -->
+      <div class="ai-float-resize-corner" @mousedown.stop="startFloatResize" />
+    </div>
+
+    <!-- AI Config Modal -->
+    <AiConfigModal
+      v-if="showAiConfig"
+      @close="onConfigClose"
+      @config-changed="onConfigChanged"
+    />
+
+    <SymbolManagerModal
+      v-if="showSymbolManager"
+      @close="showSymbolManager = false"
+    />
+
+    <PluginParamsModal
+      :show="store.pluginArgsModal.show"
+      :plugin-name="store.pluginArgsModal.pluginName"
+      :engine-id="store.pluginArgsModal.engineId"
+      :args="store.pluginArgsModal.args"
+      :global-args="store.pluginArgsModal.globalArgsCopy || store.globalArgs"
+      @confirm="store.runPluginWithParams"
+      @cancel="store.pluginArgsModal.show = false"
+    />
+
+    <!-- Global Args Panel -->
+    <ArgsPanel
+      :show="store.showArgsPanel"
+      :engine-id="store.selectedEngine"
+      :model-value="store.globalArgs"
+      @update:model-value="store.saveGlobalArgs"
+      @close="store.showArgsPanel = false"
+    />
+  </div>
+</template>
+
+<script setup>
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { useAppStore } from './stores/app'
+import { listImages } from './api'
+import AppSidebar from './components/AppSidebar.vue'
+import AiPanel from './components/AiPanel.vue'
+import AiConfigModal from './components/AiConfigModal.vue'
+import SymbolManagerModal from './components/SymbolManagerModal.vue'
+import DataTable from './components/DataTable.vue'
+import FilterBar from './components/FilterBar.vue'
+import StatusBar from './components/StatusBar.vue'
+import PluginParamsModal from './components/PluginParamsModal.vue'
+import ArgsPanel from './components/ArgsPanel.vue'
+import WorkspaceOverview from './components/WorkspaceOverview.vue'
+
+const store = useAppStore()
+const localImagePath = ref('')
+const currentTheme = ref('dark')
+const showDropdown = ref(false)
+const showAiPanel = ref(false)
+const showAiConfig = ref(false)
+const showSymbolManager = ref(false)
+const aiPanelRef = ref(null)
+const dumpFiles = ref([])
+const aiPanelWidth = ref(420)
+const pendingAiText = ref('')
+
+// ── Floating AI window state ──────────────────────────────────────
+const AI_FLOAT_KEY = 'lexzero-ai-float'
+const aiFloating = ref(false)
+const aiFloatX = ref(100)
+const aiFloatY = ref(80)
+const aiFloatWidth = ref(460)
+const aiFloatHeight = ref(620)
+
+// Restore float state from localStorage
+;(function restoreFloatState() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(AI_FLOAT_KEY) || '{}')
+    if (saved.floating != null) aiFloating.value = !!saved.floating
+    if (saved.x != null) aiFloatX.value = saved.x
+    if (saved.y != null) aiFloatY.value = saved.y
+    if (saved.w != null) aiFloatWidth.value = saved.w
+    if (saved.h != null) aiFloatHeight.value = saved.h
+  } catch {}
+})()
+
+function _saveFloatState() {
+  localStorage.setItem(AI_FLOAT_KEY, JSON.stringify({
+    floating: aiFloating.value,
+    x: aiFloatX.value, y: aiFloatY.value,
+    w: aiFloatWidth.value, h: aiFloatHeight.value,
+  }))
+}
+
+watch(aiFloating, _saveFloatState)
+
+// Drag the floating window
+let _floatDragging = false
+let _floatDragStartX = 0, _floatDragStartY = 0
+let _floatOriginX = 0, _floatOriginY = 0
+
+function startAiFloat(e) {
+  if (!aiFloating.value) return
+  _floatDragging = true
+  _floatDragStartX = e.clientX
+  _floatDragStartY = e.clientY
+  _floatOriginX = aiFloatX.value
+  _floatOriginY = aiFloatY.value
+  document.body.classList.add('ai-float-dragging')
+  document.addEventListener('mousemove', _onFloatDragMove)
+  document.addEventListener('mouseup', _stopFloatDrag)
+  e.preventDefault()
+}
+
+function _onFloatDragMove(e) {
+  if (!_floatDragging) return
+  aiFloatX.value = Math.max(0, _floatOriginX + e.clientX - _floatDragStartX)
+  aiFloatY.value = Math.max(0, _floatOriginY + e.clientY - _floatDragStartY)
+}
+
+function _stopFloatDrag() {
+  _floatDragging = false
+  document.body.classList.remove('ai-float-dragging')
+  document.removeEventListener('mousemove', _onFloatDragMove)
+  document.removeEventListener('mouseup', _stopFloatDrag)
+  _saveFloatState()
+}
+
+// Resize the floating window (bottom-right corner)
+let _floatResizing = false
+let _floatResizeStartX = 0, _floatResizeStartY = 0
+let _floatResizeOriginW = 0, _floatResizeOriginH = 0
+
+function startFloatResize(e) {
+  _floatResizing = true
+  _floatResizeStartX = e.clientX
+  _floatResizeStartY = e.clientY
+  _floatResizeOriginW = aiFloatWidth.value
+  _floatResizeOriginH = aiFloatHeight.value
+  document.body.classList.add('ai-float-dragging')
+  document.addEventListener('mousemove', _onFloatResizeMove)
+  document.addEventListener('mouseup', _stopFloatResize)
+  e.preventDefault()
+}
+
+function _onFloatResizeMove(e) {
+  if (!_floatResizing) return
+  aiFloatWidth.value = Math.max(320, _floatResizeOriginW + e.clientX - _floatResizeStartX)
+  aiFloatHeight.value = Math.max(300, _floatResizeOriginH + e.clientY - _floatResizeStartY)
+}
+
+function _stopFloatResize() {
+  _floatResizing = false
+  document.body.classList.remove('ai-float-dragging')
+  document.removeEventListener('mousemove', _onFloatResizeMove)
+  document.removeEventListener('mouseup', _stopFloatResize)
+  _saveFloatState()
+}
+
+const AI_PANEL_WIDTH_KEY = 'lexzero-ai-panel-width'
+const AI_PANEL_MIN_WIDTH = 320
+const AI_PANEL_MAX_WIDTH = 800
+
+let resizingAiPanel = false
+let resizeStartX = 0
+let resizeStartWidth = 420
+let onWindowResize = null
+
+const themes = ['dark', 'light']
+const themeLabels = {
+  dark: '切换到白天主题',
+  light: '切换到黑夜主题',
+}
+const themeIcons = {
+  dark: '夜',
+  light: '昼',
+}
+
+const themeLabel = computed(() => themeLabels[currentTheme.value])
+const themeIcon = computed(() => themeIcons[currentTheme.value])
+const startupStatusText = computed(() => {
+  if (store.initBusy) return '正在连接后端并加载插件目录...'
+  if (store.initError) return `初始化失败: ${store.initError}`
+  if (!store.backendReady) return '后端未连接，请确认 FastAPI 服务已启动'
+  return ''
+})
+
+function toggleTheme() {
+  const idx = themes.indexOf(currentTheme.value)
+  currentTheme.value = themes[(idx + 1) % themes.length]
+  document.documentElement.setAttribute('data-theme', currentTheme.value)
+  localStorage.setItem('lexzero-theme', currentTheme.value)
+}
+
+function getAiPanelMaxWidth() {
+  const containerWidth = document.querySelector('.content-with-ai')?.clientWidth || window.innerWidth
+  const ratioCap = Math.floor(containerWidth * 0.7)
+  return Math.max(AI_PANEL_MIN_WIDTH, Math.min(AI_PANEL_MAX_WIDTH, ratioCap))
+}
+
+function clampAiPanelWidth(width) {
+  const maxWidth = getAiPanelMaxWidth()
+  return Math.min(Math.max(Math.trunc(width), AI_PANEL_MIN_WIDTH), maxWidth)
+}
+
+function stopAiResize() {
+  if (!resizingAiPanel) return
+  resizingAiPanel = false
+  document.body.classList.remove('ai-resizing-ai')
+  document.removeEventListener('mousemove', onAiResizeMove)
+  document.removeEventListener('mouseup', stopAiResize)
+  localStorage.setItem(AI_PANEL_WIDTH_KEY, String(aiPanelWidth.value))
+}
+
+function onAiResizeMove(e) {
+  if (!resizingAiPanel) return
+  const delta = resizeStartX - e.clientX
+  aiPanelWidth.value = clampAiPanelWidth(resizeStartWidth + delta)
+}
+
+function startAiResize(e) {
+  if (window.matchMedia('(max-width: 960px)').matches) return
+  if (!showAiPanel.value) return
+  resizingAiPanel = true
+  resizeStartX = e.clientX
+  resizeStartWidth = aiPanelWidth.value
+  document.body.classList.add('ai-resizing-ai')
+  document.addEventListener('mousemove', onAiResizeMove)
+  document.addEventListener('mouseup', stopAiResize)
+  e.preventDefault()
+}
+
+function selectImage(file) {
+  localImagePath.value = file.path
+  showDropdown.value = false
+}
+
+function doLoadImage() {
+  showDropdown.value = false
+  if (localImagePath.value.trim()) {
+    store.loadImage(localImagePath.value.trim())
+  }
+}
+
+async function fetchDumpFiles() {
+  try {
+    const data = await listImages()
+    dumpFiles.value = data.files || []
+  } catch (e) {
+    console.error('Failed to list dump files:', e)
+  }
+}
+
+function onConfigClose() {
+  showAiConfig.value = false
+}
+
+function onConfigChanged() {
+  // Refresh AI panel config display
+  if (aiPanelRef.value) {
+    aiPanelRef.value.loadConfig()
+  }
+}
+
+function handleSendToAiEvent(event) {
+  pendingAiText.value = event?.detail?.text || ''
+  if (!showAiPanel.value) {
+    showAiPanel.value = true
+  }
+}
+
+function handleClickOutside(e) {
+  if (!e.target.closest('.image-select-wrapper')) {
+    showDropdown.value = false
+  }
+}
+
+onMounted(async () => {
+  // Restore saved theme
+  const saved = localStorage.getItem('lexzero-theme')
+  if (saved && themes.includes(saved)) {
+    currentTheme.value = saved
+  }
+  document.documentElement.setAttribute('data-theme', currentTheme.value)
+
+  document.addEventListener('click', handleClickOutside)
+  window.addEventListener('lexzero:send-to-ai', handleSendToAiEvent)
+
+  const savedWidth = Number(localStorage.getItem(AI_PANEL_WIDTH_KEY))
+  if (Number.isFinite(savedWidth) && savedWidth > 0) {
+    aiPanelWidth.value = clampAiPanelWidth(savedWidth)
+  }
+
+  aiPanelWidth.value = clampAiPanelWidth(aiPanelWidth.value)
+
+  onWindowResize = () => {
+    aiPanelWidth.value = clampAiPanelWidth(aiPanelWidth.value)
+  }
+  window.addEventListener('resize', onWindowResize)
+
+  await Promise.all([
+    store.init(),
+    fetchDumpFiles(),
+  ])
+
+  if (store.imagePath) {
+    localImagePath.value = store.imagePath
+  }
+})
+
+onBeforeUnmount(() => {
+  document.removeEventListener('click', handleClickOutside)
+  window.removeEventListener('lexzero:send-to-ai', handleSendToAiEvent)
+  stopAiResize()
+  _stopFloatDrag()
+  _stopFloatResize()
+  if (onWindowResize) {
+    window.removeEventListener('resize', onWindowResize)
+  }
+})
+</script>
+
+<style scoped>
+.startup-banner {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 34px;
+  padding: 0 16px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--accent-glow) 82%, var(--bg-secondary));
+  color: var(--text-secondary);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.startup-banner.error {
+  background: color-mix(in srgb, var(--text-error) 12%, var(--bg-secondary));
+  color: var(--text-error);
+}
+
+.startup-banner-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  opacity: 0.75;
+}
+
+.startup-banner-dot.busy {
+  animation: startup-pulse 1s ease-in-out infinite;
+}
+
+@keyframes startup-pulse {
+  0%, 100% { opacity: 0.35; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.1); }
+}
+
+.ai-resize-handle {
+  width: 8px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  background: linear-gradient(to right, transparent 0, var(--border) 50%, transparent 100%);
+  transition: background var(--transition-fast);
+}
+
+.ai-resize-handle:hover {
+  background: linear-gradient(to right, transparent 0, var(--accent-dim) 50%, transparent 100%);
+}
+
+@media (max-width: 960px) {
+  .ai-resize-handle {
+    display: none;
+  }
+}
+
+.image-select-wrapper {
+  position: relative;
+}
+
+.image-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  margin-top: 4px;
+  min-width: 350px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  z-index: 200;
+  overflow: hidden;
+}
+
+.image-dropdown-header {
+  padding: 8px 12px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.image-dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-family: var(--font-mono);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  text-align: left;
+}
+
+.image-dropdown-item:hover {
+  background: var(--accent-glow);
+}
+
+.image-dropdown-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-dropdown-size {
+  flex-shrink: 0;
+  margin-left: 12px;
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.image-dropdown-empty {
+  padding: 12px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+</style>

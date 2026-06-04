@@ -1,0 +1,303 @@
+/**
+ * API client for the Zero Web UI.
+ */
+import axios from 'axios'
+
+const api = axios.create({
+  baseURL: '',   // Vite proxy handles /api to backend
+  timeout: 30000,
+})
+
+api.interceptors.response.use(
+  (res) => res.data,
+  (err) => {
+    if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') {
+      return Promise.reject(err)
+    }
+    const msg = err.response?.data?.detail || err.message || 'Network error'
+    return Promise.reject(new Error(msg))
+  },
+)
+
+/* ── Engine helpers ─────────────────────────────────── */
+
+export function listEngines() {
+  return api.get('/api/engines')
+}
+
+export function getEngineSettings(engine = 'vol3') {
+  return api.get(`/api/engines/${engine}/settings`)
+}
+
+export function updateEngineSettings(engine = 'vol3', settings = {}) {
+  return api.post(`/api/engines/${engine}/settings`, settings)
+}
+
+/* ── REST helpers ──────────────────────────────────── */
+
+export function loadImage(path, engine = 'vol3') {
+  return api.post('/api/image/load', { path, engine })
+}
+
+export function getImageStatus(engine = 'vol3') {
+  return api.get('/api/image/status', { params: { engine } })
+}
+
+export function listImages() {
+  return api.get('/api/image/list')
+}
+
+export function getPlugins(osFamily, engine = 'vol3') {
+  return api.get(`/api/plugins/${osFamily}`, { params: { engine } })
+}
+
+export function getPluginArgs(pluginName, engine = 'vol3') {
+  return api.get(`/api/plugin-args/${encodeURIComponent(pluginName)}`, { params: { engine } })
+}
+
+export function getPluginDocs(pluginName, engine = 'vol3') {
+  return api.get(`/api/plugin-docs/${encodeURIComponent(pluginName)}`, { params: { engine } })
+}
+
+export function reloadPlugins(engine = 'vol3') {
+  return api.post('/api/plugins/reload', null, { params: { engine } })
+}
+
+export function getResults(params = {}, options = {}) {
+  return api.get('/api/results', { params, signal: options.signal })
+}
+
+export function exportResults(format = 'csv', engine = 'vol3') {
+  return api.post('/api/export', { format, engine })
+}
+
+export function clearCache(plugin = null, engine = 'vol3') {
+  return api.delete('/api/cache', { data: { plugin, engine } })
+}
+
+export function cancelPlugin(engine = 'vol3') {
+  return api.delete('/api/plugin/cancel', { params: { engine } })
+}
+
+/* ── Symbol helpers ─────────────────────────────────── */
+
+export function getRemoteSymbols(params = {}) {
+  return api.get('/api/symbols/remote', { params })
+}
+
+export function getLocalSymbols() {
+  return api.get('/api/symbols/local')
+}
+
+export function downloadSymbols(paths) {
+  return api.post('/api/symbols/download', { paths })
+}
+
+/* ── WebSocket helper ──────────────────────────────── */
+
+export function createPluginSocket(onMessage) {
+  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const ws = new WebSocket(`${protocol}//${location.host}/ws/plugin`)
+
+  ws.onmessage = (event) => {
+    try {
+      const data = JSON.parse(event.data)
+      onMessage(data)
+    } catch (e) {
+      console.error('WS parse error:', e)
+    }
+  }
+
+  ws.onerror = (err) => console.error('WS error:', err)
+
+  return {
+    send(action, payload = {}) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ action, ...payload }))
+      }
+    },
+    close() {
+      ws.close()
+    },
+    get ready() {
+      return ws.readyState === WebSocket.OPEN
+    },
+    onOpen(cb) {
+      ws.addEventListener('open', cb)
+    },
+  }
+}
+
+/* ── AI helpers ────────────────────────────────────── */
+
+/**
+ * Stream AI chat response via SSE (fetch + ReadableStream).
+ */
+export function streamAiChat(message, includeContext, onChunk, onDone, onError, onMemoryStatus, engine = 'vol3', conversationId = null) {
+  const controller = new AbortController()
+
+  fetch('/api/ai/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      message,
+      include_context: includeContext,
+      engine,
+      conversation_id: conversationId || undefined,
+    }),
+    signal: controller.signal,
+  })
+    .then(async (res) => {
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}))
+        throw new Error(body.detail || `HTTP ${res.status}`)
+      }
+
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const payload = JSON.parse(line.slice(6))
+            if (payload.type === 'chunk') {
+              onChunk(payload.content)
+            } else if (payload.type === 'memory_status') {
+              if (onMemoryStatus) onMemoryStatus(payload.status || '')
+            } else if (payload.type === 'done') {
+              onDone(payload.conversation_id || null)
+              return
+            } else if (payload.type === 'error') {
+              onError(payload.content)
+              return
+            }
+          } catch {
+            // ignore non-JSON lines
+          }
+        }
+      }
+      onDone(null)
+    })
+    .catch((err) => {
+      if (err.name !== 'AbortError') {
+        onError(err.message || 'Network error')
+      }
+    })
+
+  return { abort: () => controller.abort() }
+}
+
+export function getAiHistory() {
+  return api.get('/api/ai/history')
+}
+
+export function clearAiHistory() {
+  return api.delete('/api/ai/history')
+}
+
+export function clearAiMemory() {
+  return api.delete('/api/ai/memory')
+}
+
+export function getAiMemory() {
+  return api.get('/api/ai/memory')
+}
+
+export function getAiConfig() {
+  return api.get('/api/ai/config')
+}
+
+export function getAiPersistConfig() {
+  return api.get('/api/ai/persist-config')
+}
+
+export function setAiPersistConfig(enabled) {
+  return api.post('/api/ai/persist-config', { persist_to_config_py: !!enabled })
+}
+
+export function getAiSettings() {
+  return api.get('/api/ai/settings')
+}
+
+export function saveAiSettings(settings) {
+  return api.post('/api/ai/settings', settings)
+}
+
+/* ── AI Profiles ───────────────────────────────────── */
+
+export function getAiProfiles() {
+  return api.get('/api/ai/profiles')
+}
+
+export function saveAiProfiles(profiles) {
+  return api.post('/api/ai/profiles', { profiles })
+}
+
+export function setActiveProfile(profile) {
+  return api.post('/api/ai/profiles/active', { profile })
+}
+
+export function getActiveProfile() {
+  return api.get('/api/ai/profiles/active')
+}
+
+/* ── AI Prompts ────────────────────────────────────── */
+
+export function getAiPrompts() {
+  return api.get('/api/ai/prompts')
+}
+
+export function saveAiPrompt(prompt) {
+  return api.post('/api/ai/prompts', prompt)
+}
+
+export function deleteAiPrompt(promptId) {
+  return api.delete(`/api/ai/prompts/${promptId}`)
+}
+
+export function setActivePrompt(promptId) {
+  return api.post('/api/ai/prompts/active', { prompt_id: promptId })
+}
+
+/* ── Filter syntax ─────────────────────────────────── */
+
+export function getFilterSyntax() {
+  return api.get('/api/ai/filter-syntax')
+}
+
+/* ── Conversations (persistent history) ────────────── */
+
+export function listConversations() {
+  return api.get('/api/ai/conversations')
+}
+
+export function createConversation(title = '', engine = 'vol3') {
+  return api.post('/api/ai/conversations', { title, engine })
+}
+
+export function getConversation(convId) {
+  return api.get(`/api/ai/conversations/${convId}`)
+}
+
+export function renameConversation(convId, title) {
+  return api.patch(`/api/ai/conversations/${convId}`, { title })
+}
+
+export function deleteConversation(convId) {
+  return api.delete(`/api/ai/conversations/${convId}`)
+}
+
+export function loadConversation(convId) {
+  return api.post(`/api/ai/conversations/${convId}/load`)
+}
+
+export default api

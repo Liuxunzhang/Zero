@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zero"
+version = "0.1.0"
+description = "Web UI for Volatility 3 memory forensics"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "volatility3>=2.5.0",
+    "requests>=2.28.0",
+    "yara-python>3.8.0",
+    "jsonschema>=4.0.0",
+    "fastapi>=0.100.0",
+    "uvicorn[standard]>=0.23.0",
+    "websockets>=11.0",
+    "openai>=1.30.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "black>=23.0.0",
+    "ruff>=0.1.0",
+]
+[[tool.uv.index]]
+url = "https://mirrors.aliyun.com/pypi/simple"
+default = true

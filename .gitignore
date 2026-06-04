@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Node / frontend
+node_modules/
+web/frontend/node_modules/
+web/frontend/dist/
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Runtime data
+dumps/
+symbols/
+saved_results/
+logs/
+.lexzero/
+*.log
+*.raw
+*.mem
+*.dmp
+*.vmem
+*.img
+*.bin
+*.lime
+*.core
+*.crash
+*.hpak
+*.aff4
+
+# Local configuration
+.env
+config.local.py
+
+# Editors
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+*~
