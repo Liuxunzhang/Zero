@@ -123,6 +123,7 @@ def _run_plugin(
     from volatility3.framework.automagic import symbol_cache
     from volatility3.framework.configuration import requirements
     from volatility3.framework import constants as vol_constants
+    from volatility3.framework import exceptions as vol_exceptions
 
     plugin_kwargs = plugin_kwargs or {}
 
@@ -204,7 +205,17 @@ def _run_plugin(
         rows.append(row)
         return accumulator
 
-    grid.populate(visitor, None)
+    try:
+        grid.populate(visitor, None)
+    except vol_exceptions.InvalidAddressException as exc:
+        message = (
+            f"{type(exc).__name__}: {exc}. "
+            "已跳过后续不可读对象并返回部分结果。"
+        )
+        if rows:
+            _emit("progress", message)
+        else:
+            raise
     return columns, rows
 
 

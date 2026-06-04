@@ -374,7 +374,21 @@ class VolatilityWrapper:
                 rows.append(row)
                 return accumulator
 
-            grid.populate(visitor, None)
+            try:
+                grid.populate(visitor, None)
+            except vol_exceptions.InvalidAddressException as e:
+                message = (
+                    f"{type(e).__name__}: {e}. "
+                    "已跳过后续不可读对象并返回部分结果。"
+                )
+                if rows:
+                    out_queue.put(("progress", message))
+                else:
+                    out_queue.put(("error", {
+                        "message": message,
+                        "traceback": "",
+                    }))
+                    return
             out_queue.put(("result", (columns, rows)))
         except vol_exceptions.UnsatisfiedException as e:
             detail = VolatilityWrapper._format_unsatisfied_exception(e)
@@ -424,6 +438,12 @@ class VolatilityWrapper:
             )
         if "symbol table" in text:
             return "可能是符号表不匹配或缺失，请确认 json 符号与镜像内核版本一致。"
+        if "page fault" in text or "invalidaddressexception" in text:
+            return (
+                "插件读取到不可映射的内存地址，常见于镜像不完整、进程结构已释放、"
+                "内核结构字段不完全匹配或该插件对当前内核版本兼容性不足。"
+                "可先用 pslist/psaux 验证基础进程视图，再对 lsof 使用 pid 参数缩小范围。"
+            )
         if "layer" in text and "invalid" in text:
             return "可能镜像格式不支持或镜像损坏，请先用基础插件验证镜像可读性。"
         if "permission denied" in text:
