@@ -114,6 +114,7 @@ body.ai-resizing-ai {
 
 /* ── Topbar ─────────────────────────────────────────── */
 .topbar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -185,6 +186,50 @@ body.ai-resizing-ai {
   cursor: not-allowed;
   transform: none;
   box-shadow: none;
+}
+
+.topbar-runtime-title {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(260px, 30vw);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  pointer-events: none;
+  line-height: 1.05;
+  text-align: center;
+}
+
+.topbar-system-name {
+  max-width: 100%;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-plugin-name {
+  max-width: 100%;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.topbar-plugin-name.muted {
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 600;
 }
 
 /* ── Theme toggle ──────────────────────────────────── */
@@ -836,22 +881,6 @@ body.ai-resizing-ai {
   background: color-mix(in srgb, var(--accent-glow) 75%, transparent);
 }
 
-.statusbar-plugin {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 8px;
-  background: var(--bg-elevated);
-  border-radius: var(--radius-sm);
-  color: var(--accent);
-  font-weight: 500;
-  font-size: 12px;
-  white-space: nowrap;
-  max-width: 220px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
 .statusbar-pagination {
   display: flex;
   align-items: center;
@@ -891,24 +920,6 @@ body.ai-resizing-ai {
 .page-jump-btn {
   min-width: 40px;
   padding: 4px 8px;
-}
-
-.statusbar-plugin-dot {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--text-muted);
-}
-
-.statusbar-plugin-dot.running {
-  background: var(--accent);
-  box-shadow: 0 0 8px var(--accent);
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.4; }
 }
 
 /* ── Progress bar ───────────────────────────────────── */
@@ -988,6 +999,10 @@ body.ai-resizing-ai {
 }
 
 @media (max-width: 860px) {
+  .topbar-runtime-title {
+    display: none;
+  }
+
   .filter-bar {
     flex-wrap: wrap;
   }

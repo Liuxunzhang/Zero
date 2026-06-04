@@ -69,14 +69,6 @@
         <button class="page-btn page-jump-btn" @click="goJumpPage">GO</button>
       </div>
     </div>
-
-    <div class="statusbar-plugin">
-      <span
-        class="statusbar-plugin-dot"
-        :class="{ running: store.pluginBusy }"
-      ></span>
-      {{ store.currentPlugin || '(none)' }}
-    </div>
   </div>
 </template>
 

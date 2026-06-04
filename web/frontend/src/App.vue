@@ -41,6 +41,12 @@
             @click="doLoadImage"
           >加载</button>
         </div>
+        <div class="topbar-runtime-title">
+          <span class="topbar-system-name">{{ systemDisplayName }}</span>
+          <span class="topbar-plugin-name" :class="{ muted: !store.currentPlugin }">
+            {{ compactPluginName }}
+          </span>
+        </div>
         <div class="topbar-spacer"></div>
         <button
           class="ai-toggle-btn"
@@ -306,6 +312,20 @@ const themeIcons = {
 
 const themeLabel = computed(() => themeLabels[currentTheme.value])
 const themeIcon = computed(() => themeIcons[currentTheme.value])
+const activeEngine = computed(() => {
+  return store.availableEngines.find(engine => engine.engine_id === store.selectedEngine)
+})
+const systemDisplayName = computed(() => {
+  const osFamily = store.engineStates?.[store.selectedEngine]?.osFamily
+  if (osFamily) return String(osFamily).toUpperCase()
+  return activeEngine.value?.display_name || store.selectedEngine || 'ZERO'
+})
+const compactPluginName = computed(() => {
+  const plugin = String(store.currentPlugin || '').trim()
+  if (!plugin) return '未选择插件'
+  const lastPart = plugin.split('.').filter(Boolean).pop() || plugin
+  return lastPart.toLowerCase()
+})
 const startupStatusText = computed(() => {
   if (store.initBusy) return '正在连接后端并加载插件目录...'
   if (store.initError) return `初始化失败: ${store.initError}`
