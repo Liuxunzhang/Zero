@@ -404,6 +404,18 @@ class VolatilityWrapper:
                         "traceback": "",
                     }))
                     return
+            except AttributeError as e:
+                message = str(e)
+                if "NoneType" in message:
+                    out_queue.put(("error", {
+                        "message": (
+                            f"{type(e).__name__}: {message}. "
+                            "插件遍历到已释放或无法重建的内核对象，当前镜像/内核结构与该插件的扫描逻辑可能不完全兼容。"
+                        ),
+                        "traceback": "",
+                    }))
+                    return
+                raise
             out_queue.put(("result", (columns, rows)))
         except vol_exceptions.UnsatisfiedException as e:
             detail = VolatilityWrapper._format_unsatisfied_exception(e)
@@ -470,6 +482,23 @@ class VolatilityWrapper:
                 "插件读取到不可映射的内存地址，常见于镜像不完整、进程结构已释放、"
                 "内核结构字段不完全匹配或该插件对当前内核版本兼容性不足。"
                 "可先用 pslist/psaux 验证基础进程视图，再对 lsof 使用 pid 参数缩小范围。"
+            )
+        if (
+            "nonetype" in text
+            and "socket" in text
+            and ("sockscan" in plugin_name.lower() or "sockscan" in text)
+        ):
+            return (
+                "linux.sockscan 在扫描 socket 结构时遇到空对象，通常表示该镜像中的部分网络对象已释放、"
+                "镜像不完整，或当前 Volatility 符号表/插件逻辑与内核结构存在兼容性差异。"
+                "建议先运行 linux.netstat.NetStat 或 linux.lsof.Lsof 交叉验证网络连接；"
+                "若基础网络插件正常，可将 sockscan 结果视为该镜像上不稳定。"
+            )
+        if "nonetype" in text:
+            return (
+                "插件读取到空的内核对象，常见于对象已释放、镜像采集不完整，"
+                "或符号表与当前内核结构存在细微不匹配。建议换基础插件交叉验证，"
+                "并确认 symbols/ 下符号表与镜像内核版本一致。"
             )
         if "layer" in text and "invalid" in text:
             return "可能镜像格式不支持或镜像损坏，请先用基础插件验证镜像可读性。"
