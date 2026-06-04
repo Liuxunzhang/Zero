@@ -10,13 +10,13 @@
       <div v-if="tab === 'browse'" class="modal-body symbol-modal-body">
         <div class="symbol-panel">
           <div class="symbol-panel-title">生成脚本</div>
-          <div class="symbol-panel-subtitle">推荐在目标发行版环境中生成匹配内核的符号表</div>
+          <div class="symbol-panel-subtitle">统一脚本位于 scripts/import_symbols.sh，推荐在目标发行版环境中生成匹配内核的符号表</div>
           <div class="symbol-script-help">
             <div class="symbol-script-command">scripts/import_symbols.sh --distro ubuntu22_24</div>
             <div class="symbol-script-command">scripts/import_symbols.sh --distro centos7</div>
             <div class="symbol-script-command">scripts/import_symbols.sh --distro debian13</div>
             <div class="symbol-script-note">
-              脚本会安装或下载内核调试包，准备 dwarf2json，并从 vmlinux / System.map 生成符号表到 symbols/。
+              单脚本会按发行版流程安装或下载内核调试包，准备 dwarf2json，并从 vmlinux / System.map 生成符号表到 symbols/。
             </div>
           </div>
 

@@ -24,9 +24,7 @@ pnpm-debug.log*
 
 # Runtime data
 dumps/
-symbols/*
-!symbols/scripts/
-!symbols/scripts/*.sh
+symbols/
 saved_results/
 logs/
 .lexzero/

@@ -146,13 +146,13 @@ Path -startswith /usr || Path -contain deleted
 
 ## 符号表
 
-仓库不迁移符号表数据。需要符号表时按需生成。入口脚本会根据系统选择 `symbols/scripts/` 下的发行版脚本；脚本会安装或下载内核调试包，准备 `dwarf2json`，再从 `vmlinux` / `System.map` 生成 Volatility 3 可用的 `json` / `json.xz` 符号表。
+仓库不迁移符号表数据。需要符号表时按需生成。统一入口在 `scripts/import_symbols.sh`，它归纳了 Ubuntu、Debian、CentOS 旧脚本的流程：安装或下载内核调试包，准备 `dwarf2json`，再从 `vmlinux` / `System.map` 生成 Volatility 3 可用的 `json.xz` 符号表。
 
 ```bash
 scripts/import_symbols.sh
 ```
 
-指定发行版脚本：
+指定发行版流程：
 
 ```bash
 scripts/import_symbols.sh --distro ubuntu22_24
@@ -166,26 +166,26 @@ scripts/import_symbols.sh --distro debian13
 scripts/import_symbols.sh --distro centos8_proxy --proxy http://127.0.0.1:7890
 ```
 
-Debian 13 脚本支持指定内核版本：
+Debian 13 流程支持指定内核版本：
 
 ```bash
 scripts/import_symbols.sh --distro debian13 --kernel 6.12.86+deb13
 ```
 
-可用生成脚本：
+可用发行版参数：
 
 ```text
-symbols/scripts/ubuntu22_24_export_symbols.sh
-symbols/scripts/debian13.sh
-symbols/scripts/debian_pre13_2_export_symbols.sh
-symbols/scripts/debian13_2_snapshot_export_symbols.sh
-symbols/scripts/centos6_proxy_export_symbols.sh
-symbols/scripts/centos7_export_symbols.sh
-symbols/scripts/centos8_export_symbols.sh
-symbols/scripts/centos8_0_proxy_export_symbols.sh
+ubuntu22_24
+debian13
+debian_pre13_2
+debian13_snapshot
+centos6
+centos7
+centos8
+centos8_proxy
 ```
 
-生成后的符号表会移动到 `symbols/` 根目录。Web 服务每次运行插件前都会重新扫描 `symbols/`，生成完成后无需重启。
+生成后的符号表会写入 `symbols/` 根目录。Web 服务每次运行插件前都会重新扫描 `symbols/`，生成完成后无需重启。
 
 ## 常用命令
 
@@ -203,8 +203,7 @@ make clean          # 清理缓存和构建产物
 zero/               Python 后端核心包
 web/backend/        FastAPI API 与服务层
 web/frontend/       Vue 前端
-scripts/            运维入口脚本
-symbols/scripts/    Linux 符号表生成脚本
+scripts/            运维与符号表生成脚本
 dev/api.md          API 文档
 plugins/            自定义 Volatility 3 插件目录
 ```
