@@ -3,39 +3,46 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SYMBOL_DIR="${SYMBOL_DIR:-${ROOT_DIR}/symbols}"
-REPO="${SYMBOL_REPO:-Liuxunzhang/volatility3-symbols}"
-BRANCH="${SYMBOL_BRANCH:-main}"
+SCRIPT_DIR="${ROOT_DIR}/symbols/scripts"
 KERNEL="$(uname -r)"
-OS_ID=""
-PROXY=""
-QUERY=""
+HOST_KERNEL="$KERNEL"
+DISTRO=""
+PROXY_VALUE=""
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/import_symbols.sh [--proxy URL] [--kernel VERSION] [--repo OWNER/REPO] [--branch BRANCH] [--query TEXT]
+Usage: scripts/import_symbols.sh [--distro NAME] [--kernel VERSION] [--proxy URL]
 
-Downloads a matching Volatility 3 Linux symbol table into ./symbols.
-Supported hosts: CentOS/RHEL-like, Ubuntu, Debian.
+Generates a Volatility 3 Linux symbol table from local kernel debug files.
+The selected generator may install/download distro debug packages and dwarf2json,
+then writes the generated .json/.json.xz file into ./symbols.
+
+Supported distro names:
+  ubuntu22_24
+  debian13
+  debian_pre13_2
+  debian13_2_snapshot
+  centos6_proxy
+  centos7
+  centos8
+  centos8_proxy
 
 Examples:
   scripts/import_symbols.sh
-  scripts/import_symbols.sh --proxy http://127.0.0.1:7890
-  scripts/import_symbols.sh --kernel 6.8.0-100-generic --query ubuntu
+  scripts/import_symbols.sh --distro ubuntu22_24
+  scripts/import_symbols.sh --distro debian13 --kernel 6.12.86+deb13
+  scripts/import_symbols.sh --distro centos8_proxy --proxy http://127.0.0.1:7890
 USAGE
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --proxy)
-      PROXY="${2:-}"; shift 2 ;;
+    --distro|--os)
+      DISTRO="${2:-}"; shift 2 ;;
     --kernel)
       KERNEL="${2:-}"; shift 2 ;;
-    --repo)
-      REPO="${2:-}"; shift 2 ;;
-    --branch)
-      BRANCH="${2:-}"; shift 2 ;;
-    --query)
-      QUERY="${2:-}"; shift 2 ;;
+    --proxy)
+      PROXY_VALUE="${2:-}"; shift 2 ;;
     -h|--help)
       usage; exit 0 ;;
     *)
@@ -45,78 +52,130 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-if [ -r /etc/os-release ]; then
-  # shellcheck disable=SC1091
-  . /etc/os-release
-  OS_ID="${ID:-}"
-fi
-
-case "$OS_ID" in
-  centos|rhel|rocky|almalinux|fedora) OS_HINT="centos" ;;
-  ubuntu) OS_HINT="ubuntu" ;;
-  debian) OS_HINT="debian" ;;
-  *) OS_HINT="" ;;
-esac
-
-if [ -n "$QUERY" ]; then
-  OS_HINT="$QUERY"
-fi
-
-need_cmd() {
-  command -v "$1" >/dev/null 2>&1 || {
-    echo "Missing required command: $1" >&2
-    exit 1
-  }
-}
-
-need_cmd curl
-need_cmd grep
-need_cmd sed
-need_cmd sort
-
-CURL=(curl -fsSL --retry 3)
-if [ -n "$PROXY" ]; then
-  CURL+=(--proxy "$PROXY")
-  export http_proxy="$PROXY"
-  export https_proxy="$PROXY"
-fi
-
-API_URL="https://api.github.com/repos/${REPO}/git/trees/${BRANCH}?recursive=1"
-RAW_BASE="https://raw.githubusercontent.com/${REPO}/${BRANCH}"
-
-echo "Repository: ${REPO}@${BRANCH}"
-echo "Kernel:     ${KERNEL}"
-echo "OS hint:    ${OS_HINT:-none}"
-echo "Proxy:      ${PROXY:-none}"
-
-TREE="$("${CURL[@]}" "$API_URL")"
-
-MATCHES="$(printf '%s\n' "$TREE" \
-  | grep -o '"path": "[^"]*"' \
-  | sed 's/^"path": "//; s/"$//' \
-  | grep -Ei '\.json(\.xz|\.gz)?$|\.zip$' \
-  | grep -F "$KERNEL" || true)"
-
-if [ -n "$OS_HINT" ]; then
-  FILTERED="$(printf '%s\n' "$MATCHES" | grep -Ei "$OS_HINT" || true)"
-  if [ -n "$FILTERED" ]; then
-    MATCHES="$FILTERED"
-  fi
-fi
-
-if [ -z "$MATCHES" ]; then
-  echo "No matching symbol table found for kernel '${KERNEL}'." >&2
-  echo "Try --query ubuntu|debian|centos or --kernel <version>." >&2
+if [ ! -d "$SCRIPT_DIR" ]; then
+  echo "Missing generator directory: $SCRIPT_DIR" >&2
   exit 1
 fi
 
-SELECTED="$(printf '%s\n' "$MATCHES" | sort | head -n 1)"
-TARGET="${SYMBOL_DIR}/${SELECTED}"
+detect_distro() {
+  local os_id="" os_version="" os_name=""
+  if [ -r /etc/os-release ]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+    os_id="${ID:-}"
+    os_version="${VERSION_ID:-}"
+    os_name="${NAME:-}"
+  fi
 
-mkdir -p "$(dirname "$TARGET")"
+  case "$os_id" in
+    ubuntu)
+      echo "ubuntu22_24" ;;
+    debian)
+      if [[ "$KERNEL" == *deb13* ]] || [[ "$os_version" == 13* ]]; then
+        echo "debian13"
+      else
+        echo "debian_pre13_2"
+      fi ;;
+    centos|rhel|rocky|almalinux)
+      if [[ "$os_version" == 6* ]]; then
+        echo "centos6_proxy"
+      elif [[ "$os_version" == 7* ]]; then
+        echo "centos7"
+      else
+        echo "centos8"
+      fi ;;
+    *)
+      if echo "$os_name" | grep -qi ubuntu; then
+        echo "ubuntu22_24"
+      elif echo "$os_name" | grep -Eqi 'centos|red hat|rocky|alma'; then
+        echo "centos8"
+      else
+        echo ""
+      fi ;;
+  esac
+}
 
-echo "Downloading: ${SELECTED}"
-"${CURL[@]}" "${RAW_BASE}/${SELECTED}" -o "$TARGET"
+select_script() {
+  case "$1" in
+    ubuntu22_24|ubuntu)
+      echo "ubuntu22_24_export_symbols.sh" ;;
+    debian13)
+      echo "debian13.sh" ;;
+    debian_pre13_2|debian)
+      echo "debian_pre13_2_export_symbols.sh" ;;
+    debian13_2_snapshot)
+      echo "debian13_2_snapshot_export_symbols.sh" ;;
+    centos6_proxy|centos6)
+      echo "centos6_proxy_export_symbols.sh" ;;
+    centos7)
+      echo "centos7_export_symbols.sh" ;;
+    centos8|centos|rhel|rocky|almalinux)
+      echo "centos8_export_symbols.sh" ;;
+    centos8_proxy)
+      echo "centos8_0_proxy_export_symbols.sh" ;;
+    *)
+      echo "" ;;
+  esac
+}
 
-echo "Imported symbol table:"
-ls -lh "$TARGET"
+DISTRO="${DISTRO:-$(detect_distro)}"
+GENERATOR="$(select_script "$DISTRO")"
+
+if [ -z "$GENERATOR" ]; then
+  echo "Could not select a symbol generator for distro '${DISTRO:-unknown}'." >&2
+  usage
+  exit 1
+fi
+
+GENERATOR_PATH="${SCRIPT_DIR}/${GENERATOR}"
+if [ ! -x "$GENERATOR_PATH" ]; then
+  echo "Generator is missing or not executable: $GENERATOR_PATH" >&2
+  exit 1
+fi
+
+mkdir -p "$SYMBOL_DIR"
+
+echo "Symbol root: $SYMBOL_DIR"
+echo "Generator:   $GENERATOR"
+echo "Kernel:      $KERNEL"
+echo "Distro:      $DISTRO"
+echo "Proxy:       ${PROXY_VALUE:-none}"
+
+if [ "$KERNEL" != "$HOST_KERNEL" ] && [ "$GENERATOR" != "debian13.sh" ]; then
+  echo "Warning: $GENERATOR uses uname -r internally; --kernel is only forwarded to debian13.sh." >&2
+fi
+
+before_list="$(mktemp)"
+after_list="$(mktemp)"
+find "$SCRIPT_DIR" -maxdepth 1 -type f \( -name '*.json' -o -name '*.json.xz' -o -name '*.json.gz' \) -print > "$before_list"
+
+pushd "$SCRIPT_DIR" >/dev/null
+if [ -n "$PROXY_VALUE" ]; then
+  export PROXY_URL="$PROXY_VALUE"
+  export http_proxy="$PROXY_VALUE"
+  export https_proxy="$PROXY_VALUE"
+fi
+
+if [ "$GENERATOR" = "debian13.sh" ]; then
+  "./$GENERATOR" "$KERNEL"
+else
+  "./$GENERATOR"
+fi
+popd >/dev/null
+
+find "$SCRIPT_DIR" -maxdepth 1 -type f \( -name '*.json' -o -name '*.json.xz' -o -name '*.json.gz' \) -print > "$after_list"
+new_files="$(comm -13 <(sort "$before_list") <(sort "$after_list") || true)"
+rm -f "$before_list" "$after_list"
+
+if [ -z "$new_files" ]; then
+  echo "No new symbol file was detected in $SCRIPT_DIR." >&2
+  echo "If the generator overwrote an existing file, move it into $SYMBOL_DIR manually." >&2
+  exit 1
+fi
+
+echo "Generated symbol files:"
+while IFS= read -r file; do
+  target="${SYMBOL_DIR}/$(basename "$file")"
+  mv -f "$file" "$target"
+  ls -lh "$target"
+done <<< "$new_files"

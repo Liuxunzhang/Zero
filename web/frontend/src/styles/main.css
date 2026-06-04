@@ -2380,11 +2380,45 @@ body.ai-float-dragging {
   color: var(--text-primary);
 }
 
+.symbol-panel-title-secondary {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-subtle);
+}
+
 .symbol-panel-subtitle {
   margin-top: 2px;
   font-size: 11px;
   color: var(--text-muted);
   word-break: break-all;
+}
+
+.symbol-script-help {
+  margin-top: 10px;
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+}
+
+.symbol-script-command {
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.symbol-script-note {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .symbol-remote-status {

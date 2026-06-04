@@ -3,19 +3,30 @@
     <div class="modal-container symbol-modal">
       <div class="modal-tabs">
         <button class="modal-tab" :class="{ active: tab === 'browse' }" @click="tab = 'browse'">符号表</button>
-        <button class="modal-tab" :class="{ active: tab === 'downloads' }" @click="tab = 'downloads'">下载管理</button>
+        <button class="modal-tab" :class="{ active: tab === 'downloads' }" @click="tab = 'downloads'">预制下载记录</button>
         <button class="modal-close-btn" @click="$emit('close')">关闭</button>
       </div>
 
       <div v-if="tab === 'browse'" class="modal-body symbol-modal-body">
         <div class="symbol-panel">
-          <div class="symbol-panel-title">远程仓库</div>
+          <div class="symbol-panel-title">生成脚本</div>
+          <div class="symbol-panel-subtitle">推荐在目标发行版环境中生成匹配内核的符号表</div>
+          <div class="symbol-script-help">
+            <div class="symbol-script-command">scripts/import_symbols.sh --distro ubuntu22_24</div>
+            <div class="symbol-script-command">scripts/import_symbols.sh --distro centos7</div>
+            <div class="symbol-script-command">scripts/import_symbols.sh --distro debian13</div>
+            <div class="symbol-script-note">
+              脚本会安装或下载内核调试包，准备 dwarf2json，并从 vmlinux / System.map 生成符号表到 symbols/。
+            </div>
+          </div>
+
+          <div class="symbol-panel-title symbol-panel-title-secondary">预制符号表（可选）</div>
           <div class="symbol-panel-subtitle">{{ remoteRepoLabel }}</div>
           <div v-if="remoteStatus.error" class="symbol-remote-status error">
-            远程索引更新失败，当前显示缓存数据：{{ remoteStatus.error }}
+            预制索引更新失败，当前显示缓存数据：{{ remoteStatus.error }}
           </div>
           <div v-else class="symbol-remote-status ok">
-            远程索引状态正常{{ remoteStatus.last_updated_at ? `（更新时间 ${formatTime(remoteStatus.last_updated_at)}）` : '' }}
+            预制索引状态正常{{ remoteStatus.last_updated_at ? `（更新时间 ${formatTime(remoteStatus.last_updated_at)}）` : '' }}
           </div>
 
           <div class="symbol-toolbar">
@@ -47,7 +58,7 @@
 
           <div class="symbol-actions">
             <button class="add-btn" :disabled="!selectedPaths.length || downloading" @click="downloadSelected">
-              {{ downloading ? '下载中...' : `下载选中 (${selectedPaths.length})` }}
+              {{ downloading ? '下载中...' : `下载预制项 (${selectedPaths.length})` }}
             </button>
             <button class="form-cancel-btn" @click="selectedPaths = []" :disabled="!selectedPaths.length">清空选择</button>
           </div>
@@ -79,7 +90,7 @@
       <div v-else class="modal-body symbol-download-tab">
         <div class="symbol-download-manager">
         <div class="symbol-manager-header">
-          <div class="symbol-panel-title">下载管理</div>
+          <div class="symbol-panel-title">预制下载记录</div>
           <div class="symbol-manager-status" :class="{ busy: downloading }">
             {{ downloading ? '下载任务进行中' : '空闲' }}
           </div>
@@ -244,7 +255,7 @@ async function loadRemote(page = 1) {
   } catch (e) {
     remoteRows.value = []
     remoteStatus.value = { ok: false, error: e.message, last_updated_at: 0, cached: false }
-    store.pushMessage(`加载远程符号表失败: ${e.message}`, 'error')
+    store.pushMessage(`加载预制符号表失败: ${e.message}`, 'error')
   } finally {
     remoteLoading.value = false
   }
@@ -275,12 +286,12 @@ async function downloadSelected() {
     const downloaded = (data.downloaded || []).length
     const skipped = (data.skipped || []).length
     const failed = (data.failed || []).length
-    store.pushMessage(`符号表下载完成: 成功 ${downloaded}，跳过 ${skipped}，失败 ${failed}`, failed ? 'warning' : 'success')
+    store.pushMessage(`预制符号表下载完成: 成功 ${downloaded}，跳过 ${skipped}，失败 ${failed}`, failed ? 'warning' : 'success')
     if (downloaded > 0) {
       await loadLocal()
     }
   } catch (e) {
-    store.pushMessage(`下载符号表失败: ${e.message}`, 'error')
+    store.pushMessage(`下载预制符号表失败: ${e.message}`, 'error')
   } finally {
     downloading.value = false
   }

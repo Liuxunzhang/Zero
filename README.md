@@ -9,7 +9,7 @@ Zero 是一个面向内存取证的 Volatility 3 Web 工作台。它把镜像加
 - 快速浏览 Linux / Windows 内存镜像中的进程、网络、模块、文件和注册表痕迹
 - 对大结果集做列过滤、排序、分页和导出
 - 使用 AI 助手基于当前插件结果提炼证据、生成过滤规则和规划下一步插件
-- 按需导入 Volatility 3 Linux 符号表，不把符号表数据塞进业务仓库
+- 按需生成 Volatility 3 Linux 符号表，不把符号表数据塞进业务仓库
 - 在服务器上单端口启动 Web UI，直接从浏览器访问
 
 ## 功能概览
@@ -18,7 +18,7 @@ Zero 是一个面向内存取证的 Volatility 3 Web 工作台。它把镜像加
 - 内存镜像路径输入与 `dumps/` 目录下拉选择
 - 表格过滤、列名补全、操作符补全、排序、分页和导出
 - 插件参数弹窗，自动识别必填参数
-- Linux 符号表远程浏览、本地列表和脚本导入
+- Linux 符号表本地列表和发行版生成脚本
 - AI 取证分析助手，支持当前插件上下文和过滤规则输出
 - 白天 / 黑夜双主题
 
@@ -146,25 +146,46 @@ Path -startswith /usr || Path -contain deleted
 
 ## 符号表
 
-仓库不迁移符号表数据。需要符号表时按需导入：
+仓库不迁移符号表数据。需要符号表时按需生成。入口脚本会根据系统选择 `symbols/scripts/` 下的发行版脚本；脚本会安装或下载内核调试包，准备 `dwarf2json`，再从 `vmlinux` / `System.map` 生成 Volatility 3 可用的 `json` / `json.xz` 符号表。
 
 ```bash
 scripts/import_symbols.sh
 ```
 
-通过代理下载：
+指定发行版脚本：
 
 ```bash
-scripts/import_symbols.sh --proxy http://127.0.0.1:7890
+scripts/import_symbols.sh --distro ubuntu22_24
+scripts/import_symbols.sh --distro centos7
+scripts/import_symbols.sh --distro debian13
 ```
 
-指定内核版本：
+通过 HTTP 代理下载调试包或 `dwarf2json`：
 
 ```bash
-scripts/import_symbols.sh --kernel 6.8.0-100-generic --query ubuntu
+scripts/import_symbols.sh --distro centos8_proxy --proxy http://127.0.0.1:7890
 ```
 
-脚本支持 CentOS/RHEL-like、Ubuntu、Debian，会从 `Liuxunzhang/volatility3-symbols` 下载匹配当前内核的符号表到 `symbols/`。
+Debian 13 脚本支持指定内核版本：
+
+```bash
+scripts/import_symbols.sh --distro debian13 --kernel 6.12.86+deb13
+```
+
+可用生成脚本：
+
+```text
+symbols/scripts/ubuntu22_24_export_symbols.sh
+symbols/scripts/debian13.sh
+symbols/scripts/debian_pre13_2_export_symbols.sh
+symbols/scripts/debian13_2_snapshot_export_symbols.sh
+symbols/scripts/centos6_proxy_export_symbols.sh
+symbols/scripts/centos7_export_symbols.sh
+symbols/scripts/centos8_export_symbols.sh
+symbols/scripts/centos8_0_proxy_export_symbols.sh
+```
+
+生成后的符号表会移动到 `symbols/` 根目录。Web 服务每次运行插件前都会重新扫描 `symbols/`，生成完成后无需重启。
 
 ## 常用命令
 
@@ -182,7 +203,8 @@ make clean          # 清理缓存和构建产物
 zero/               Python 后端核心包
 web/backend/        FastAPI API 与服务层
 web/frontend/       Vue 前端
-scripts/            运维与符号表导入脚本
+scripts/            运维入口脚本
+symbols/scripts/    Linux 符号表生成脚本
 dev/api.md          API 文档
 plugins/            自定义 Volatility 3 插件目录
 ```
