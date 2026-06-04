@@ -29,6 +29,7 @@ function makeEngineState() {
     osFamily: "linux",
     categories: {},
     currentPlugin: "",
+    runningPlugin: "",
     pluginBusy: false,
     columns: [],
     rows: [],
@@ -65,6 +66,7 @@ export const useAppStore = defineStore("app", () => {
   const osFamily      = computed({ get: () => es.value.osFamily, set: v => { es.value.osFamily = v } })
   const categories    = computed(() => es.value.categories)
   const currentPlugin = computed(() => es.value.currentPlugin)
+  const runningPlugin = computed(() => es.value.runningPlugin)
   const pluginBusy    = computed(() => es.value.pluginBusy)
   const columns       = computed(() => es.value.columns)
   const rows          = computed(() => es.value.rows)
@@ -141,6 +143,7 @@ export const useAppStore = defineStore("app", () => {
       st.columns = []
       st.rows = []
       st.currentPlugin = ""
+      st.runningPlugin = ""
       st.pluginBusy = false
       await fetchEngineSettings(engineId)
       pushMessage("[" + engineId + "] 镜像已加载: " + path, "success")
@@ -187,7 +190,7 @@ export const useAppStore = defineStore("app", () => {
   async function fetchResults() {
     const engineId = selectedEngine.value
     const st = engineStates[engineId]
-    if (!st.imageLoaded || !st.currentPlugin) return
+    if (!st.imageLoaded || (!st.currentPlugin && !st.runningPlugin)) return
     const requestId = (latestResultsRequestIds[engineId] || 0) + 1
     latestResultsRequestIds[engineId] = requestId
     if (resultsAbortControllers[engineId]) {
@@ -208,7 +211,7 @@ export const useAppStore = defineStore("app", () => {
       st.rows = data.rows || []
       st.totalRows = data.total || 0
       st.totalPages = data.total_pages || 1
-      st.currentPlugin = data.current_plugin || st.currentPlugin
+      st.currentPlugin = data.current_plugin || st.runningPlugin || st.currentPlugin
     } catch (e) {
       if (e?.code === "ERR_CANCELED" || e?.name === "CanceledError") return
       pushMessage("获取结果失败: " + e.message, "error")
@@ -231,16 +234,20 @@ export const useAppStore = defineStore("app", () => {
       } else if (msg.type === "result") {
         const d = msg.data
         if (target) {
-          target.totalRows = d.total || 0
           target.page = 1
-          target.currentPlugin = d.plugin || target.currentPlugin
           target.pluginBusy = false
           target.progress = -1
         }
         pushMessage("[" + msgEngine + "] 插件完成: " + d.plugin + " - " + d.total + " 行", "success")
-        if (msgEngine === selectedEngine.value) fetchResults()
+        if (msgEngine === selectedEngine.value) {
+          fetchResults().finally(() => {
+            if (target) target.runningPlugin = ""
+          })
+        } else if (target) {
+          target.runningPlugin = ""
+        }
       } else if (msg.type === "error") {
-        if (target) { target.pluginBusy = false; target.progress = -1 }
+        if (target) { target.pluginBusy = false; target.progress = -1; target.runningPlugin = "" }
         pushMessage("[" + msgEngine + "] " + msg.data, "error")
       } else if (msg.type === "status") {
         if (target) {
@@ -257,7 +264,7 @@ export const useAppStore = defineStore("app", () => {
     const st = engineStates[engineId]
     if (!requireImageLoaded("运行插件", engineId)) return
     if (st.pluginBusy) { pushMessage("[" + engineId + "] 已有插件正在运行", "warning"); return }
-    st.currentPlugin = pluginName
+    st.runningPlugin = pluginName
     st.page = 1
     st.pluginBusy = true
     st.progress = 0
@@ -276,6 +283,7 @@ export const useAppStore = defineStore("app", () => {
       await apiCancel(engineId)
       st.pluginBusy = false
       st.progress = -1
+      st.runningPlugin = ""
       pushMessage("[" + engineId + "] 插件已取消", "warning")
     } catch (e) { pushMessage("取消失败: " + e.message, "error") }
   }
@@ -391,6 +399,7 @@ export const useAppStore = defineStore("app", () => {
       st.imageLoaded = status.loaded || false
       st.osFamily = status.os_family || "linux"
       st.currentPlugin = status.current_plugin || ""
+      st.runningPlugin = ""
       st.available = status.available !== false
       await fetchPlugins(engineStates[selectedEngine.value].osFamily || "linux")
     } catch (e) {
@@ -490,7 +499,7 @@ export const useAppStore = defineStore("app", () => {
   function runPluginWithPayload(pluginName, engineId, params) {
     const st = engineStates[engineId]
     if (st.pluginBusy) { pushMessage("[" + engineId + "] 已有插件正在运行", "warning"); return }
-    st.currentPlugin = pluginName
+    st.runningPlugin = pluginName
     st.page = 1
     st.pluginBusy = true
     st.progress = 0
@@ -517,7 +526,7 @@ export const useAppStore = defineStore("app", () => {
     availableEngines, selectedEngine, engineStates,
     switchEngine, fetchEngineList,
     imagePath, imageLoaded, osFamily,
-    categories, currentPlugin, pluginBusy,
+    categories, currentPlugin, runningPlugin, pluginBusy,
     columns, rows, totalRows, page, pageSize, totalPages,
     filterText, sortColumn, sortDesc, profile, suggestedProfiles,
     messages, progress, hasData, hasFilter, hasSort, visibleRows, categoryCount, pluginCount,

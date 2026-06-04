@@ -881,6 +881,46 @@ body.ai-resizing-ai {
   background: color-mix(in srgb, var(--accent-glow) 75%, transparent);
 }
 
+.statusbar-running {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid var(--accent-dim);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--accent-glow) 70%, var(--bg-elevated));
+  color: var(--accent-bright);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  box-shadow: 0 0 14px color-mix(in srgb, var(--accent-glow) 65%, transparent);
+}
+
+.statusbar-running strong {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-primary);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+.statusbar-running-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent-bright);
+  box-shadow: 0 0 10px var(--accent);
+  animation: statusbar-running-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes statusbar-running-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.72); }
+}
+
 .statusbar-pagination {
   display: flex;
   align-items: center;

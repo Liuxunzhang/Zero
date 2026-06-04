@@ -23,6 +23,12 @@
       </span>
     </div>
 
+    <div v-if="store.pluginBusy" class="statusbar-running">
+      <span class="statusbar-running-dot"></span>
+      正在加载插件
+      <strong>{{ runningPluginName }}</strong>
+    </div>
+
     <div
       v-if="store.pluginBusy"
       class="progress-bar-track"
@@ -82,6 +88,12 @@ const jumpPage = ref('')
 const lastMessage = computed(() => {
   const msgs = store.messages
   return msgs.length ? msgs[msgs.length - 1] : null
+})
+
+const runningPluginName = computed(() => {
+  const plugin = String(store.runningPlugin || store.currentPlugin || '').trim()
+  if (!plugin) return 'unknown'
+  return plugin.split('.').filter(Boolean).pop()?.toLowerCase() || plugin.toLowerCase()
 })
 
 watch(() => store.page, (p) => {

@@ -20,7 +20,7 @@
             <span></span><span></span><span></span>
           </span>
         </div>
-        <div class="loading-plugin-name">{{ store.currentPlugin }}</div>
+        <div class="loading-plugin-name">{{ loadingPluginName }}</div>
         <div class="loading-hint">{{ currentHint }}</div>
       </div>
     </div>
@@ -123,6 +123,7 @@ const HINTS = [
 ]
 const hintIndex = ref(0)
 const currentHint = computed(() => HINTS[hintIndex.value % HINTS.length])
+const loadingPluginName = computed(() => store.runningPlugin || store.currentPlugin || 'unknown')
 let hintTimer = null
 const emptyState = computed(() => {
   if (!store.imageLoaded) {
