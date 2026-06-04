@@ -120,6 +120,7 @@ def _run_plugin(
     from volatility3 import framework
     from volatility3.framework import contexts, automagic, plugins as framework_plugins
     from volatility3.framework.automagic import stacker
+    from volatility3.framework.automagic import symbol_cache
     from volatility3.framework.configuration import requirements
     from volatility3.framework import constants as vol_constants
 
@@ -131,8 +132,26 @@ def _run_plugin(
         _emit("progress", f"Plugin import failures: {len(failures)}")
 
     volatility3.symbols.__path__ = [
-        str(Path(p).resolve()) for p in symbol_dirs
+        str(Path(p).resolve()) for p in symbol_dirs if Path(p).exists()
     ] + vol_constants.SYMBOL_BASEPATHS
+    import os as _os
+    _os.makedirs(vol_constants.CACHE_PATH, exist_ok=True)
+    cache = symbol_cache.SqliteCache(
+        _os.path.join(vol_constants.CACHE_PATH, vol_constants.IDENTIFIERS_FILENAME)
+    )
+    cache.update()
+    linux_banners = [
+        key for key in cache.get_identifier_dictionary(operating_system="linux")
+        if key
+    ]
+    windows_banners = [
+        key for key in cache.get_identifier_dictionary(operating_system="windows")
+        if key
+    ]
+    _emit(
+        "progress",
+        f"Symbol cache refreshed: linux={len(linux_banners)}, windows={len(windows_banners)}",
+    )
 
     ctx = contexts.Context()
     plugin_map = framework.list_plugins()
@@ -209,13 +228,16 @@ def main() -> int:
         try:
             from volatility3.framework import exceptions as _vol_exc
             if isinstance(exc, _vol_exc.UnsatisfiedException) and hasattr(exc, "unsatisfied"):
-                # unsatisfied 是 {req_path: RequirementInterface} 的字典
-                missing = list(exc.unsatisfied.keys())
-                # 只保留最后一段（去掉 "plugins.PluginName." 前缀），更易读
-                short = [r.rsplit(".", 1)[-1] for r in missing]
+                missing = []
+                for key, req in exc.unsatisfied.items():
+                    req_type = type(req).__name__
+                    desc = getattr(req, "description", "") or ""
+                    missing.append(f"{key} ({req_type})" + (f": {desc}" if desc else ""))
                 message = (
-                    f"此插件需要以下必填参数，无法直接运行: {', '.join(short)}"
-                    f"（原始路径: {', '.join(missing)}）"
+                    "Volatility 未满足插件运行条件: "
+                    f"{'; '.join(missing) or 'unknown requirement'}。"
+                    "Linux 插件通常表示镜像内核 banner 没有匹配到本地符号表，"
+                    "或符号表与镜像内核版本不一致。"
                 )
         except Exception:
             pass

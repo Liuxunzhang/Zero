@@ -236,6 +236,46 @@ class VolatilityWrapper:
             return False
 
     @staticmethod
+    def _format_unsatisfied_exception(exc: "vol_exceptions.UnsatisfiedException") -> str:
+        """Format Volatility unsatisfied requirements into a user-facing message."""
+        parts = []
+        for key, requirement in getattr(exc, "unsatisfied", {}).items():
+            req_type = type(requirement).__name__
+            description = getattr(requirement, "description", "") or ""
+            optional = getattr(requirement, "optional", None)
+            suffix = f": {description}" if description else ""
+            optional_text = "" if optional is None else f", optional={optional}"
+            parts.append(f"{key} ({req_type}{optional_text}){suffix}")
+        return "; ".join(parts) or "unknown requirement"
+
+    @staticmethod
+    def _refresh_symbol_cache(symbol_dirs: List[str]) -> Dict[str, int]:
+        """Refresh Volatility symbol identifier cache and return banner counts."""
+        import os as _os
+
+        import volatility3.symbols as _symbols
+        from volatility3.framework import constants as _constants
+        from volatility3.framework.automagic import symbol_cache as _symbol_cache
+
+        _symbols.__path__ = [
+            str(Path(p).resolve()) for p in symbol_dirs if Path(p).exists()
+        ] + _constants.SYMBOL_BASEPATHS
+
+        _os.makedirs(_constants.CACHE_PATH, exist_ok=True)
+        cache_file = _os.path.join(_constants.CACHE_PATH, _constants.IDENTIFIERS_FILENAME)
+        cache = _symbol_cache.SqliteCache(cache_file)
+        cache.update()
+        linux_count = len([
+            key for key in cache.get_identifier_dictionary(operating_system="linux")
+            if key
+        ])
+        windows_count = len([
+            key for key in cache.get_identifier_dictionary(operating_system="windows")
+            if key
+        ])
+        return {"linux": linux_count, "windows": windows_count}
+
+    @staticmethod
     def _api_worker_entry(
         image_path: str,
         symbol_dirs: List[str],
@@ -267,6 +307,14 @@ class VolatilityWrapper:
             volatility3.symbols.__path__ = [
                 str(Path(p).resolve()) for p in symbol_dirs
             ] + vol_constants.SYMBOL_BASEPATHS
+            symbol_counts = VolatilityWrapper._refresh_symbol_cache(symbol_dirs)
+            out_queue.put((
+                "log",
+                "Symbol cache refreshed: "
+                f"linux={symbol_counts.get('linux', 0)}, "
+                f"windows={symbol_counts.get('windows', 0)}, "
+                f"dirs={symbol_dirs or '[]'}",
+            ))
 
             ctx = contexts.Context()
             plugin_map = framework.list_plugins()
@@ -328,6 +376,16 @@ class VolatilityWrapper:
 
             grid.populate(visitor, None)
             out_queue.put(("result", (columns, rows)))
+        except vol_exceptions.UnsatisfiedException as e:
+            detail = VolatilityWrapper._format_unsatisfied_exception(e)
+            hint = (
+                "Volatility 未满足插件运行条件。Linux 插件通常表示镜像内核 banner "
+                "没有匹配到本地符号表，或符号表与镜像内核版本不一致。"
+            )
+            out_queue.put(("error", {
+                "message": f"Unsatisfied requirements: {detail}. {hint}",
+                "traceback": "",
+            }))
         except Exception as e:
             import traceback
             out_queue.put(("error", {"message": str(e), "traceback": traceback.format_exc()}))
@@ -356,10 +414,13 @@ class VolatilityWrapper:
             )
         if "unsatisfiedexception" in text or "unsatisfied" in text:
             if "symbol table" in text or "symbol" in text:
-                return "可能是符号表不匹配或缺失，请确认 json 符号与镜像内核版本一致。"
+                return (
+                    "可能是符号表不匹配或缺失。请确认 symbols/ 下存在对应镜像内核 banner 的 "
+                    "json/json.xz 符号表；导入符号表后重新运行插件即可，无需重启服务。"
+                )
             return (
-                "插件存在未满足的必填参数。此类插件需要额外输入（如 PID、YARA 规则等），"
-                "当前版本暂不支持交互式传参。"
+                "Volatility 未能自动构建插件所需的 layer 或 symbol table。"
+                "请先确认镜像类型与插件平台一致，并检查符号表是否匹配。"
             )
         if "symbol table" in text:
             return "可能是符号表不匹配或缺失，请确认 json 符号与镜像内核版本一致。"
@@ -641,6 +702,9 @@ class VolatilityWrapper:
 
         self._cancel_requested.clear()
         self._set_running_state(True)
+        # Symbol tables may be imported while the web service is already running.
+        # Re-resolve per plugin run so newly created symbols/ files are visible.
+        self.symbol_dirs = self._resolve_symbol_dirs()
 
         if not self.hard_interrupt_mode:
             raise ValueError("当前版本仅支持硬中断模式，请在 config 中开启 HARD_INTERRUPT_MODE")
@@ -730,6 +794,8 @@ class VolatilityWrapper:
                             logging.error(f"Plugin Error Traceback:\n{payload['traceback']}")
                     else:
                         error_text = str(payload)
+                elif event_type == "log":
+                    logging.info(str(payload))
             except queue.Empty:
                 pass
 
@@ -750,6 +816,8 @@ class VolatilityWrapper:
                     if progress_msg != last_progress:
                         progress_callback(progress_msg)
                         last_progress = progress_msg
+                elif event_type == "log":
+                    logging.info(str(payload))
             except queue.Empty:
                 break
 
