@@ -58,6 +58,15 @@
         </button>
         <button
           class="ai-toggle-btn"
+          :class="{ active: showNotepad }"
+          @click="showNotepad = true"
+          title="取证记事本"
+        >
+          <span class="ai-toggle-icon">记</span>
+          <span class="ai-toggle-text">记事</span>
+        </button>
+        <button
+          class="ai-toggle-btn"
           :class="{ active: showAiPanel }"
           @click="showAiPanel = !showAiPanel"
           title="取证分析助手"
@@ -151,6 +160,11 @@
       @close="showSymbolManager = false"
     />
 
+    <NotepadPanel
+      :show="showNotepad"
+      @close="showNotepad = false"
+    />
+
     <PluginParamsModal
       :show="store.pluginArgsModal.show"
       :plugin-name="store.pluginArgsModal.pluginName"
@@ -183,6 +197,7 @@ import SymbolManagerModal from './components/SymbolManagerModal.vue'
 import DataTable from './components/DataTable.vue'
 import FilterBar from './components/FilterBar.vue'
 import StatusBar from './components/StatusBar.vue'
+import NotepadPanel from './components/NotepadPanel.vue'
 import PluginParamsModal from './components/PluginParamsModal.vue'
 import ArgsPanel from './components/ArgsPanel.vue'
 
@@ -193,6 +208,7 @@ const showDropdown = ref(false)
 const showAiPanel = ref(false)
 const showAiConfig = ref(false)
 const showSymbolManager = ref(false)
+const showNotepad = ref(false)
 const aiPanelRef = ref(null)
 const dumpFiles = ref([])
 const aiPanelWidth = ref(420)
