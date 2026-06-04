@@ -125,6 +125,15 @@ const logicOperators = [
 
 const placeholder = '输入文本搜索，或 column -op value；按 Tab 补全'
 
+const expressionState = computed(() => {
+  const text = localFilter.value.trim()
+  if (!text) return 'empty'
+  if (!looksAdvanced(text)) return 'simple'
+  return advancedExpressionLooksComplete(text) ? 'advanced' : 'incomplete'
+})
+
+const suggestions = computed(() => buildSuggestions(localFilter.value))
+
 const filterHint = computed(() => {
   if (expressionState.value === 'incomplete') return '继续补全表达式 · Tab 选择建议'
   if (suggestions.value.length) return 'Tab 补全 · Enter 应用 · Esc 清空'
@@ -141,15 +150,6 @@ watch(() => store.filterText, (v) => {
 watch(suggestions, () => {
   activeSuggestion.value = 0
 })
-
-const expressionState = computed(() => {
-  const text = localFilter.value.trim()
-  if (!text) return 'empty'
-  if (!looksAdvanced(text)) return 'simple'
-  return advancedExpressionLooksComplete(text) ? 'advanced' : 'incomplete'
-})
-
-const suggestions = computed(() => buildSuggestions(localFilter.value))
 
 function onInput() {
   showSuggestions.value = true
