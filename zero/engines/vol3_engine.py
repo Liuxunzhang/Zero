@@ -79,7 +79,7 @@ def _build_vol3_plugin_metadata(resolved_name: str, plugin_class) -> Dict[str, A
         })
 
     has_required = any(a["required"] for a in args)
-    requires_modal = is_dump
+    requires_modal = is_dump or has_required
 
     return {
         "args": args,

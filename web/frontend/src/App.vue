@@ -82,8 +82,6 @@
         <span>{{ startupStatusText }}</span>
       </div>
 
-      <WorkspaceOverview />
-
       <!-- Content + AI Panel (docked mode) -->
       <div class="content-with-ai">
         <div class="content-area">
@@ -181,7 +179,6 @@ import FilterBar from './components/FilterBar.vue'
 import StatusBar from './components/StatusBar.vue'
 import PluginParamsModal from './components/PluginParamsModal.vue'
 import ArgsPanel from './components/ArgsPanel.vue'
-import WorkspaceOverview from './components/WorkspaceOverview.vue'
 
 const store = useAppStore()
 const localImagePath = ref('')

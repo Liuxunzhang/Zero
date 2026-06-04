@@ -240,16 +240,33 @@ def main() -> int:
             from volatility3.framework import exceptions as _vol_exc
             if isinstance(exc, _vol_exc.UnsatisfiedException) and hasattr(exc, "unsatisfied"):
                 missing = []
+                infrastructure = {
+                    "ModuleRequirement",
+                    "PluginRequirement",
+                    "SymbolTableRequirement",
+                    "TranslationLayerRequirement",
+                    "VersionRequirement",
+                }
+                has_user_parameter = False
                 for key, req in exc.unsatisfied.items():
                     req_type = type(req).__name__
                     desc = getattr(req, "description", "") or ""
+                    if req_type not in infrastructure:
+                        has_user_parameter = True
                     missing.append(f"{key} ({req_type})" + (f": {desc}" if desc else ""))
-                message = (
-                    "Volatility 未满足插件运行条件: "
-                    f"{'; '.join(missing) or 'unknown requirement'}。"
-                    "Linux 插件通常表示镜像内核 banner 没有匹配到本地符号表，"
-                    "或符号表与镜像内核版本不一致。"
-                )
+                if has_user_parameter:
+                    message = (
+                        "插件缺少必填参数: "
+                        f"{'; '.join(missing) or 'unknown requirement'}。"
+                        "请在参数窗口中填写缺失字段后重新运行。"
+                    )
+                else:
+                    message = (
+                        "Volatility 未满足插件运行条件: "
+                        f"{'; '.join(missing) or 'unknown requirement'}。"
+                        "Linux 插件通常表示镜像内核 banner 没有匹配到本地符号表，"
+                        "或符号表与镜像内核版本不一致。"
+                    )
         except Exception:
             pass
         _emit("error", {"message": message, "traceback": _tb.format_exc()})

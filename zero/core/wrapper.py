@@ -249,6 +249,21 @@ class VolatilityWrapper:
         return "; ".join(parts) or "unknown requirement"
 
     @staticmethod
+    def _unsatisfied_is_user_parameter(exc: "vol_exceptions.UnsatisfiedException") -> bool:
+        """Return True when unsatisfied requirements look like plugin parameters."""
+        infrastructure = {
+            "ModuleRequirement",
+            "PluginRequirement",
+            "SymbolTableRequirement",
+            "TranslationLayerRequirement",
+            "VersionRequirement",
+        }
+        reqs = getattr(exc, "unsatisfied", {}) or {}
+        if not reqs:
+            return False
+        return any(type(req).__name__ not in infrastructure for req in reqs.values())
+
+    @staticmethod
     def _refresh_symbol_cache(symbol_dirs: List[str]) -> Dict[str, int]:
         """Refresh Volatility symbol identifier cache and return banner counts."""
         import os as _os
@@ -392,10 +407,13 @@ class VolatilityWrapper:
             out_queue.put(("result", (columns, rows)))
         except vol_exceptions.UnsatisfiedException as e:
             detail = VolatilityWrapper._format_unsatisfied_exception(e)
-            hint = (
-                "Volatility 未满足插件运行条件。Linux 插件通常表示镜像内核 banner "
-                "没有匹配到本地符号表，或符号表与镜像内核版本不一致。"
-            )
+            if VolatilityWrapper._unsatisfied_is_user_parameter(e):
+                hint = "该插件需要必填参数。请在弹出的参数窗口中填写缺失字段后重新运行。"
+            else:
+                hint = (
+                    "Volatility 未满足插件运行条件。Linux 插件通常表示镜像内核 banner "
+                    "没有匹配到本地符号表，或符号表与镜像内核版本不一致。"
+                )
             out_queue.put(("error", {
                 "message": f"Unsatisfied requirements: {detail}. {hint}",
                 "traceback": "",
@@ -427,6 +445,15 @@ class VolatilityWrapper:
                 "当前版本暂不支持交互式传参，请选择其他插件或手动使用 vol3 命令行传参。"
             )
         if "unsatisfiedexception" in text or "unsatisfied" in text:
+            if (
+                "intrequirement" in text
+                or "stringrequirement" in text
+                or "booleanrequirement" in text
+                or "listrequirement" in text
+                or "bytesrequirement" in text
+                or "urirequirement" in text
+            ):
+                return "插件缺少必填参数。请打开参数窗口填写缺失字段，例如 base/PID/规则路径等，再重新运行。"
             if "symbol table" in text or "symbol" in text:
                 return (
                     "可能是符号表不匹配或缺失。请确认 symbols/ 下存在对应镜像内核 banner 的 "
