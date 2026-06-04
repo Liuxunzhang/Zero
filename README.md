@@ -1,15 +1,26 @@
 # Zero
 
-Zero 是一个面向内存取证的 Volatility 3 Web UI。当前版本只保留 Web 工作流，不包含 Volatility 2、TUI 和测试目录。
+Zero 是一个面向内存取证的 Volatility 3 Web 工作台。它把镜像加载、插件运行、结果过滤、符号表管理和 AI 辅助分析放在同一个浏览器界面里，目标是让一次内存镜像排查从“能跑插件”变成“能持续分析”。
 
-## 功能
+当前版本专注于 Web UI 和 Volatility 3，不包含 Volatility 2、TUI 和测试目录。
 
-- 加载本地内存镜像并运行 Volatility 3 插件
-- 按 Linux / Windows 分类浏览和搜索插件
-- 表格分页、排序、过滤和结果导出
-- 插件参数默认值和导出目录管理
-- AI 取证分析助手，支持当前插件结果上下文
-- 本地符号表列表、远程符号表浏览和按需下载
+## 适合什么场景
+
+- 快速浏览 Linux / Windows 内存镜像中的进程、网络、模块、文件和注册表痕迹
+- 对大结果集做列过滤、排序、分页和导出
+- 使用 AI 助手基于当前插件结果提炼证据、生成过滤规则和规划下一步插件
+- 按需导入 Volatility 3 Linux 符号表，不把符号表数据塞进业务仓库
+- 在服务器上单端口启动 Web UI，直接从浏览器访问
+
+## 功能概览
+
+- Volatility 3 插件分类、搜索、运行和取消
+- 内存镜像路径输入与 `dumps/` 目录下拉选择
+- 表格过滤、列名补全、操作符补全、排序、分页和导出
+- 插件参数弹窗，自动识别必填参数
+- Linux 符号表远程浏览、本地列表和脚本导入
+- AI 取证分析助手，支持当前插件上下文和过滤规则输出
+- 白天 / 黑夜双主题
 
 ## 环境要求
 
@@ -19,13 +30,19 @@ Zero 是一个面向内存取证的 Volatility 3 Web UI。当前版本只保留 
 - curl
 - npm
 
-## 安装
-
-默认安装命令会自动下载 uv、创建 `.venv`、使用阿里云 PyPI 源安装 Python 依赖、安装前端依赖并构建静态前端。
+## 快速安装
 
 ```bash
 make
 ```
+
+`make` 会自动完成：
+
+- 下载或复用 `uv`
+- 创建 `.venv`
+- 使用阿里云 PyPI 源安装 Python 依赖
+- 安装前端依赖
+- 构建静态前端
 
 默认 PyPI 源：
 
@@ -41,8 +58,6 @@ make PYPI_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
 
 ## 启动
 
-生产式启动 Web UI：
-
 ```bash
 make run
 ```
@@ -53,11 +68,9 @@ make run
 http://localhost:8000
 ```
 
-`make run` 会启动 FastAPI，并直接服务 `web/frontend/dist` 中的构建产物，不会启动 Vite。
+`make run` 只启动 FastAPI，并直接服务 `web/frontend/dist` 中的静态前端，不启动 Vite。
 
-## 开发启动
-
-需要 Vite 热更新时使用：
+## 开发模式
 
 ```bash
 make test-run
@@ -69,17 +82,71 @@ make test-run
 http://localhost:5173
 ```
 
-## 使用流程
+`make test-run` 会启动后端 reload 和 Vite 开发服务器。
+
+## 基本使用
 
 1. 将内存镜像放入 `dumps/`，或在顶部输入镜像绝对路径。
 2. 点击“加载”。
 3. 在左侧选择 Linux 或 Windows 插件分类。
 4. 搜索并运行 Volatility 3 插件。
-5. 在结果表格中排序、过滤、导出，或发送给取证分析助手继续分析。
+5. 使用表格过滤、排序、分页和导出定位证据。
+6. 将结果发送给取证分析助手继续分析。
+
+## 过滤搜索
+
+过滤栏支持两种模式：普通文本搜索和结构化表达式。
+
+普通文本搜索会在所有列中做包含匹配：
+
+```text
+systemd
+```
+
+结构化表达式用于精确过滤列：
+
+```text
+PID -eq 1
+COMM -contain ssh
+Path -match "/tmp/.*"
+```
+
+支持逻辑组合：
+
+```text
+COMM -contain ssh && PID -gt 100
+Path -startswith /usr || Path -contain deleted
+```
+
+支持的操作符：
+
+```text
+-eq           等于
+-ne           不等于
+-gt           大于
+-lt           小于
+-ge           大于等于
+-le           小于等于
+-contain      包含
+-notcontain   不包含
+-match        正则匹配
+-startswith   前缀匹配
+-endswith     后缀匹配
+```
+
+补全能力：
+
+- 输入列名前缀时，会补全当前结果表的列名。
+- 输入列名后按空格，会补全操作符。
+- 输入操作符后，会基于当前列的可见结果给出样例值。
+- 完成一个条件后，会补全 `&&` 和 `||`。
+- `Tab` 选择当前补全项，`Enter` 应用过滤，`Esc` 清空。
+
+表达式不完整时，前端不会立即发送到后端，避免半截表达式触发错误提示。
 
 ## 符号表
 
-仓库不迁移符号表数据。需要符号表时可以用脚本按需导入：
+仓库不迁移符号表数据。需要符号表时按需导入：
 
 ```bash
 scripts/import_symbols.sh
@@ -107,6 +174,17 @@ make run            # 启动单端口 Web UI，不启动 Vite
 make test-run       # 后端 reload + Vite 开发模式
 make frontend-build # 重新构建前端
 make clean          # 清理缓存和构建产物
+```
+
+## 目录结构
+
+```text
+zero/               Python 后端核心包
+web/backend/        FastAPI API 与服务层
+web/frontend/       Vue 前端
+scripts/            运维与符号表导入脚本
+dev/api.md          API 文档
+plugins/            自定义 Volatility 3 插件目录
 ```
 
 ## API 文档

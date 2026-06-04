@@ -28,6 +28,7 @@ symbols/
 saved_results/
 logs/
 .lexzero/
+.zero/
 *.log
 *.raw
 *.mem
