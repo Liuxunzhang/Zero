@@ -2,7 +2,7 @@
 
 Usage
 -----
-    from lexzero.engines.manager import get_manager
+    from zero.engines.manager import get_manager
 
     mgr = get_manager()
     engine = mgr.get_engine("vol3")          # raises KeyError if unknown
@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
-from lexzero.engines.base import EngineBase
+from zero.engines.base import EngineBase
 
 logger = logging.getLogger(__name__)
 
@@ -206,7 +206,7 @@ def _build_manager() -> EngineManager:
     mgr = EngineManager()
 
     def _make_vol3() -> EngineBase:
-        from lexzero.engines.vol3_engine import Vol3Engine
+        from zero.engines.vol3_engine import Vol3Engine
         return Vol3Engine()
 
     mgr.register_factory(

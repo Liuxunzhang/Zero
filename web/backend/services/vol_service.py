@@ -11,7 +11,7 @@ Backward-compatible shim:
 import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from lexzero.engines.manager import get_manager
+from zero.engines.manager import get_manager
 
 logger = logging.getLogger(__name__)
 

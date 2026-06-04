@@ -111,7 +111,7 @@ const reloading = ref(false)
 const pluginSearch = ref('')
 
 // Sidebar collapse state, persisted in localStorage
-const SIDEBAR_COLLAPSED_KEY = 'lexzero-sidebar-collapsed'
+const SIDEBAR_COLLAPSED_KEY = 'zero-sidebar-collapsed'
 const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false')
 const sidebarHoverOpen = ref(false)
 const sidebarExpanded = computed(() => !sidebarCollapsed.value || sidebarHoverOpen.value)

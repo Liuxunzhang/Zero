@@ -9,7 +9,7 @@ from typing import Optional
 
 import requests
 
-from lexzero import config
+from zero import config
 
 logger = logging.getLogger(__name__)
 

@@ -149,7 +149,7 @@ import { getRemoteSymbols, getLocalSymbols, downloadSymbols } from '../api'
 import { useAppStore } from '../stores/app'
 
 const store = useAppStore()
-const STORAGE_KEY = 'lexzero-symbol-download-history'
+const STORAGE_KEY = 'zero-symbol-download-history'
 
 const tab = ref('browse')
 

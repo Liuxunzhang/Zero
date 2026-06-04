@@ -15,22 +15,22 @@ from typing import Any, AsyncGenerator, Optional
 
 from openai import AsyncOpenAI
 
-from lexzero import config
+from zero import config
 from web.backend.services.memory_store import MemoryStore, build_memory_items_from_text
 
 logger = logging.getLogger(__name__)
 
 # Persist profiles / prompts alongside project root.
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_CONFIG_FILE = _PROJECT_ROOT / "lexzero" / "config.py"
-_AI_DATA_DIR = _PROJECT_ROOT / ".lexzero" / "ai"
+_CONFIG_FILE = _PROJECT_ROOT / "zero" / "config.py"
+_AI_DATA_DIR = _PROJECT_ROOT / ".zero" / "ai"
 _PROFILES_FILE = _AI_DATA_DIR / "profiles.json"
 _PROMPTS_FILE = _AI_DATA_DIR / "prompts.json"
 _SETTINGS_FILE = _AI_DATA_DIR / "settings.json"
 _MEMORY_FILE = _AI_DATA_DIR / "compressed_memory.json"
 _MEMORY_ITEMS_FILE = _AI_DATA_DIR / "memory_items.json"
 _MEMORY_STATS_FILE = _AI_DATA_DIR / "memory_stats.json"
-_LEGACY_PROMPTS_FILE = _PROJECT_ROOT / ".lexzero_ai_prompts.json"
+_LEGACY_PROMPTS_FILE = _PROJECT_ROOT / ".zero_ai_prompts.json"
 _DEFAULT_SETTINGS = {
     "persist_to_config_py": False,
     "active_profile_id": None,

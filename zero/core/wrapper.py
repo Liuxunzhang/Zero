@@ -13,7 +13,7 @@ import selectors
 from typing import List, Dict, Tuple, Optional, Any
 from pathlib import Path
 
-from lexzero import config
+from zero import config
 from .result_cache import DiskResultCache
 
 try:
@@ -329,7 +329,7 @@ class VolatilityWrapper:
             )
 
             # Apply user-supplied kwargs to ctx.config.
-            from lexzero.core.plugin_worker import _apply_plugin_kwargs
+            from zero.core.plugin_worker import _apply_plugin_kwargs
             _apply_plugin_kwargs(ctx, plugin_class, base_config_path, plugin_kwargs)
 
             automagics = automagic.available(ctx)
@@ -344,7 +344,7 @@ class VolatilityWrapper:
                 out_queue.put(("progress", msg))
 
             # Provide a concrete FileHandlerInterface for dump-type plugins.
-            from lexzero.core.plugin_worker import _make_file_handler, _default_dump_dir
+            from zero.core.plugin_worker import _make_file_handler, _default_dump_dir
             dump_dir = str(plugin_kwargs.get("dump_dir") or _default_dump_dir())
             file_handler_class = _make_file_handler(dump_dir)
 
@@ -453,7 +453,7 @@ class VolatilityWrapper:
         if "killed" in text or "terminated" in text:
             return "插件被中断或系统回收，建议重试并观察资源占用。"
 
-        log_file = str(getattr(config, "LOG_FILE", "logs/lexzero.log"))
+        log_file = str(getattr(config, "LOG_FILE", "logs/zero.log"))
         return f"插件 {plugin_name} 执行失败，请查看 {log_file} 获取完整错误。"
 
     def _should_use_subprocess_worker(self) -> bool:
@@ -862,7 +862,7 @@ class VolatilityWrapper:
         command = [
             sys.executable,
             "-m",
-            "lexzero.core.plugin_worker",
+            "zero.core.plugin_worker",
             "--image",
             self.image_path,
             "--plugin",

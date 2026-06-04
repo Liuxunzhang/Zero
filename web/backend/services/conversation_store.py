@@ -1,6 +1,6 @@
 """Persistent conversation store for AI chat history.
 
-Conversations are stored under .lexzero/ai/conversations/:
+Conversations are stored under .zero/ai/conversations/:
   index.json          - list of conversation metadata
   {id}.json           - full message transcript for a single conversation
 
@@ -21,7 +21,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
-_CONV_DIR = _PROJECT_ROOT / ".lexzero" / "ai" / "conversations"
+_CONV_DIR = _PROJECT_ROOT / ".zero" / "ai" / "conversations"
 _INDEX_FILE = _CONV_DIR / "index.json"
 
 _lock = threading.Lock()

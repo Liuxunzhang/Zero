@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import List, Tuple
 from datetime import datetime
 
-from lexzero import config
+from zero import config
 
 logger = logging.getLogger(__name__)
 
@@ -67,7 +67,7 @@ class ResultExporter:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"{plugin_name}_{timestamp}.{format}"
 
-        export_dir = Path(getattr(config, "EXPORT_DIR", "~/lexzero_exports")).expanduser()
+        export_dir = Path(getattr(config, "EXPORT_DIR", "~/zero_exports")).expanduser()
         export_dir.mkdir(exist_ok=True)
 
         filepath = export_dir / filename

@@ -1,11 +1,11 @@
 import sys
 
 # 导出设置
-EXPORT_DIR = "~/lexzero_exports"
+EXPORT_DIR = "~/zero_exports"
 DEFAULT_EXPORT_FORMAT = "csv"  # csv、json、txt
 
 # 日志设置
-LOG_FILE = "logs/lexzero.log"
+LOG_FILE = "logs/zero.log"
 LOG_LEVEL = "INFO"  # DEBUG、INFO、WARNING、ERROR
 
 # Volatility3 设置

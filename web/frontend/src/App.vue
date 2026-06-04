@@ -196,7 +196,7 @@ const aiPanelWidth = ref(420)
 const pendingAiText = ref('')
 
 // ── Floating AI window state ──────────────────────────────────────
-const AI_FLOAT_KEY = 'lexzero-ai-float'
+const AI_FLOAT_KEY = 'zero-ai-float'
 const aiFloating = ref(false)
 const aiFloatX = ref(100)
 const aiFloatY = ref(80)
@@ -288,7 +288,7 @@ function _stopFloatResize() {
   _saveFloatState()
 }
 
-const AI_PANEL_WIDTH_KEY = 'lexzero-ai-panel-width'
+const AI_PANEL_WIDTH_KEY = 'zero-ai-panel-width'
 const AI_PANEL_MIN_WIDTH = 320
 const AI_PANEL_MAX_WIDTH = 800
 
@@ -320,7 +320,7 @@ function toggleTheme() {
   const idx = themes.indexOf(currentTheme.value)
   currentTheme.value = themes[(idx + 1) % themes.length]
   document.documentElement.setAttribute('data-theme', currentTheme.value)
-  localStorage.setItem('lexzero-theme', currentTheme.value)
+  localStorage.setItem('zero-theme', currentTheme.value)
 }
 
 function getAiPanelMaxWidth() {
@@ -408,14 +408,14 @@ function handleClickOutside(e) {
 
 onMounted(async () => {
   // Restore saved theme
-  const saved = localStorage.getItem('lexzero-theme')
+  const saved = localStorage.getItem('zero-theme')
   if (saved && themes.includes(saved)) {
     currentTheme.value = saved
   }
   document.documentElement.setAttribute('data-theme', currentTheme.value)
 
   document.addEventListener('click', handleClickOutside)
-  window.addEventListener('lexzero:send-to-ai', handleSendToAiEvent)
+  window.addEventListener('zero:send-to-ai', handleSendToAiEvent)
 
   const savedWidth = Number(localStorage.getItem(AI_PANEL_WIDTH_KEY))
   if (Number.isFinite(savedWidth) && savedWidth > 0) {
@@ -441,7 +441,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleClickOutside)
-  window.removeEventListener('lexzero:send-to-ai', handleSendToAiEvent)
+  window.removeEventListener('zero:send-to-ai', handleSendToAiEvent)
   stopAiResize()
   _stopFloatDrag()
   _stopFloatResize()

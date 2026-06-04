@@ -1,6 +1,6 @@
 """Volatility 3 engine adapter.
 
-Wraps the existing VolatilityWrapper (lexzero/core/wrapper.py) behind the
+Wraps the existing VolatilityWrapper (zero/core/wrapper.py) behind the
 unified EngineBase interface.  All state is kept inside this instance;
 multiple Vol3Engine instances are fully independent.
 """
@@ -11,9 +11,9 @@ import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from lexzero.engines.base import EngineBase
-from lexzero.utils.exporter import ResultExporter
-from lexzero.utils.filter_expression import AdvancedFilter
+from zero.engines.base import EngineBase
+from zero.utils.exporter import ResultExporter
+from zero.utils.filter_expression import AdvancedFilter
 
 # Internal requirement types to skip (infrastructure, not user params).
 _SKIP_REQ_TYPES = frozenset({
@@ -105,7 +105,7 @@ class Vol3Engine(EngineBase):
 
     def __init__(self) -> None:
         # Import lazily so that missing vol3 doesn't crash the whole app.
-        from lexzero.core.wrapper import VolatilityWrapper
+        from zero.core.wrapper import VolatilityWrapper
         self._wrapper = VolatilityWrapper()
         self._lock = threading.RLock()
         self._image_path: Optional[str] = None

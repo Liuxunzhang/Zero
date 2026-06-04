@@ -264,7 +264,7 @@ function sendSelectedDataToAi() {
   const value = String(menu.value ?? '')
   const payload = `${col}: ${value}`
 
-  window.dispatchEvent(new CustomEvent('lexzero:send-to-ai', {
+  window.dispatchEvent(new CustomEvent('zero:send-to-ai', {
     detail: { text: payload },
   }))
   store.pushMessage('已将选中数据发送到取证分析助手', 'success')

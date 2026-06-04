@@ -19,7 +19,7 @@ import {
   updateEngineSettings as apiUpdateEngineSettings,
 } from "../api"
 
-const GLOBAL_ARGS_KEY = "lexzero-global-args"
+const GLOBAL_ARGS_KEY = "zero-global-args"
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1000]
 
 function makeEngineState() {
