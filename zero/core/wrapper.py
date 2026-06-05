@@ -421,10 +421,19 @@ class VolatilityWrapper:
             detail = VolatilityWrapper._format_unsatisfied_exception(e)
             if VolatilityWrapper._unsatisfied_is_user_parameter(e):
                 hint = "该插件需要必填参数。请在弹出的参数窗口中填写缺失字段后重新运行。"
-            else:
+            elif str(plugin_name).startswith("windows."):
+                hint = (
+                    "Volatility 未满足插件运行条件。Windows 插件通常表示镜像类型识别失败、"
+                    "Windows symbol table/PDB 无法匹配，或镜像损坏/采集不完整。"
+                )
+            elif str(plugin_name).startswith("linux."):
                 hint = (
                     "Volatility 未满足插件运行条件。Linux 插件通常表示镜像内核 banner "
                     "没有匹配到本地符号表，或符号表与镜像内核版本不一致。"
+                )
+            else:
+                hint = (
+                    "Volatility 未满足插件运行条件。请确认镜像类型、插件平台和符号表匹配。"
                 )
             out_queue.put(("error", {
                 "message": f"Unsatisfied requirements: {detail}. {hint}",
@@ -704,13 +713,13 @@ class VolatilityWrapper:
         if plugin_name in self.plugin_list:
             return plugin_name
 
-        mapped = self._display_to_full_plugin_name.get(plugin_name)
-        if mapped and mapped in self.plugin_list:
-            return mapped
-
         prefixed = f"{self._current_plugin_family}.{plugin_name}"
         if prefixed in self.plugin_list:
             return prefixed
+
+        mapped = self._display_to_full_plugin_name.get(plugin_name)
+        if mapped and mapped in self.plugin_list:
+            return mapped
 
         linux_prefixed = f"linux.{plugin_name}"
         if linux_prefixed in self.plugin_list:

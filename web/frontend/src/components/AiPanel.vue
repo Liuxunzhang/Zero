@@ -151,7 +151,7 @@
         <div class="ai-welcome-title">内存取证分析助手</div>
         <div class="ai-welcome-text">
           面向进程、网络、注册表、模块和可疑行为证据链。<br/>
-          默认引用当前插件输出，优先说明证据、风险和下一步插件。
+          智能体模式会直接调用可用插件，优先说明已取得的证据和风险。
         </div>
         <div class="ai-quick-actions">
           <button class="ai-quick-btn" @click="sendQuick('基于当前插件输出，按证据强度列出可疑进程、模块、网络连接或持久化痕迹，并说明依据。')" :disabled="streaming">
@@ -160,11 +160,11 @@
           <button class="ai-quick-btn" @click="sendQuick('只基于当前插件输出，总结关键取证事实。按字段和值列出证据，不要复述完整表格，不要推测未出现的数据。')" :disabled="streaming">
             提取取证事实
           </button>
-          <button class="ai-quick-btn" @click="sendQuick('根据当前结果推荐下一步 Volatility 插件和验证顺序。每一步只写要验证的假设、期望证据和排除条件。')" :disabled="streaming">
-            推荐验证路径
+          <button class="ai-quick-btn" @click="sendQuick('进入智能体排查模式：先列出当前镜像可用插件，然后直接运行基础插件收集进程、网络、模块和持久化证据；不要输出下一步验证路径。')" :disabled="streaming">
+            自动基础排查
           </button>
-          <button class="ai-quick-btn" @click="sendQuick('像内存取证智能体一样规划分析：先列已知证据，再给出最小下一步动作，不输出泛泛安全建议。')" :disabled="streaming">
-            规划下一步
+          <button class="ai-quick-btn" @click="sendQuick('基于已有发现继续深入：如果需要更多证据，直接调用合适的 Volatility 插件；最终只输出已执行插件、关键证据、可疑项和无法确认的点。')" :disabled="streaming">
+            继续深入
           </button>
           <button class="ai-quick-btn" @click="sendQuick('根据当前数据生成 Zero 过滤规则，筛选可疑 PID、路径、连接或注册表项，并用 ```filter 代码块输出。')" :disabled="streaming">
             生成过滤规则
@@ -608,6 +608,7 @@ function sendMessage() {
     store.selectedEngine || 'vol3',
     conversationId.value,
     aiMode.value,
+    store.osFamily || 'linux',
   )
 }
 

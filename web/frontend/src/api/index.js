@@ -133,7 +133,7 @@ export function createPluginSocket(onMessage) {
 /**
  * Stream AI chat response via SSE (fetch + ReadableStream).
  */
-export function streamAiChat(message, includeContext, onChunk, onDone, onError, onMemoryStatus, onToolCall, onToolResult, engine = 'vol3', conversationId = null, mode = 'agent') {
+export function streamAiChat(message, includeContext, onChunk, onDone, onError, onMemoryStatus, onToolCall, onToolResult, engine = 'vol3', conversationId = null, mode = 'agent', osFamily = 'linux') {
   const controller = new AbortController()
 
   fetch('/api/ai/chat', {
@@ -145,6 +145,7 @@ export function streamAiChat(message, includeContext, onChunk, onDone, onError, 
       engine,
       conversation_id: conversationId || undefined,
       mode,
+      os_family: osFamily,
     }),
     signal: controller.signal,
   })

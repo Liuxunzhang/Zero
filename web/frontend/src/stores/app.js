@@ -270,7 +270,7 @@ export const useAppStore = defineStore("app", () => {
     st.progress = 0
     pushMessage("[" + engineId + "] 运行插件: " + pluginName + "...")
     const socket = _getSocket(engineId)
-    const payload = { plugin: pluginName, engine: engineId }
+    const payload = { plugin: pluginName, engine: engineId, os_family: st.osFamily || "linux" }
     const doSend = () => socket.send("run", payload)
     if (socket.ready) doSend()
     else socket.onOpen(doSend)
@@ -505,7 +505,7 @@ export const useAppStore = defineStore("app", () => {
     st.progress = 0
     pushMessage("[" + engineId + "] 运行插件: " + pluginName + "...")
     const socket = _getSocket(engineId)
-    const payload = { plugin: pluginName, engine: engineId, ...params }
+    const payload = { plugin: pluginName, engine: engineId, os_family: st.osFamily || "linux", ...params }
     const doSend = () => socket.send("run", payload)
     if (socket.ready) doSend()
     else socket.onOpen(doSend)

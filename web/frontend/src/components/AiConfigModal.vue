@@ -28,11 +28,11 @@
         </div>
 
         <div class="persist-toggle-row">
-          <label class="persist-toggle-label" title="开启后会同步写入 config.py">
+          <label class="persist-toggle-label" title="开启后会同步非密钥配置到 config.py">
             <input type="checkbox" v-model="persistToConfig" @change="onPersistConfigChange" />
             <span>保存配置</span>
           </label>
-          <span class="persist-toggle-hint">开启后同步写入 config.py</span>
+          <span class="persist-toggle-hint">开启后同步非密钥字段到 config.py</span>
         </div>
 
         <!-- Profile list -->
@@ -99,6 +99,9 @@
               {{ editingProfileId ? '保存配置' : '+ 添加配置' }}
             </button>
             <button v-if="editingProfileId" class="form-cancel-btn" @click="cancelEditProfile">取消编辑</button>
+          </div>
+          <div v-if="profileStatus.text" class="profile-save-status" :class="profileStatus.type">
+            {{ profileStatus.text }}
           </div>
         </div>
       </div>
@@ -269,6 +272,7 @@ const configModel = ref('')
 const expandedPrompt = ref(null)
 const persistToConfig = ref(true)
 const editingProfileId = ref('')
+const profileStatus = ref({ type: '', text: '' })
 const aiSettings = ref({
   ai_max_tokens: 4096,
   ai_temperature: 0.1,
@@ -391,6 +395,7 @@ async function selectProfile(profile) {
 }
 
 function startEditProfile(profile) {
+  profileStatus.value = { type: '', text: '' }
   editingProfileId.value = profile.id || ''
   newProfile.value = {
     id: profile.id || '',
@@ -409,10 +414,11 @@ function cancelEditProfile() {
 async function saveProfile() {
   if (!canSaveProfile.value) return
   const draft = { ...newProfile.value }
+  const targetId = editingProfileId.value || ''
   const nextProfiles = [...profiles.value]
 
-  if (editingProfileId.value) {
-    const idx = nextProfiles.findIndex((p) => p.id === editingProfileId.value)
+  if (targetId) {
+    const idx = nextProfiles.findIndex((p) => p.id === targetId)
     if (idx >= 0) {
       nextProfiles[idx] = { ...nextProfiles[idx], ...draft }
     }
@@ -421,10 +427,24 @@ async function saveProfile() {
   }
 
   try {
-    await saveAiProfiles(nextProfiles)
-    await loadData()
+    const data = await saveAiProfiles(nextProfiles)
+    const savedProfiles = data.profiles || []
+    profiles.value = savedProfiles
+    const saved = targetId
+      ? savedProfiles.find((p) => p.id === targetId)
+      : savedProfiles[savedProfiles.length - 1]
+    if (saved) {
+      await selectProfile(saved)
+    }
+    profileStatus.value = {
+      type: 'success',
+      text: persistToConfig.value
+        ? '已保存，并将非密钥字段同步写入 config.py。'
+        : '已保存到 .zero/ai/profiles.json。',
+    }
     cancelEditProfile()
   } catch (e) {
+    profileStatus.value = { type: 'error', text: e?.message || '保存配置失败' }
     console.error('Failed to save profile:', e)
   }
 }

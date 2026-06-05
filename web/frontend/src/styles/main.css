@@ -2303,6 +2303,20 @@ body.ai-float-dragging {
   color: var(--text-secondary);
 }
 
+.profile-save-status {
+  margin-top: 10px;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.profile-save-status.success {
+  color: var(--text-success);
+}
+
+.profile-save-status.error {
+  color: var(--text-error);
+}
+
 .setting-row {
   display: flex;
   align-items: center;

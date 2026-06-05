@@ -3,7 +3,10 @@
 import asyncio
 import json
 import logging
+import re
+import time
 import uuid
+from pathlib import Path
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
@@ -17,6 +20,191 @@ from web.backend.services import conversation_store as conv_store
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/ai")
+_PROJECT_ROOT = Path(__file__).resolve().parents[3]
+_AI_DUMP_ROOT = _PROJECT_ROOT / "dumps" / "ai_agent"
+_AGENT_PLUGIN_ARG_ALLOWLIST = {
+    "pid",
+    "offset",
+    "base",
+    "key",
+    "name",
+    "ignore-case",
+    "physical",
+    "kernel_module",
+    "regex",
+}
+_AGENT_PLUGIN_ARG_ALIASES = {
+    "ignore_case": "ignore-case",
+}
+
+
+def _safe_path_segment(value: str, fallback: str = "target") -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", str(value or "").strip())
+    cleaned = cleaned.strip("._-")
+    return cleaned[:80] or fallback
+
+
+def _file_snapshot(directory: Path) -> set[str]:
+    if not directory.exists():
+        return set()
+    return {
+        str(p.resolve())
+        for p in directory.rglob("*")
+        if p.is_file()
+    }
+
+
+def _new_files_after(directory: Path, before: set[str]) -> list[dict[str, Any]]:
+    files = []
+    for path_str in sorted(_file_snapshot(directory) - before):
+        p = Path(path_str)
+        try:
+            size = p.stat().st_size
+        except OSError:
+            size = 0
+        files.append({"path": path_str, "size_bytes": size})
+    return files
+
+
+def _ensure_under_directory(path: Path, root: Path) -> None:
+    try:
+        path.resolve().relative_to(root.resolve())
+    except ValueError:
+        raise ValueError("Resolved path escapes the allowed directory")
+
+
+def _column_index(columns: list[str], candidates: set[str]) -> Optional[int]:
+    normalized = {
+        str(name).strip().lower().replace(" ", "").replace("_", ""): idx
+        for idx, name in enumerate(columns or [])
+    }
+    for candidate in candidates:
+        idx = normalized.get(candidate)
+        if idx is not None:
+            return idx
+    return None
+
+
+def _normalize_process_name(value: Any) -> str:
+    return str(value or "").strip().lower().removesuffix(".exe")
+
+
+def _parse_int_value(value: Any) -> Optional[int]:
+    try:
+        text = str(value).strip().replace(",", "")
+        if not text:
+            return None
+        return int(text, 16) if text.lower().startswith("0x") else int(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_plugin_arg(key: str, value: Any) -> Any:
+    if key in {"pid", "offset", "base"}:
+        parsed = _parse_int_value(value)
+        if parsed is None:
+            raise ValueError(f"{key} must be an integer or hex string")
+        return parsed
+    if key in {"ignore-case", "physical", "kernel_module"}:
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in {"1", "true", "yes", "on"}
+    if key in {"key", "name", "regex"}:
+        return str(value)
+    return value
+
+
+def _extract_agent_plugin_args(tool_args: dict[str, Any]) -> dict[str, Any]:
+    raw_args = tool_args.get("args")
+    merged: dict[str, Any] = {}
+    if isinstance(raw_args, dict):
+        merged.update(raw_args)
+    for key in _AGENT_PLUGIN_ARG_ALLOWLIST | set(_AGENT_PLUGIN_ARG_ALIASES):
+        if key in tool_args:
+            merged[key] = tool_args[key]
+
+    kwargs: dict[str, Any] = {}
+    for raw_key, raw_value in merged.items():
+        key = _AGENT_PLUGIN_ARG_ALIASES.get(str(raw_key), str(raw_key))
+        if key not in _AGENT_PLUGIN_ARG_ALLOWLIST or raw_value in (None, ""):
+            continue
+        kwargs[key] = _coerce_plugin_arg(key, raw_value)
+    return kwargs
+
+
+def _extract_process_matches(
+    columns: list[str],
+    rows: list,
+    process_name: str,
+    max_matches: int,
+) -> list[dict[str, Any]]:
+    pid_idx = _column_index(columns, {"pid", "processid"})
+    name_idx = _column_index(columns, {"imagefilename", "image", "name", "process"})
+    ppid_idx = _column_index(columns, {"ppid", "parentpid"})
+    if pid_idx is None or name_idx is None:
+        return []
+
+    target = _normalize_process_name(process_name)
+    matches: list[dict[str, Any]] = []
+    for row in rows or []:
+        values = list(row)
+        if pid_idx >= len(values) or name_idx >= len(values):
+            continue
+        name = str(values[name_idx] or "")
+        normalized_name = _normalize_process_name(name)
+        if not target or not normalized_name:
+            continue
+        if target == normalized_name or target in normalized_name or normalized_name in target:
+            try:
+                pid = int(str(values[pid_idx]), 0)
+            except (TypeError, ValueError):
+                continue
+            match = {"pid": pid, "name": name}
+            if ppid_idx is not None and ppid_idx < len(values):
+                match["ppid"] = str(values[ppid_idx])
+            matches.append(match)
+            if len(matches) >= max_matches:
+                break
+    return matches
+
+
+def _extract_module_matches(
+    columns: list[str],
+    rows: list,
+    module_name: str,
+    max_matches: int,
+) -> list[dict[str, Any]]:
+    base_idx = _column_index(columns, {"base", "baseaddress", "dllbase"})
+    name_idx = _column_index(columns, {"name", "module", "imagename", "imagefilename"})
+    path_idx = _column_index(columns, {"path", "filepath", "fullpath"})
+    size_idx = _column_index(columns, {"size", "imagesize"})
+    if base_idx is None:
+        return []
+
+    target = _normalize_process_name(module_name)
+    matches: list[dict[str, Any]] = []
+    for row in rows or []:
+        values = list(row)
+        if base_idx >= len(values):
+            continue
+
+        name = str(values[name_idx] or "") if name_idx is not None and name_idx < len(values) else ""
+        path = str(values[path_idx] or "") if path_idx is not None and path_idx < len(values) else ""
+        haystack = " ".join([_normalize_process_name(name), _normalize_process_name(path)])
+        if target and target not in haystack:
+            continue
+
+        base = _parse_int_value(values[base_idx])
+        if base is None:
+            continue
+        match: dict[str, Any] = {"base": base, "base_hex": hex(base), "name": name, "path": path}
+        if size_idx is not None and size_idx < len(values):
+            parsed_size = _parse_int_value(values[size_idx])
+            match["size"] = parsed_size if parsed_size is not None else str(values[size_idx])
+        matches.append(match)
+        if len(matches) >= max_matches:
+            break
+    return matches
 
 
 # ── Request models ─────────────────────────────────────────────────
@@ -27,6 +215,7 @@ class ChatRequest(BaseModel):
     engine: str = "vol3"
     conversation_id: Optional[str] = None   # if None, auto-create a new conversation
     mode: str = "agent"   # "chat" (对话模式) or "agent" (智能体模式)
+    os_family: Optional[str] = None
 
 
 class ProfileModel(BaseModel):
@@ -123,18 +312,15 @@ async def _execute_agent_tool(
         if not plugin_name:
             raise ValueError("plugin_name is required")
 
-        # Resolve plugin name via engine resolver first.
+        # Resolve short names against the current image OS first.  The generic
+        # resolver prefers its last catalogue family and can otherwise turn
+        # "pslist.PsList" into linux.pslist.PsList after the UI has switched to
+        # Windows.
         engine = mgr.get_engine(engine_id)
-        resolved_name = engine.resolve_plugin_name(plugin_name)
-
-        # Prepend OS prefix if resolution was not fully resolved
-        if resolved_name == plugin_name or resolved_name not in AGENT_ALLOWED_PLUGINS:
-            test_name = plugin_name
-            if "." in test_name and not test_name.startswith(("linux.", "windows.", "mac.")):
-                test_name = f"{os_family}.{test_name}"
-            elif "." not in test_name:
-                test_name = f"{os_family}.{test_name}"
-            resolved_name = engine.resolve_plugin_name(test_name)
+        test_name = plugin_name
+        if not test_name.startswith(("linux.", "windows.", "mac.")):
+            test_name = f"{os_family}.{test_name}"
+        resolved_name = engine.resolve_plugin_name(test_name)
 
         # Enforce read-only analysis plugin allowlist.
         if resolved_name not in AGENT_ALLOWED_PLUGINS:
@@ -142,9 +328,10 @@ async def _execute_agent_tool(
 
         plugin_name = resolved_name
 
-        # Build kwargs – only forward non-None primitive values.
-        kwargs: dict[str, Any] = {}
-        pid = tool_args.get("pid")
+        # Build kwargs from a small allowlist.  Dumping is intentionally kept
+        # behind dedicated tools so normal analysis calls stay read-only.
+        kwargs = _extract_agent_plugin_args(tool_args)
+        pid = kwargs.get("pid")
 
         # Reject heavy memory-scanner plugins called without a pid —
         # they will stall scanning every process and hit the timeout.
@@ -155,9 +342,6 @@ async def _execute_agent_tool(
                 f"请先通过 pslist/psscan 获取进程列表，分析出可疑 PID 后，"
                 f"再调用 run_plugin(plugin_name=\"{short}\", pid=<可疑PID>)。"
             )
-
-        if pid is not None:
-            kwargs["pid"] = int(pid)
 
         def _run() -> tuple:
             return mgr.run_plugin(engine_id, plugin_name, **kwargs)
@@ -176,6 +360,239 @@ async def _execute_agent_tool(
                 f"{len(columns)} 列 ({', '.join(columns[:20])})"
                 + (f"（仅展示前 100 行）" if total > 100 else "")
             ),
+        }
+
+    # ── dump_process ──────────────────────────────────────────────
+    if tool_name == "dump_process":
+        if os_family != "windows":
+            raise ValueError("dump_process currently supports Windows memory images only.")
+
+        raw_name = str(tool_args.get("process_name") or "").strip()
+        raw_pid = tool_args.get("pid")
+        if not raw_name and raw_pid is None:
+            raise ValueError("process_name or pid is required")
+
+        try:
+            max_matches = max(1, min(10, int(tool_args.get("max_matches") or 3)))
+        except (TypeError, ValueError):
+            max_matches = 3
+
+        target_label = raw_name or f"pid_{raw_pid}"
+        dump_dir = (
+            _AI_DUMP_ROOT
+            / _safe_path_segment(engine_id, "engine")
+            / f"{int(time.time())}_{_safe_path_segment(target_label)}"
+        ).resolve()
+        root = _AI_DUMP_ROOT.resolve()
+        _ensure_under_directory(dump_dir, root)
+        dump_dir.mkdir(parents=True, exist_ok=True)
+
+        matches: list[dict[str, Any]] = []
+        discovery_plugin = ""
+        if raw_pid is not None:
+            try:
+                matches = [{"pid": int(raw_pid), "name": raw_name or str(raw_pid)}]
+            except (TypeError, ValueError):
+                raise ValueError("pid must be an integer")
+        else:
+            def _run_pslist() -> tuple:
+                return mgr.run_plugin(engine_id, "windows.pslist.PsList")
+
+            columns, rows = await loop.run_in_executor(None, _run_pslist)
+            discovery_plugin = "windows.pslist.PsList"
+            matches = _extract_process_matches(columns, rows, raw_name, max_matches)
+
+            if not matches:
+                def _run_psscan() -> tuple:
+                    return mgr.run_plugin(engine_id, "windows.psscan.PsScan")
+
+                columns, rows = await loop.run_in_executor(None, _run_psscan)
+                discovery_plugin = "windows.psscan.PsScan"
+                matches = _extract_process_matches(columns, rows, raw_name, max_matches)
+
+        if not matches:
+            raise ValueError(f"No Windows process matched: {raw_name}")
+
+        before = _file_snapshot(dump_dir)
+        dump_results: list[dict[str, Any]] = []
+        for match in matches:
+            pid = int(match["pid"])
+
+            def _dump_one() -> tuple:
+                return mgr.run_plugin(
+                    engine_id,
+                    "windows.memmap.Memmap",
+                    pid=pid,
+                    dump=True,
+                    dump_dir=str(dump_dir),
+                    use_cache=False,
+                )
+
+            columns, rows = await loop.run_in_executor(None, _dump_one)
+            dump_results.append({
+                "plugin": "windows.memmap.Memmap",
+                "pid": pid,
+                "process_name": match.get("name", ""),
+                "columns": columns,
+                "total_rows": len(rows),
+            })
+
+        new_files = _new_files_after(dump_dir, before)
+        return {
+            "os_family": os_family,
+            "target": raw_name,
+            "discovery_plugin": discovery_plugin,
+            "matches": matches,
+            "dump_plugin": "windows.memmap.Memmap",
+            "dump_dir": str(dump_dir),
+            "files": new_files,
+            "summary": (
+                f"已 dump {len(matches)} 个匹配进程到 {dump_dir}，"
+                f"新增文件 {len(new_files)} 个。"
+            ),
+            "details": dump_results,
+        }
+
+    # ── dump_pe ───────────────────────────────────────────────────
+    if tool_name == "dump_pe":
+        if os_family != "windows":
+            raise ValueError("dump_pe currently supports Windows memory images only.")
+
+        raw_name = str(tool_args.get("process_name") or "").strip()
+        module_name = str(tool_args.get("module_name") or raw_name).strip()
+        raw_pid = tool_args.get("pid")
+        raw_base = tool_args.get("base")
+        kernel_module = bool(tool_args.get("kernel_module", False))
+        if not module_name and raw_base is None:
+            raise ValueError("module_name/process_name or base is required")
+
+        try:
+            max_matches = max(1, min(10, int(tool_args.get("max_matches") or 3)))
+        except (TypeError, ValueError):
+            max_matches = 3
+
+        target_label = module_name or raw_name or f"base_{raw_base}"
+        dump_dir = (
+            _AI_DUMP_ROOT
+            / _safe_path_segment(engine_id, "engine")
+            / f"{int(time.time())}_{_safe_path_segment(target_label)}_pedump"
+        ).resolve()
+        root = _AI_DUMP_ROOT.resolve()
+        _ensure_under_directory(dump_dir, root)
+        dump_dir.mkdir(parents=True, exist_ok=True)
+
+        process_matches: list[dict[str, Any]] = []
+        module_matches: list[dict[str, Any]] = []
+        discovery_plugins: list[str] = []
+
+        if raw_base is not None:
+            parsed_base = _parse_int_value(raw_base)
+            if parsed_base is None:
+                raise ValueError("base must be an integer or hex string")
+            module_matches = [{"base": parsed_base, "base_hex": hex(parsed_base), "name": module_name}]
+            if raw_pid is not None:
+                parsed_pid = _parse_int_value(raw_pid)
+                if parsed_pid is None:
+                    raise ValueError("pid must be an integer")
+                process_matches = [{"pid": parsed_pid, "name": raw_name or str(parsed_pid)}]
+        elif kernel_module:
+            def _run_modules() -> tuple:
+                return mgr.run_plugin(engine_id, "windows.modules.Modules")
+
+            columns, rows = await loop.run_in_executor(None, _run_modules)
+            discovery_plugins.append("windows.modules.Modules")
+            module_matches = _extract_module_matches(columns, rows, module_name, max_matches)
+        else:
+            if raw_pid is not None:
+                parsed_pid = _parse_int_value(raw_pid)
+                if parsed_pid is None:
+                    raise ValueError("pid must be an integer")
+                process_matches = [{"pid": parsed_pid, "name": raw_name or str(parsed_pid)}]
+            else:
+                if not raw_name:
+                    raise ValueError("process_name is required when pid is not provided")
+
+                def _run_pslist() -> tuple:
+                    return mgr.run_plugin(engine_id, "windows.pslist.PsList")
+
+                columns, rows = await loop.run_in_executor(None, _run_pslist)
+                discovery_plugins.append("windows.pslist.PsList")
+                process_matches = _extract_process_matches(columns, rows, raw_name, max_matches)
+
+                if not process_matches:
+                    def _run_psscan() -> tuple:
+                        return mgr.run_plugin(engine_id, "windows.psscan.PsScan")
+
+                    columns, rows = await loop.run_in_executor(None, _run_psscan)
+                    discovery_plugins.append("windows.psscan.PsScan")
+                    process_matches = _extract_process_matches(columns, rows, raw_name, max_matches)
+
+            if not process_matches:
+                raise ValueError(f"No Windows process matched: {raw_name}")
+
+            for proc in process_matches:
+                pid = int(proc["pid"])
+
+                def _run_dlllist() -> tuple:
+                    return mgr.run_plugin(engine_id, "windows.dlllist.DllList", pid=pid)
+
+                columns, rows = await loop.run_in_executor(None, _run_dlllist)
+                if "windows.dlllist.DllList" not in discovery_plugins:
+                    discovery_plugins.append("windows.dlllist.DllList")
+                for match in _extract_module_matches(columns, rows, module_name, max_matches):
+                    match["pid"] = pid
+                    match["process_name"] = proc.get("name", "")
+                    module_matches.append(match)
+                    if len(module_matches) >= max_matches:
+                        break
+                if len(module_matches) >= max_matches:
+                    break
+
+        if not module_matches:
+            raise ValueError(f"No PE module/base matched: {module_name or raw_base}")
+
+        before = _file_snapshot(dump_dir)
+        dump_results: list[dict[str, Any]] = []
+        for match in module_matches[:max_matches]:
+            base = int(match["base"])
+            kwargs: dict[str, Any] = {
+                "base": base,
+                "dump_dir": str(dump_dir),
+                "use_cache": False,
+            }
+            if kernel_module:
+                kwargs["kernel_module"] = True
+            elif match.get("pid") is not None:
+                kwargs["pid"] = int(match["pid"])
+
+            def _dump_one() -> tuple:
+                return mgr.run_plugin(engine_id, "windows.pedump.PEDump", **kwargs)
+
+            columns, rows = await loop.run_in_executor(None, _dump_one)
+            dump_results.append({
+                "plugin": "windows.pedump.PEDump",
+                "pid": match.get("pid"),
+                "process_name": match.get("process_name", ""),
+                "module_name": match.get("name", ""),
+                "base": match.get("base_hex", hex(base)),
+                "columns": columns,
+                "total_rows": len(rows),
+            })
+
+        new_files = _new_files_after(dump_dir, before)
+        return {
+            "os_family": os_family,
+            "target": target_label,
+            "discovery_plugins": discovery_plugins,
+            "matches": module_matches[:max_matches],
+            "dump_plugin": "windows.pedump.PEDump",
+            "dump_dir": str(dump_dir),
+            "files": new_files,
+            "summary": (
+                f"已用 PEDump dump {len(dump_results)} 个 PE 到 {dump_dir}，"
+                f"新增文件 {len(new_files)} 个。"
+            ),
+            "details": dump_results,
         }
 
     raise ValueError(f"Unknown tool: {tool_name}")
@@ -286,11 +703,15 @@ async def ai_chat(req: ChatRequest):
 
     # Detect the loaded image's OS family so the agent and system prompt
     # know whether to use linux.* or windows.* plugins.
-    try:
-        img_status = svc._manager.get_image_status(engine_id)
-    except Exception:
-        img_status = {}
-    os_family = str(img_status.get("os_family", "linux") or "linux")
+    requested_os = str(req.os_family or "").strip().lower()
+    if requested_os in {"linux", "windows"}:
+        os_family = requested_os
+    else:
+        try:
+            img_status = svc._manager.get_image_status(engine_id)
+        except Exception:
+            img_status = {}
+        os_family = str(img_status.get("os_family", "linux") or "linux")
 
     # Build the agent tool executor (lazy — only invoked when the AI
     # actually calls a tool).
@@ -394,7 +815,7 @@ async def save_profiles(req: SaveProfilesRequest):
             d["id"] = str(uuid.uuid4())[:8]
         profiles.append(d)
     get_ai_service().save_profiles(profiles)
-    return {"ok": True, "count": len(profiles)}
+    return {"ok": True, "count": len(profiles), "profiles": profiles}
 
 
 @router.post("/profiles/active")

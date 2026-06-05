@@ -194,6 +194,14 @@ _AGENT_TOOLS: list[dict] = [
                         "type": "integer",
                         "description": "可选，目标进程 PID",
                     },
+                    "args": {
+                        "type": "object",
+                        "description": (
+                            "可选插件参数。仅支持安全白名单字段：pid, offset, base, key, name, "
+                            "ignore-case, physical, kernel_module, regex。不要在这里传 dump=True；"
+                            "dump 任务使用 dump_process 或 dump_pe。"
+                        ),
+                    },
                 },
                 "required": ["plugin_name"],
             },
@@ -210,6 +218,77 @@ _AGENT_TOOLS: list[dict] = [
             "parameters": {
                 "type": "object",
                 "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dump_process",
+            "description": (
+                "自动 dump Windows 目标进程的进程内存。"
+                "当用户要求 dump 某个进程名或 PID 的内存时使用这个工具；"
+                "工具会自动枚举进程、匹配 PID，并调用 windows.memmap.Memmap dump=True 写出文件。"
+                "不要让用户手动运行 memmap。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "process_name": {
+                        "type": "string",
+                        "description": "目标进程名或关键字，如 go-winpmem_amd",
+                    },
+                    "pid": {
+                        "type": "integer",
+                        "description": "可选，已知目标 PID；提供后会直接 dump 该 PID",
+                    },
+                    "max_matches": {
+                        "type": "integer",
+                        "description": "进程名匹配到多个 PID 时最多 dump 几个，默认 3",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "dump_pe",
+            "description": (
+                "自动使用 windows.pedump.PEDump dump 指定进程或模块中的 PE 文件。"
+                "当用户明确要求 pedump、dump PE、dump 某进程 exe 或 DLL 时使用。"
+                "如果只有进程名，工具会先用 pslist/psscan 找 PID，再用 dlllist 找模块 base，最后调用 PEDump。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "process_name": {
+                        "type": "string",
+                        "description": "目标进程名或关键字，如 go-winpmem_amd",
+                    },
+                    "pid": {
+                        "type": "integer",
+                        "description": "可选，目标进程 PID",
+                    },
+                    "module_name": {
+                        "type": "string",
+                        "description": "可选，目标 PE 模块名；未提供时默认使用 process_name",
+                    },
+                    "base": {
+                        "type": "string",
+                        "description": "可选，PE 基址，如 0x140000000；提供后直接调用 PEDump",
+                    },
+                    "kernel_module": {
+                        "type": "boolean",
+                        "description": "是否 dump 内核模块；默认 false",
+                    },
+                    "max_matches": {
+                        "type": "integer",
+                        "description": "最多 dump 几个匹配项，默认 3",
+                    },
+                },
                 "required": [],
             },
         },
@@ -231,9 +310,9 @@ _BUILTIN_PROMPTS: list[dict] = [
 2. 优先引用证据：插件名、列名、PID/PPID、路径、偏移、端口、注册表键、时间戳等。
 3. 把结论分为：已确认事实、可疑迹象、无法确认/需要补证。
 4. 对每个可疑项给出风险等级（高/中/低）和证据强度，不足以判断时明确说明。
-5. 给出下一步 Volatility 插件验证路径，并说明每个插件要验证的假设。
+5. 在智能体模式下，如果需要更多证据，应直接调用可用 Volatility 插件获取数据；不要把可执行的插件调用写成“下一步验证路径”让用户手动执行。
 6. 如需筛选结果，使用 ```filter 代码块输出 Zero 过滤规则。
-7. 保持智能体式推进：先判断当前数据能回答什么，再给出最小下一步动作，不输出泛泛安全建议。
+7. 保持智能体式推进：先判断当前数据能回答什么，能继续查就直接调用插件继续查；最终只总结已执行插件的证据、结论和仍无法确认的点。
 8. 需要长分析时优先输出证据摘要和决策点，避免复述完整表格。
 
 推荐输出结构：
@@ -241,7 +320,6 @@ _BUILTIN_PROMPTS: list[dict] = [
 ## 关键证据
 ## 可疑项分级
 ## 无法确认的点
-## 下一步验证路径
 
 保持措辞克制、可复核，避免把常见系统行为误判为恶意。""",
     },
@@ -482,7 +560,7 @@ def _load_profiles_from_config() -> list[dict]:
 
 
 def _save_profiles_to_config(profiles: list[dict]) -> None:
-    """Write AI_PROFILES list back to config.py."""
+    """Write non-secret AI_PROFILES metadata back to config.py."""
     try:
         content = _CONFIG_FILE.read_text("utf-8")
         # Build new block
@@ -491,7 +569,8 @@ def _save_profiles_to_config(profiles: list[dict]) -> None:
         else:
             lines = ["AI_PROFILES = ["]
             for p in profiles:
-                entry = {k: p.get(k, "") for k in ("id", "name", "base_url", "api_key", "model")}
+                entry = {k: p.get(k, "") for k in ("id", "name", "base_url", "model")}
+                entry["api_key"] = ""
                 lines.append(f"    {json.dumps(entry, ensure_ascii=False)},")
             lines.append("]")
             new_block = "\n".join(lines) + "\n"
@@ -544,18 +623,18 @@ def _save_profiles_to_json(profiles: list[dict]) -> None:
 
 
 def _persist_active_to_config(profile: Optional[dict]) -> None:
-    """Write active profile's settings to AI_BASE_URL / AI_API_KEY / AI_MODEL in config.py."""
+    """Write active profile's non-secret settings to config.py."""
     if not profile:
         return
     try:
         content = _CONFIG_FILE.read_text("utf-8")
         content = _update_config_value(content, "AI_BASE_URL", profile.get("base_url", ""))
-        content = _update_config_value(content, "AI_API_KEY", profile.get("api_key", ""))
+        content = _update_config_value(content, "AI_API_KEY", "")
         content = _update_config_value(content, "AI_MODEL", profile.get("model", ""))
         _CONFIG_FILE.write_text(content, "utf-8")
         # Sync in-memory module
         config.AI_BASE_URL = profile.get("base_url", "")
-        config.AI_API_KEY = profile.get("api_key", "")
+        config.AI_API_KEY = ""
         config.AI_MODEL = profile.get("model", "")
     except Exception as e:
         logger.error("Failed to persist active profile to config.py: %s", e, exc_info=True)
@@ -1159,7 +1238,11 @@ class AiService:
                 "content": (
                     f"Zero 运行约束：你是内存取证智能体，当前加载的是 {family_display} 内存镜像。"
                     "回答必须优先使用当前内存镜像插件输出，"
-                    "把事实、推断 and 待验证假设分开；如果当前数据不足，明确说明需要补跑的 Volatility 插件。"
+                    "把事实、推断和无法确认的点分开；如果当前数据不足且工具可用，直接调用 Volatility 插件补证。"
+                    "不要输出“下一步验证路径”或要求用户手动运行插件，除非插件被禁止、缺参数或执行失败。"
+                    "如果某个插件因参数不足失败，改用带参数的调用重试；如果因 layer/symbol table 失败，停止继续跑同平台同类插件，直接说明镜像/符号层问题。"
+                    "当用户要求 dump 某个进程名或 PID 的进程内存时，优先调用 dump_process。"
+                    "当用户要求 pedump、dump PE、dump exe 或 dump DLL 时，优先调用 dump_pe。"
                     "除非用户要求教学解释，否则不要输出通用安全科普或与证据无关的长篇背景。"
                     f"调用工具时 plugin_name 使用不带 {os_family}. 前缀的短名称。"
                 ),
@@ -1297,6 +1380,28 @@ class AiService:
                     entry["function_arguments"] += tc_delta.function.arguments
         return acc
 
+    @staticmethod
+    def _summarize_tool_result(result: Any) -> str:
+        if not isinstance(result, dict):
+            return ""
+        lines = []
+        summary = str(result.get("summary") or "").strip()
+        if summary:
+            lines.append(summary)
+        files = result.get("files")
+        if isinstance(files, list) and files:
+            lines.append("输出文件:")
+            for item in files[:10]:
+                if isinstance(item, dict):
+                    path = item.get("path", "")
+                    size = item.get("size_bytes")
+                    if path:
+                        suffix = f" ({size} bytes)" if size is not None else ""
+                        lines.append(f"- {path}{suffix}")
+        if result.get("truncated"):
+            lines.append("结果已截断，仅返回前 100 行。")
+        return "\n".join(lines)
+
     async def chat_stream(
         self,
         user_message: str,
@@ -1428,7 +1533,7 @@ class AiService:
                             "tool_call_id": tc["id"],
                             "tool_name": tool_name,
                             "ok": True,
-                            "summary": result.get("summary", "") if isinstance(result, dict) else "",
+                            "summary": self._summarize_tool_result(result),
                         }
                         messages.append({
                             "role": "tool",
@@ -1462,7 +1567,7 @@ class AiService:
                     "content": (
                         "你已达到最大工具调用次数。请基于以上所有已获取的插件数据，"
                         "立即输出完整的取证分析结论，不要再调用任何工具。"
-                        "按以下结构输出：结论概览 → 关键证据 → 可疑项分级 → 下一步建议。"
+                        "按以下结构输出：结论概览 → 已执行插件 → 关键证据 → 可疑项分级 → 无法确认的点。"
                     ),
                 })
                 final_req: dict[str, Any] = {

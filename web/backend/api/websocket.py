@@ -55,6 +55,9 @@ async def plugin_ws(websocket: WebSocket):
                 if not plugin_name:
                     await websocket.send_json({"type": "error", "data": "Missing plugin name", "engine": engine_id})
                     continue
+                os_family = str(msg.get("os_family") or "").strip().lower()
+                if os_family in {"linux", "windows"} and not plugin_name.startswith(("linux.", "windows.")):
+                    plugin_name = f"{os_family}.{plugin_name}"
 
                 if not svc.is_plugin_available(plugin_name, engine_id=engine_id):
                     await websocket.send_json({
@@ -68,7 +71,7 @@ async def plugin_ws(websocket: WebSocket):
 
                 # Extract plugin kwargs: everything except control fields.
                 # Includes profile, dump_dir, pid, offset, base, key, regex, etc.
-                _CONTROL = {"action", "plugin", "engine"}
+                _CONTROL = {"action", "plugin", "engine", "os_family"}
                 plugin_kwargs = {
                     k: v for k, v in msg.items()
                     if k not in _CONTROL and v is not None and v != ""

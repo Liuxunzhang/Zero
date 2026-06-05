@@ -4,6 +4,7 @@ import argparse
 import io
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
@@ -34,7 +35,11 @@ def _make_file_handler(dump_dir: str):
                 return
             self.seek(0)
             data = self.read()
-            base_path = os.path.join(dump_dir, self.preferred_filename)
+            safe_name = os.path.basename(str(self.preferred_filename or "dump.bin"))
+            safe_name = re.sub(r"[^A-Za-z0-9._ -]+", "_", safe_name).strip(" .")
+            if not safe_name:
+                safe_name = "dump.bin"
+            base_path = os.path.join(dump_dir, safe_name)
             name, ext = os.path.splitext(base_path)
             output_path = base_path
             counter = 1
@@ -261,11 +266,22 @@ def main() -> int:
                         "请在参数窗口中填写缺失字段后重新运行。"
                     )
                 else:
+                    if str(args.plugin).startswith("windows."):
+                        platform_hint = (
+                            "Windows 插件通常表示镜像类型识别失败、Windows symbol table/PDB "
+                            "无法匹配，或镜像损坏/采集不完整。"
+                        )
+                    elif str(args.plugin).startswith("linux."):
+                        platform_hint = (
+                            "Linux 插件通常表示镜像内核 banner 没有匹配到本地符号表，"
+                            "或符号表与镜像内核版本不一致。"
+                        )
+                    else:
+                        platform_hint = "请确认镜像类型、插件平台和符号表匹配。"
                     message = (
                         "Volatility 未满足插件运行条件: "
                         f"{'; '.join(missing) or 'unknown requirement'}。"
-                        "Linux 插件通常表示镜像内核 banner 没有匹配到本地符号表，"
-                        "或符号表与镜像内核版本不一致。"
+                        f"{platform_hint}"
                     )
         except Exception:
             pass
