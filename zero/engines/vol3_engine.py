@@ -171,6 +171,9 @@ class Vol3Engine(EngineBase):
     def is_plugin_available(self, plugin_name: str, os_family: Optional[str] = None) -> bool:
         return self._wrapper.is_plugin_available(plugin_name)
 
+    def resolve_plugin_name(self, plugin_name: str) -> str:
+        return self._wrapper.resolve_plugin_name(plugin_name)
+
     def get_plugin_metadata(self, plugin_name: str) -> Optional[Dict[str, Any]]:
         """Introspect vol3 plugin requirements and return PluginArgDef-compatible metadata."""
         try:

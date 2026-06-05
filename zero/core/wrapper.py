@@ -720,6 +720,21 @@ class VolatilityWrapper:
         if windows_prefixed in self.plugin_list:
             return windows_prefixed
 
+        # Check for plugin name without class suffix (e.g. "windows.info" -> "windows.info.Info")
+        for p in self.plugin_list:
+            if p.lower().startswith(plugin_name.lower() + "."):
+                return p
+
+        # Check prefixed short names without class suffix (e.g. "info" -> "windows.info.Info")
+        for p in self.plugin_list:
+            if p.lower().startswith(prefixed.lower() + "."):
+                return p
+
+        # Fallback to other prefixes
+        for p in self.plugin_list:
+            if p.lower().startswith(linux_prefixed.lower() + ".") or p.lower().startswith(windows_prefixed.lower() + "."):
+                return p
+
         return plugin_name
 
     def resolve_plugin_name(self, plugin_name: str) -> str:

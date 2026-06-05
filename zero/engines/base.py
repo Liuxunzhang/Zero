@@ -83,6 +83,10 @@ class EngineBase(abc.ABC):
     def is_plugin_available(self, plugin_name: str, os_family: Optional[str] = None) -> bool:
         """Return True if the plugin can be run by this engine."""
 
+    def resolve_plugin_name(self, plugin_name: str) -> str:
+        """Resolve a short or UI-side name to the engine's internal plugin name."""
+        return plugin_name
+
     # ------------------------------------------------------------------
     # Plugin execution (blocking; call from a thread executor)
     # ------------------------------------------------------------------

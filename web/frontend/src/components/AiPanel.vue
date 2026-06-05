@@ -206,6 +206,24 @@
               </button>
             </div>
           </div>
+          <!-- Copy button for assistant messages -->
+          <div v-if="msg.role === 'assistant' && msg.content" class="ai-msg-toolbar">
+            <button
+              class="ai-copy-btn"
+              @click="copyMessage(idx, msg.content)"
+              :title="copiedId === idx ? '已复制' : '复制内容'"
+            >{{ copiedId === idx ? '已复制' : '复制' }}</button>
+          </div>
+          <!-- Agent tool call / result cards -->
+          <div v-if="msg.role === 'tool'" class="ai-tool-card" :class="{ 'ai-tool-error': msg.toolError, 'ai-tool-running': msg.toolRunning, 'ai-tool-done': !msg.toolRunning && !msg.toolError }">
+            <div class="ai-tool-header">
+              <span class="ai-tool-icon">{{ msg.toolRunning ? '🔧' : msg.toolError ? '❌' : '✅' }}</span>
+              <code class="ai-tool-name">{{ msg.toolName }}</code>
+            </div>
+            <div v-if="msg.toolArgs && Object.keys(msg.toolArgs).length" class="ai-tool-args">{{ formatToolArgs(msg.toolArgs) }}</div>
+            <div v-if="msg.toolSummary" class="ai-tool-summary">{{ msg.toolSummary }}</div>
+            <div v-if="msg.toolError" class="ai-tool-err">{{ msg.toolError }}</div>
+          </div>
         </div>
       </div>
 
@@ -239,6 +257,27 @@
           <span class="ai-context-label">附带插件数据</span>
         </label>
         <span class="ai-context-current">{{ liveContextLabel }}</span>
+
+        <div class="ai-mode-switch-group">
+          <button
+            type="button"
+            class="ai-mode-switch-btn"
+            :class="{ active: aiMode === 'chat' }"
+            @click="aiMode = 'chat'"
+            title="对话模式：AI 不会自主执行取证工具"
+          >
+            对话
+          </button>
+          <button
+            type="button"
+            class="ai-mode-switch-btn"
+            :class="{ active: aiMode === 'agent' }"
+            @click="aiMode = 'agent'"
+            title="智能体模式：AI 可以自主决定并运行取证工具"
+          >
+            智能体
+          </button>
+        </div>
       </div>
       <div class="ai-input-row">
         <textarea
@@ -266,7 +305,7 @@
 import { ref, computed, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
 import { marked } from 'marked'
 import {
-  streamAiChat, getAiConfig, clearAiHistory, clearAiMemory, getAiMemory,
+  streamAiChat, getAiConfig, clearAiHistory, clearAiMemory, getAiMemory, getAiMemoryStats,
   getAiPrompts, setActivePrompt, saveAiSettings,
   listConversations, getConversation, deleteConversation,
   renameConversation, loadConversation,
@@ -290,6 +329,7 @@ const streaming = ref(false)
 const streamBuffer = ref('')
 const errorText = ref('')
 const includeContext = ref(true)
+const aiMode = ref('agent')
 const modelName = ref('')
 const apiName = ref('')
 const messagesEl = ref(null)
@@ -304,6 +344,8 @@ const memoryText = ref('')
 const memoryLoading = ref(false)
 const memoryError = ref('')
 const memoryCompressing = ref(false)
+const toolCallIndex = ref({})   // tool_call_id → chatMessages index
+const copiedId = ref(null)      // index of the last-copied message (for "已复制" feedback)
 const tokenIsMax = ref(false)
 const rowsIsMax = ref(false)
 const quickUpdating = ref(false)
@@ -324,9 +366,39 @@ let currentAbort = null
 // Configure marked
 marked.setOptions({ breaks: true, gfm: true })
 
+function sanitizeHtml(html) {
+  const parser = new DOMParser()
+  const doc = parser.parseFromString(html, 'text/html')
+  const allowedTags = new Set([
+    'a', 'b', 'blockquote', 'br', 'code', 'del', 'em', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+    'hr', 'i', 'img', 'li', 'ol', 'p', 'pre', 'strong', 'table', 'tbody', 'td', 'th', 'thead',
+    'tr', 'ul', 'span', 'div', 'details', 'summary'
+  ])
+  const elements = doc.body.querySelectorAll('*')
+  for (const el of elements) {
+    if (!allowedTags.has(el.tagName.toLowerCase())) {
+      el.remove()
+      continue
+    }
+    const attrs = Array.from(el.attributes)
+    for (const attr of attrs) {
+      const name = attr.name.toLowerCase()
+      const val = attr.value.toLowerCase()
+      const allowedAttrs = ['href', 'src', 'alt', 'title', 'class', 'id', 'target', 'rel']
+      if (!allowedAttrs.includes(name) || name.startsWith('on') || val.includes('javascript:') || val.includes('data:')) {
+        el.removeAttribute(attr.name)
+      }
+    }
+  }
+  return doc.body.innerHTML
+}
+
 function renderMarkdown(text) {
   if (!text) return ''
-  try { return marked.parse(text) }
+  try {
+    const rawHtml = marked.parse(text)
+    return sanitizeHtml(rawHtml)
+  }
   catch { return text }
 }
 
@@ -467,7 +539,35 @@ function sendMessage() {
       scrollToBottom()
     },
     (status) => {
-      if (status === 'compressing') {
+      if (status === 'queued') {
+        memoryCompressing.value = true
+        let pollCount = 0
+        const maxPolls = 30
+        const poll = () => {
+          setTimeout(async () => {
+            if (pollCount >= maxPolls || !memoryCompressing.value) {
+              memoryCompressing.value = false
+              return
+            }
+            pollCount++
+            try {
+              const res = await getAiMemoryStats()
+              const currentStatus = res?.stats?.status
+              if (currentStatus === 'done') {
+                memoryCompressing.value = false
+                if (showMemoryPanel.value) loadMemory()
+              } else if (currentStatus === 'failed') {
+                memoryCompressing.value = false
+              } else {
+                poll()
+              }
+            } catch {
+              poll()
+            }
+          }, 2000)
+        }
+        poll()
+      } else if (status === 'compressing') {
         memoryCompressing.value = true
       } else if (status === 'done') {
         memoryCompressing.value = false
@@ -477,14 +577,74 @@ function sendMessage() {
       }
       scrollToBottom()
     },
+    // onToolCall — agent requested a tool execution
+    (payload) => {
+      const idx = chatMessages.value.length
+      chatMessages.value.push({
+        role: 'tool',
+        toolName: payload.tool_name,
+        toolArgs: payload.arguments || {},
+        toolRunning: true,
+        toolSummary: '',
+        toolError: '',
+      })
+      toolCallIndex.value[payload.tool_call_id] = idx
+      scrollToBottom()
+    },
+    // onToolResult — tool execution finished
+    (payload) => {
+      const idx = toolCallIndex.value[payload.tool_call_id]
+      if (idx !== undefined && chatMessages.value[idx]) {
+        const msg = chatMessages.value[idx]
+        msg.toolRunning = false
+        if (payload.ok) {
+          msg.toolSummary = payload.summary || ''
+        } else {
+          msg.toolError = payload.error || 'Unknown error'
+        }
+      }
+      scrollToBottom()
+    },
     store.selectedEngine || 'vol3',
     conversationId.value,
+    aiMode.value,
   )
 }
 
 function formatContextMeta(context) {
   if (!context || !context.include) return '附带数据: 关闭'
   return `附带数据: ${context.plugin || '无'}`
+}
+
+function formatToolArgs(args) {
+  if (!args) return ''
+  const parts = []
+  for (const [k, v] of Object.entries(args)) {
+    if (v !== null && v !== undefined) {
+      parts.push(`${k}=${typeof v === 'object' ? JSON.stringify(v) : v}`)
+    }
+  }
+  return parts.join(', ')
+}
+
+async function copyMessage(idx, text) {
+  try {
+    await navigator.clipboard.writeText(text)
+    copiedId.value = idx
+    setTimeout(() => { if (copiedId.value === idx) copiedId.value = null }, 2000)
+  } catch {
+    // Fallback for older browsers / non-HTTPS
+    const ta = document.createElement('textarea')
+    ta.value = text
+    ta.style.position = 'fixed'
+    ta.style.left = '-9999px'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+    copiedId.value = idx
+    setTimeout(() => { if (copiedId.value === idx) copiedId.value = null }, 2000)
+  }
 }
 
 function abortStream() {
@@ -506,6 +666,7 @@ async function clearChat() {
   streamBuffer.value = ''
   memoryCompressing.value = false
   conversationId.value = null
+  toolCallIndex.value = {}
   try { await clearAiHistory() } catch { /* ignore */ }
 }
 
@@ -626,7 +787,13 @@ async function selectConversation(conv) {
     chatMessages.value = (data.messages || []).map(m => ({
       role: m.role,
       content: m.content,
+      toolName: m.toolName,
+      toolArgs: m.toolArgs,
+      toolRunning: m.toolRunning,
+      toolSummary: m.toolSummary,
+      toolError: m.toolError,
     }))
+    toolCallIndex.value = {}
     errorText.value = ''
     activeDropdown.value = ''
     scrollToBottom()
@@ -641,6 +808,7 @@ function newConversation() {
   streamBuffer.value = ''
   conversationId.value = null
   activeDropdown.value = ''
+  toolCallIndex.value = {}
   clearAiHistory().catch(() => {})
 }
 
@@ -1029,6 +1197,135 @@ watch(() => props.open, (val) => {
   .ai-memory-text {
     max-height: 42vh;
   }
+}
+
+/* ── Agent tool call cards ─────────────────────────── */
+.ai-tool-card {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border-subtle, #172544);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-tertiary) 80%, transparent);
+  font-size: 12px;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+
+.ai-tool-card.ai-tool-running {
+  border-color: color-mix(in srgb, var(--accent-dim, #3b82f6) 50%, var(--border, #1e3a5f));
+  background: color-mix(in srgb, var(--accent-glow, rgba(96, 165, 250, 0.12)) 30%, var(--bg-tertiary));
+}
+
+.ai-tool-card.ai-tool-done {
+  border-color: color-mix(in srgb, #22c55e 40%, var(--border, #1e3a5f));
+  background: color-mix(in srgb, #22c55e 6%, var(--bg-elevated));
+}
+
+.ai-tool-card.ai-tool-error {
+  border-color: color-mix(in srgb, var(--text-error, #f87171) 40%, var(--border, #1e3a5f));
+  background: color-mix(in srgb, var(--text-error, #f87171) 6%, var(--bg-elevated));
+}
+
+.ai-tool-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.ai-tool-icon {
+  font-size: 13px;
+  flex-shrink: 0;
+}
+
+.ai-tool-name {
+  font-family: var(--font-mono, monospace);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary, #e5e7eb);
+}
+
+.ai-tool-args {
+  margin-top: 4px;
+  padding-left: 22px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--text-muted, #64748b);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-tool-summary {
+  margin-top: 4px;
+  padding-left: 22px;
+  font-size: 11px;
+  color: var(--text-secondary, #cbd5e1);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.ai-tool-err {
+  margin-top: 4px;
+  padding-left: 22px;
+  font-size: 11px;
+  color: var(--text-error, #f87171);
+}
+
+/* ── Message toolbar (copy button) ────────────────── */
+.ai-msg-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
+.ai-copy-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--border-subtle, #172544);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-muted, #64748b);
+  cursor: pointer;
+  font-size: 11px;
+  transition: all 0.18s ease;
+}
+
+.ai-copy-btn:hover {
+  color: var(--text-primary, #e5e7eb);
+  border-color: var(--accent-dim, #3b82f6);
+}
+
+.ai-mode-switch-group {
+  display: inline-flex;
+  background: var(--bg-secondary, #0b132b);
+  border: 1px solid var(--border-subtle, #1e3a5f);
+  border-radius: 20px;
+  padding: 2px;
+  margin-left: auto;
+  user-select: none;
+}
+
+.ai-mode-switch-btn {
+  background: transparent;
+  border: none;
+  border-radius: 18px;
+  color: var(--text-muted, #64748b);
+  padding: 4px 12px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.ai-mode-switch-btn:hover {
+  color: var(--text-primary, #e5e7eb);
+}
+
+.ai-mode-switch-btn.active {
+  background: var(--accent-dim, #3b82f6);
+  color: #ffffff;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
 }
 
 @media (prefers-reduced-motion: reduce) {

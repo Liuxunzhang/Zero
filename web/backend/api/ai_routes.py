@@ -1,15 +1,16 @@
 """AI analysis SSE streaming routes + profile / prompt management."""
 
+import asyncio
 import json
 import logging
 import uuid
-from typing import Optional
+from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from web.backend.services.ai_service import get_ai_service
+from web.backend.services.ai_service import get_ai_service, AGENT_ALLOWED_PLUGINS, AGENT_PLUGIN_DESCRIPTIONS, AGENT_HEAVY_PLUGINS
 from web.backend.services.vol_service import get_service
 from web.backend.services import conversation_store as conv_store
 
@@ -25,6 +26,7 @@ class ChatRequest(BaseModel):
     include_context: bool = True
     engine: str = "vol3"
     conversation_id: Optional[str] = None   # if None, auto-create a new conversation
+    mode: str = "agent"   # "chat" (对话模式) or "agent" (智能体模式)
 
 
 class ProfileModel(BaseModel):
@@ -70,27 +72,169 @@ class AiSettingsRequest(BaseModel):
     ai_memory_ttl_days: int | None = None
 
 
+# ── Agent tool executor ─────────────────────────────────────────────
+
+async def _execute_agent_tool(
+    tool_name: str,
+    tool_args: dict[str, Any],
+    engine_id: str,
+    os_family: str = "linux",
+) -> dict[str, Any]:
+    """Execute a tool requested by the AI agent.
+
+    *os_family* should reflect the **actual** OS of the loaded image
+    (``"windows"`` or ``"linux"``) so that ``list_plugins`` defaults
+    correctly and ``run_plugin`` can prepend the right prefix.
+    """
+    svc = get_service()
+    mgr = svc._manager
+    loop = asyncio.get_event_loop()
+
+    # ── list_plugins ──────────────────────────────────────────────
+    if tool_name == "list_plugins":
+        # Always use the image's actual OS — ignore whatever the AI guesses.
+        categories = await loop.run_in_executor(
+            None,
+            lambda: mgr.list_plugins(engine_id, os_family),
+        )
+        flat: list[str] = []
+        for cat, plugins in (categories or {}).items():
+            plugin_strs = []
+            for p in plugins:
+                full_p = p if p.startswith(f"{os_family}.") else f"{os_family}.{p}"
+                desc = AGENT_PLUGIN_DESCRIPTIONS.get(full_p, "")
+                if desc:
+                    plugin_strs.append(f"{p} ({desc})")
+                else:
+                    plugin_strs.append(p)
+            flat.append(f"[{cat}] {', '.join(plugin_strs)}")
+        total = sum(len(v) for v in (categories or {}).values())
+        return {
+            "os_family": os_family,
+            "categories": categories,
+            "summary": (
+                f"可用 {os_family} 插件共 {total} 个：\n" + "\n".join(flat)
+            ),
+        }
+
+    # ── run_plugin ────────────────────────────────────────────────
+    if tool_name == "run_plugin":
+        plugin_name = str(tool_args.get("plugin_name", ""))
+        if not plugin_name:
+            raise ValueError("plugin_name is required")
+
+        # Resolve plugin name via engine resolver first.
+        engine = mgr.get_engine(engine_id)
+        resolved_name = engine.resolve_plugin_name(plugin_name)
+
+        # Prepend OS prefix if resolution was not fully resolved
+        if resolved_name == plugin_name or resolved_name not in AGENT_ALLOWED_PLUGINS:
+            test_name = plugin_name
+            if "." in test_name and not test_name.startswith(("linux.", "windows.", "mac.")):
+                test_name = f"{os_family}.{test_name}"
+            elif "." not in test_name:
+                test_name = f"{os_family}.{test_name}"
+            resolved_name = engine.resolve_plugin_name(test_name)
+
+        # Enforce read-only analysis plugin allowlist.
+        if resolved_name not in AGENT_ALLOWED_PLUGINS:
+            raise ValueError(f"Plugin '{resolved_name}' is not allowed for AI Agent execution.")
+
+        plugin_name = resolved_name
+
+        # Build kwargs – only forward non-None primitive values.
+        kwargs: dict[str, Any] = {}
+        pid = tool_args.get("pid")
+
+        # Reject heavy memory-scanner plugins called without a pid —
+        # they will stall scanning every process and hit the timeout.
+        short = plugin_name.split(".", 1)[1] if "." in plugin_name else plugin_name
+        if plugin_name in AGENT_HEAVY_PLUGINS and pid is None:
+            raise ValueError(
+                f"插件 {short} 是全量内存扫描类插件，不带 pid 参数会扫描所有进程导致超时。"
+                f"请先通过 pslist/psscan 获取进程列表，分析出可疑 PID 后，"
+                f"再调用 run_plugin(plugin_name=\"{short}\", pid=<可疑PID>)。"
+            )
+
+        if pid is not None:
+            kwargs["pid"] = int(pid)
+
+        def _run() -> tuple:
+            return mgr.run_plugin(engine_id, plugin_name, **kwargs)
+
+        columns, rows = await loop.run_in_executor(None, _run)
+        total = len(rows)
+        preview = [list(r) for r in rows[:100]]
+        return {
+            "plugin": plugin_name,
+            "columns": columns,
+            "rows": preview,
+            "total": total,
+            "truncated": total > 100,
+            "summary": (
+                f"插件 {plugin_name} 返回 {total} 行, "
+                f"{len(columns)} 列 ({', '.join(columns[:20])})"
+                + (f"（仅展示前 100 行）" if total > 100 else "")
+            ),
+        }
+
+    raise ValueError(f"Unknown tool: {tool_name}")
+
+
 # ── SSE streaming ──────────────────────────────────────────────────
 
 async def _sse_stream(
     user_message: str,
     plugin_context: Optional[dict],
     conversation_id: str,
+    tool_executor: Any = None,
+    engine_id: str = "vol3",
+    os_family: str = "linux",
 ):
     ai = get_ai_service()
     assistant_parts: list[str] = []
+    messages_to_persist = []
+    messages_to_persist.append({"role": "user", "content": user_message})
     try:
-        async for event in ai.chat_stream(user_message, plugin_context):
+        async for event in ai.chat_stream(
+            user_message,
+            plugin_context,
+            tool_executor=tool_executor,
+            engine_id=engine_id,
+            os_family=os_family,
+            conversation_id=conversation_id,
+        ):
             payload = json.dumps(event, ensure_ascii=False)
             yield f"data: {payload}\n\n"
-            if event.get("type") == "chunk":
+            
+            ev_type = event.get("type")
+            if ev_type == "chunk":
                 assistant_parts.append(event.get("content", ""))
-        # Persist both turns to the conversation store.
-        new_messages = [
-            {"role": "user", "content": user_message},
-            {"role": "assistant", "content": "".join(assistant_parts)},
-        ]
-        conv_store.append_messages(conversation_id, new_messages)
+            elif ev_type == "tool_call":
+                messages_to_persist.append({
+                    "role": "tool",
+                    "tool_call_id": event.get("tool_call_id"),
+                    "toolName": event.get("tool_name"),
+                    "toolArgs": event.get("arguments") or {},
+                    "toolRunning": False,
+                    "toolSummary": "",
+                    "toolError": "",
+                })
+            elif ev_type == "tool_result":
+                tc_id = event.get("tool_call_id")
+                for msg in messages_to_persist:
+                    if msg.get("role") == "tool" and msg.get("tool_call_id") == tc_id:
+                        if event.get("ok"):
+                            msg["toolSummary"] = event.get("summary") or ""
+                        else:
+                            msg["toolError"] = event.get("error") or "Unknown error"
+                        break
+        # Persist all turns to the conversation store.
+        assistant_content = "".join(assistant_parts)
+        if assistant_content:
+            messages_to_persist.append({"role": "assistant", "content": assistant_content})
+        
+        conv_store.append_messages(conversation_id, messages_to_persist)
         yield (
             f"data: {json.dumps({'type': 'done', 'content': '', 'conversation_id': conversation_id})}\n\n"
         )
@@ -115,8 +259,8 @@ async def ai_chat(req: ChatRequest):
         )
 
     plugin_context = None
+    svc = get_service()
     if req.include_context:
-        svc = get_service()
         ai_settings = cfg.get("ai_settings", {}) if isinstance(cfg, dict) else {}
         limit = ai_settings.get("ai_context_max_rows", 200)
         engine_id = str(req.engine or "vol3")
@@ -137,8 +281,37 @@ async def ai_chat(req: ChatRequest):
     if not conv_id:
         meta = conv_store.create_conversation(engine=req.engine)
         conv_id = meta["id"]
+
+    engine_id = str(req.engine or "vol3")
+
+    # Detect the loaded image's OS family so the agent and system prompt
+    # know whether to use linux.* or windows.* plugins.
+    try:
+        img_status = svc._manager.get_image_status(engine_id)
+    except Exception:
+        img_status = {}
+    os_family = str(img_status.get("os_family", "linux") or "linux")
+
+    # Build the agent tool executor (lazy — only invoked when the AI
+    # actually calls a tool).
+    async def _tool_executor(
+        tool_name: str,
+        tool_args: dict[str, Any],
+        _engine_id: str,
+    ) -> dict[str, Any]:
+        return await _execute_agent_tool(tool_name, tool_args, _engine_id, os_family=os_family)
+
+    tool_exec = _tool_executor if req.mode == "agent" else None
+
     return StreamingResponse(
-        _sse_stream(message, plugin_context, conv_id),
+        _sse_stream(
+            message,
+            plugin_context,
+            conv_id,
+            tool_executor=tool_exec,
+            engine_id=engine_id,
+            os_family=os_family,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -151,20 +324,20 @@ async def ai_chat(req: ChatRequest):
 # ── History ────────────────────────────────────────────────────────
 
 @router.get("/history")
-async def ai_history():
-    return {"history": get_ai_service().get_history()}
+async def ai_history(conversation_id: Optional[str] = None):
+    return {"history": get_ai_service().get_history(conversation_id)}
 
 
 @router.delete("/history")
-async def clear_ai_history():
-    get_ai_service().clear_history()
+async def clear_ai_history(conversation_id: Optional[str] = None):
+    get_ai_service().clear_history(conversation_id)
     return {"ok": True}
 
 
 @router.delete("/memory")
 async def clear_ai_memory():
-    get_ai_service().clear_compressed_memory()
-    return {"ok": True}
+    removed = get_ai_service().clear_all_memory()
+    return {"ok": True, "removed_items": removed}
 
 
 @router.get("/memory")
@@ -354,8 +527,19 @@ async def load_conversation(conv_id: str):
         raise HTTPException(404, f"Conversation {conv_id!r} not found")
     messages = conv_store.get_messages(conv_id)
     ai = get_ai_service()
-    ai.clear_history()
+    ai.clear_history(conv_id)
     for msg in messages:
-        if msg.get("role") in ("user", "assistant"):
-            ai._history.append({"role": msg["role"], "content": msg["content"]})
+        if msg.get("role") in ("user", "assistant", "tool"):
+            clean_msg = {"role": msg["role"]}
+            if "content" in msg:
+                clean_msg["content"] = msg["content"]
+            if msg.get("role") == "tool":
+                clean_msg.update({
+                    "tool_call_id": msg.get("tool_call_id"),
+                    "toolName": msg.get("toolName"),
+                    "toolArgs": msg.get("toolArgs"),
+                    "toolSummary": msg.get("toolSummary"),
+                    "toolError": msg.get("toolError"),
+                })
+            ai.append_history(conv_id, clean_msg)
     return {"ok": True, "loaded": len(messages), "conversation": meta}

@@ -40,7 +40,11 @@ def _now_iso() -> str:
 
 
 def _conv_file(conv_id: str) -> Path:
-    return _CONV_DIR / f"{conv_id}.json"
+    import re
+    safe_id = re.sub(r'[^a-zA-Z0-9_-]', '', conv_id)
+    if not safe_id:
+        raise ValueError("Invalid conversation ID")
+    return _CONV_DIR / f"{safe_id}.json"
 
 
 def _load_index() -> list[dict]:

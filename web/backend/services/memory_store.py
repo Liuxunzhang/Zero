@@ -19,8 +19,18 @@ def _now_ts() -> int:
 
 
 def _tokenize(text: str) -> set[str]:
-    tokens = re.findall(r"[a-zA-Z0-9_]{2,}", str(text or "").lower())
-    return set(tokens)
+    text_str = str(text or "").lower()
+    tokens = set(re.findall(r"[a-zA-Z0-9_]{2,}", text_str))
+    
+    # Extract Chinese sequences and add unigrams + bigrams
+    chinese_runs = re.findall(r"[\u4e00-\u9fa5]+", text_str)
+    for run in chinese_runs:
+        for char in run:
+            tokens.add(char)
+        for i in range(len(run) - 1):
+            tokens.add(run[i:i+2])
+            
+    return tokens
 
 
 def _safe_float(value: Any, fallback: float = 0.5) -> float:
@@ -261,3 +271,19 @@ class MemoryStore:
         self._stats["retrieved_items_total"] = int(self._stats.get("retrieved_items_total", 0)) + len(selected)
         self._record_stats()
         return selected
+
+    def clear_all(self) -> int:
+        """Delete all memory items and reset stats.  Returns items removed."""
+        removed = len(self._items)
+        self._items.clear()
+        self._save_items()
+        self._stats = {
+            "retrieval_calls": 0,
+            "retrieved_items_total": 0,
+            "compression_runs": 0,
+            "compression_failures": 0,
+            "last_compression_ms": 0,
+            "last_updated_at": _now_ts(),
+        }
+        self._save_stats()
+        return removed

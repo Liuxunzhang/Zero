@@ -133,7 +133,7 @@ export function createPluginSocket(onMessage) {
 /**
  * Stream AI chat response via SSE (fetch + ReadableStream).
  */
-export function streamAiChat(message, includeContext, onChunk, onDone, onError, onMemoryStatus, engine = 'vol3', conversationId = null) {
+export function streamAiChat(message, includeContext, onChunk, onDone, onError, onMemoryStatus, onToolCall, onToolResult, engine = 'vol3', conversationId = null, mode = 'agent') {
   const controller = new AbortController()
 
   fetch('/api/ai/chat', {
@@ -144,6 +144,7 @@ export function streamAiChat(message, includeContext, onChunk, onDone, onError, 
       include_context: includeContext,
       engine,
       conversation_id: conversationId || undefined,
+      mode,
     }),
     signal: controller.signal,
   })
@@ -173,6 +174,10 @@ export function streamAiChat(message, includeContext, onChunk, onDone, onError, 
               onChunk(payload.content)
             } else if (payload.type === 'memory_status') {
               if (onMemoryStatus) onMemoryStatus(payload.status || '')
+            } else if (payload.type === 'tool_call') {
+              if (onToolCall) onToolCall(payload)
+            } else if (payload.type === 'tool_result') {
+              if (onToolResult) onToolResult(payload)
             } else if (payload.type === 'done') {
               onDone(payload.conversation_id || null)
               return
@@ -210,6 +215,10 @@ export function clearAiMemory() {
 
 export function getAiMemory() {
   return api.get('/api/ai/memory')
+}
+
+export function getAiMemoryStats() {
+  return api.get('/api/ai/memory/stats')
 }
 
 export function getAiConfig() {

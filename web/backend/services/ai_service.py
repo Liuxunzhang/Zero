@@ -11,7 +11,7 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, AsyncGenerator, Callable, Optional
 
 from openai import AsyncOpenAI
 
@@ -53,6 +53,168 @@ _MODEL_TOKEN_LIMITS = {
     "glm-5": 202752,
     "glm-4.7": 169984,
 }
+
+# ── Agent tool definitions (OpenAI function calling) ──────────────
+
+# Maximum tool-calling rounds per user message to prevent infinite loops.
+_MAX_TOOL_ROUNDS = 5
+
+# Plugins the AI agent is allowed to execute.  Plugins that write files
+# (dumpfiles, procdump, etc.) are intentionally excluded to prevent the
+# agent from filling the disk unsupervised.
+AGENT_ALLOWED_PLUGINS: set[str] = {
+    # Linux — read-only analysis plugins
+    "linux.pslist.PsList", "linux.psscan.PsScan", "linux.pstree.PsTree",
+    "linux.netstat.NetStat", "linux.netscan.NetScan", "linux.lsof.Lsof",
+    "linux.lsmod.Lsmod", "linux.check_afinfo.Check_afinfo",
+    "linux.check_creds.Check_creds", "linux.check_modules.Check_modules",
+    "linux.check_syscall.Check_syscall", "linux.elfs.Elfs",
+    "linux.malfind.Malfind", "linux.proc_maps.Maps",
+    "linux.tty_check.tty_check", "linux.bash.Bash",
+    "linux.sockstat.Sockstat", "linux.keyboard_notifiers.KeyboardNotifiers",
+    "linux.hidden_modules.Check_hidden_modules",
+    "linux.capabilities.Caps", "linux.library_list.LibraryList",
+    "linux.cgroup.Cgroup", "linux.envars.Envars",
+    # Windows — read-only analysis plugins
+    "windows.pslist.PsList", "windows.psscan.PsScan", "windows.pstree.PsTree",
+    "windows.netscan.NetScan", "windows.netstat.NetStat",
+    "windows.cmdline.CmdLine", "windows.dlllist.DllList",
+    "windows.handles.Handles", "windows.modules.Modules",
+    "windows.modscan.ModScan", "windows.driverscan.DriverScan",
+    "windows.filescan.FileScan", "windows.mutantscan.MutantScan",
+    "windows.hivelist.HiveList", "windows.printkey.PrintKey",
+    "windows.malfind.Malfind", "windows.vadinfo.VadInfo",
+    "windows.svcscan.SvcScan", "windows.callbacks.Callbacks",
+    "windows.symlinkscan.SymlinkScan", "windows.sessions.Sessions",
+    "windows.envars.Envars", "windows.getsids.GetSIDs",
+    "windows.privileges.Privs", "windows.registry.hivelist.HiveList",
+    "windows.registry.printkey.PrintKey",
+    "windows.mftscan.MFTScan", "windows.shellbags.ShellBags",
+    "windows.ldrmodules.LdrModules", "windows.statistics.Statistics",
+    "windows.info.Info", "windows.bigpools.BigPools",
+    "windows.ssdt.SSDT", "windows.devicetree.DeviceTree",
+}
+
+AGENT_PLUGIN_DESCRIPTIONS: dict[str, str] = {
+    # Linux
+    "linux.pslist.PsList": "进程列表 (PSList) - 列出活跃进程",
+    "linux.psscan.PsScan": "进程扫描 (PSScan) - 扫描内存中的进程结构，可发现已隐藏/退出的进程",
+    "linux.pstree.PsTree": "进程树 (PSTree) - 以树状结构展示进程的父子关系",
+    "linux.netstat.NetStat": "网络状态 (NetStat) - 列出活跃的 TCP/UDP 网络连接和监听端口",
+    "linux.netscan.NetScan": "网络扫描 (NetScan) - 扫描内存中的网络连接结构",
+    "linux.lsof.Lsof": "打开文件 (Lsof) - 列出进程打开的文件描述符、管道、套接字等",
+    "linux.lsmod.Lsmod": "内核模块 (LSMod) - 列出已加载 of Linux 内核模块",
+    "linux.check_afinfo.Check_afinfo": "检查网络协议操作 (Check_afinfo) - 检查网络地址族操作结构体是否被劫持 (Rootkit 检测)",
+    "linux.check_creds.Check_creds": "检查进程凭证 (Check_creds) - 检查进程凭证是否被篡改或提权",
+    "linux.check_modules.Check_modules": "检查内核模块 (Check_modules) - 检查内核模块列表是否与 sysfs 一致，检测隐藏模块",
+    "linux.check_syscall.Check_syscall": "检查系统调用表 (Check_syscall) - 检测系统调用表 (syscall table) 是否被劫持或 Hook",
+    "linux.elfs.Elfs": "进程 ELF 映像 (Elfs) - 列出进程内存空间中的 ELF 模块和库文件",
+    "linux.malfind.Malfind": "恶意代码检测 (Malfind) - 扫描进程内存中具有可执行权限且未映射到文件的异常内存区域 (注入代码/Shellcode 检测)",
+    "linux.proc_maps.Maps": "进程内存映射 (Maps) - 打印进程的内存映射区间（包括权限、偏移、文件路径）",
+    "linux.tty_check.tty_check": "检查 TTY 设备 (tty_check) - 检查 TTY 设备的接收/发送函数是否被劫持或 Hook",
+    "linux.bash.Bash": "Bash 历史命令 (Bash) - 从内存中提取已打开 Bash 终端的历史命令和输入缓冲区",
+    "linux.sockstat.Sockstat": "套接字统计 (Sockstat) - 列出内存中的套接字状态",
+    "linux.keyboard_notifiers.KeyboardNotifiers": "键盘通知链 (KeyboardNotifiers) - 检测内核键盘通知链是否被劫持，用于发现键盘记录 Rootkit",
+    "linux.hidden_modules.Check_hidden_modules": "检测隐藏内核模块 (Check_hidden_modules) - 检测通过解链隐藏的内核模块",
+    "linux.capabilities.Caps": "进程特权集 (Caps) - 列出每个进程拥有的 POSIX Capabilities (特权校验)",
+    "linux.library_list.LibraryList": "进程加载库 (LibraryList) - 列出进程加载的动态链接库 (.so)",
+    "linux.cgroup.Cgroup": "CGroup 限制 (Cgroup) - 查看进程所属的 cgroup 信息",
+    "linux.envars.Envars": "进程环境变量 (Envars) - 提取进程启动时的环境变量",
+    # Windows
+    "windows.pslist.PsList": "进程列表 (PSList) - 列出活跃进程",
+    "windows.psscan.PsScan": "进程扫描 (PSScan) - 扫描内存中的进程结构 (_EPROCESS)，可发现已隐藏/退出的进程",
+    "windows.pstree.PsTree": "进程树 (PSTree) - 以树状结构展示进程的父子关系",
+    "windows.netscan.NetScan": "网络扫描 (NetScan) - 扫描内存中的网络连接结构（TCP/UDP 连接和监听端口）",
+    "windows.netstat.NetStat": "网络状态 (NetStat) - 扫描网络状态和活跃连接",
+    "windows.cmdline.CmdLine": "命令行参数 (CmdLine) - 提取进程启动时的完整命令行参数",
+    "windows.dlllist.DllList": "加载的 DLL 列表 (DllList) - 列出每个进程加载 of DLL，包括基址、大小和路径",
+    "windows.handles.Handles": "进程句柄表 (Handles) - 列出进程打开的所有句柄（文件、注册表、互斥体、线程、进程等）",
+    "windows.modules.Modules": "内核模块 (Modules) - 列出已加载 of Windows 内核驱动程序",
+    "windows.modscan.ModScan": "内核模块扫描 (ModScan) - 扫描内存中的内核驱动结构，可发现隐藏驱动",
+    "windows.driverscan.DriverScan": "驱动程序扫描 (DriverScan) - 扫描内存中的驱动对象 (_DRIVER_OBJECT)",
+    "windows.filescan.FileScan": "文件对象扫描 (FileScan) - 扫描内存中打开的文件对象 (_FILE_OBJECT)，可发现打开的隐藏文件",
+    "windows.mutantscan.MutantScan": "互斥体扫描 (MutantScan) - 扫描内存中的互斥体句柄，常用于恶意软件互斥体检测",
+    "windows.hivelist.HiveList": "注册表 Hive 列表 (HiveList) - 列出内存中加载 of 注册表 Hive 配置文件及其虚拟地址",
+    "windows.printkey.PrintKey": "注册表键值查询 (PrintKey) - 打印特定注册表键下的子键、值和最后修改时间",
+    "windows.malfind.Malfind": "恶意代码检测 (Malfind) - 扫描进程内存中具有 PAGE_EXECUTE_READWRITE (RWX) 权限且未映射到文件的异常内存页",
+    "windows.vadinfo.VadInfo": "VAD 信息 (VadInfo) - 打印进程虚拟地址描述符 (VAD) 树结构，包含内存页面的分配保护属性",
+    "windows.svcscan.SvcScan": "服务扫描 (SvcScan) - 扫描内存中的 Windows 服务列表，展示服务名称、显示名称、状态、类型和关联的 PID",
+    "windows.callbacks.Callbacks": "内核回调机制 (Callbacks) - 列出内核注册的各种系统回调（创建进程、创建线程、加载映像等），检测 Rootkit",
+    "windows.symlinkscan.SymlinkScan": "符号链接扫描 (SymlinkScan) - 扫描内存中的符号链接对象",
+    "windows.sessions.Sessions": "会话扫描 (Sessions) - 扫描活跃 of Logon Sessions",
+    "windows.envars.Envars": "进程环境变量 (Envars) - 提取进程环境变量",
+    "windows.getsids.GetSIDs": "进程安全标识符 (GetSIDs) - 列出每个进程的所有者、组和特权 SID",
+    "windows.privileges.Privs": "进程特权 (Privs) - 列出每个进程启用的特权（如 SeDebugPrivilege）",
+    "windows.mftscan.MFTScan": "MFT 记录扫描 (MFTScan) - 在内存中寻找 NTFS MFT (主文件表) 记录，用于恢复文件活动历史",
+    "windows.shellbags.ShellBags": "ShellBags 注册表项解析 (ShellBags) - 解析注册表中记录的文件夹浏览历史",
+    "windows.ldrmodules.LdrModules": "进程加载模块对比 (LdrModules) - 对比三种不同的进程 PEB 模块链表，检测 DLL 隐藏和解链注入",
+    "windows.statistics.Statistics": "系统统计信息 (Statistics) - 报告系统的基本运行和内存统计指标",
+    "windows.info.Info": "镜像系统信息 (Info) - 打印当前内存镜像的操作系统版本、内核基址、CPU 数量、时间戳等基础元数据",
+    "windows.bigpools.BigPools": "大内存池申请 (BigPools) - 扫描内存中的大内存池分配，检测 Rootkit 分配的隐藏驱动内存",
+    "windows.ssdt.SSDT": "系统服务描述表 (SSDT) - 检查 SSDT 的函数入口地址是否被修改/Hook",
+    "windows.devicetree.DeviceTree": "设备驱动树 (DeviceTree) - 打印驱动对象及附加在其上的设备链，检查驱动劫持/过滤驱动 Rootkit",
+}
+
+# Plugins that MUST be called with a ``pid`` parameter — running them
+# without one scans every process and will almost certainly hit the
+# stall timeout (120 s).  The agent is blocked from calling these
+# bare; it must first identify suspicious PIDs from pslist / psscan
+# and then pass the pid.
+AGENT_HEAVY_PLUGINS: set[str] = {
+    "linux.malfind.Malfind",
+    "windows.malfind.Malfind",
+    "windows.vadinfo.VadInfo",
+    "linux.proc_maps.Maps",
+    "linux.vmaregexscan.VmaRegExScan",
+    "windows.vadyarascan.VadYaraScan",
+}
+
+_AGENT_TOOLS: list[dict] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "run_plugin",
+            "description": (
+                "运行一个 Volatility 3 插件获取内存取证数据。"
+                "参数 plugin_name 使用不带 OS 前缀的短名称，如 'pslist.PsList'、'netscan.NetScan'。"
+                "可选参数 pid 用于指定进程 ID。"
+                "运行前你应该先用 list_plugins 确认该插件存在。"
+                "重要：malfind、vadinfo、proc_maps、vmayarascan 等内存扫描类插件必须传 pid 参数，"
+                "否则会全量扫描所有进程导致超时卡死。"
+                "正确流程：先跑 pslist/psscan 找可疑 PID → 再用 malfind/vadinfo pid=可疑PID 深入分析。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "plugin_name": {
+                        "type": "string",
+                        "description": "插件短名称，如 pslist.PsList, netscan.NetScan, malfind.Malfind",
+                    },
+                    "pid": {
+                        "type": "integer",
+                        "description": "可选，目标进程 PID",
+                    },
+                },
+                "required": ["plugin_name"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_plugins",
+            "description": (
+                "列出当前镜像可用的 Volatility 3 插件，按类别分组返回。"
+                "系统已知道镜像的操作系统类型，你无需指定 os_family。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+]
 
 # ── Built-in prompt library ────────────────────────────────────────
 
@@ -455,13 +617,15 @@ def _format_plugin_context(plugin_context: dict) -> str:
         "| " + " | ".join(columns) + " |",
         "| " + " | ".join(["---"] * len(columns)) + " |",
     ]
+    current_len = sum(len(l) for l in lines) + (len(lines) - 1 if lines else 0)
     shown_rows = 0
     for row in truncated:
         cells = [str(c).replace("|", "\\|").replace("\n", " ")[:180] for c in row]
         line = "| " + " | ".join(cells) + " |"
-        if len("\n".join(lines)) + len(line) + 1 > max_chars:
+        if current_len + len(line) + 1 > max_chars:
             break
         lines.append(line)
+        current_len += len(line) + 1
         shown_rows += 1
 
     if shown_rows < len(truncated):
@@ -479,7 +643,8 @@ class AiService:
     """Manages multi-model profiles, prompt library, and streaming."""
 
     def __init__(self) -> None:
-        self._history: list[dict[str, str]] = []
+        self._history: dict[str, list[dict[str, Any]]] = {}
+        self._openai_clients: dict[tuple[str, str], AsyncOpenAI] = {}
         # Active profile overrides — set at runtime from frontend
         self._active_profile: Optional[dict] = None
         self._persist_to_config_py: bool = False
@@ -838,6 +1003,16 @@ class AiService:
         self._compressed_memory = ""
         _save_compressed_memory("")
 
+    def clear_all_memory(self) -> int:
+        """Clear both compressed memory and structured memory items.
+
+        Returns the number of structured items that were removed.
+        """
+        self._compressed_memory = ""
+        _save_compressed_memory("")
+        removed = self._memory_store.clear_all()
+        return removed
+
     def get_memory_stats(self) -> dict:
         stats = self._memory_store.get_stats()
         stats["status"] = self._memory_status
@@ -875,7 +1050,7 @@ class AiService:
             self._memory_last_error = ""
             ok = True
             try:
-                client = AsyncOpenAI(base_url=base_url, api_key=api_key)
+                client = self._get_openai_client(base_url, api_key)
                 await self._update_compressed_memory(
                     client=client,
                     model=model,
@@ -953,6 +1128,12 @@ class AiService:
         model = getattr(config, "AI_MODEL", "")
         return base_url, api_key, model
 
+    def _get_openai_client(self, base_url: str, api_key: str) -> AsyncOpenAI:
+        key = (base_url, api_key)
+        if key not in self._openai_clients:
+            self._openai_clients[key] = AsyncOpenAI(base_url=base_url, api_key=api_key)
+        return self._openai_clients[key]
+
     def _resolve_system_prompt(self) -> str:
         all_prompts = self.get_all_prompts()
         for p in all_prompts:
@@ -962,23 +1143,25 @@ class AiService:
 
     # ── Chat ──────────────────────────────────────────────────────
 
-    async def chat_stream(
+    def _build_messages(
         self,
         user_message: str,
-        plugin_context: Optional[dict] = None,
-    ) -> AsyncGenerator[dict, None]:
-        """Yield structured streaming events from the AI model."""
-        base_url, api_key, model = self._resolve_config()
-        client = AsyncOpenAI(base_url=base_url, api_key=api_key)
-
-        messages: list[dict[str, str]] = [
+        plugin_context: Optional[dict],
+        os_family: str = "linux",
+        conversation_id: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Build the initial message list for a chat turn (shared by every tool-call round)."""
+        family_display = "Windows" if os_family == "windows" else "Linux"
+        messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._resolve_system_prompt()},
             {
                 "role": "system",
                 "content": (
-                    "Zero 运行约束：你是内存取证智能体。回答必须优先使用当前内存镜像插件输出，"
-                    "把事实、推断和待验证假设分开；如果当前数据不足，明确说明需要补跑的 Volatility 插件。"
+                    f"Zero 运行约束：你是内存取证智能体，当前加载的是 {family_display} 内存镜像。"
+                    "回答必须优先使用当前内存镜像插件输出，"
+                    "把事实、推断 and 待验证假设分开；如果当前数据不足，明确说明需要补跑的 Volatility 插件。"
                     "除非用户要求教学解释，否则不要输出通用安全科普或与证据无关的长篇背景。"
+                    f"调用工具时 plugin_name 使用不带 {os_family}. 前缀的短名称。"
                 ),
             },
         ]
@@ -993,10 +1176,10 @@ class AiService:
                 })
 
         if plugin_context and plugin_context.get("columns"):
-            plugin_context = dict(plugin_context)
-            plugin_context["_max_rows"] = self._resolve_context_max_rows()
-            plugin_context["_max_chars"] = self._resolve_context_max_chars()
-            context_text = _format_plugin_context(plugin_context)
+            plugin_context_copy = dict(plugin_context)
+            plugin_context_copy["_max_rows"] = self._resolve_context_max_rows()
+            plugin_context_copy["_max_chars"] = self._resolve_context_max_chars()
+            context_text = _format_plugin_context(plugin_context_copy)
             messages.append({
                 "role": "system",
                 "content": f"以下是用户当前正在查看的 Volatility 插件输出数据：\n\n{context_text}",
@@ -1026,76 +1209,352 @@ class AiService:
                 ),
             })
 
+        # Load history from the persistent store if available
+        raw_history = []
+        if conversation_id:
+            from web.backend.services import conversation_store as conv_store
+            try:
+                raw_history = conv_store.get_messages(conversation_id)
+            except Exception as e:
+                logger.warning("Failed to lazily load conversation history: %s", e)
+
+        if not raw_history:
+            raw_history = self.get_history(conversation_id)
+
+        # Slice history by turns (last N user queries)
         max_history = self._ai_max_history
-        for msg in self._history[-(max_history * 2):]:
-            messages.append(msg)
+        sliced_history = []
+        if raw_history:
+            user_indices = [i for i, m in enumerate(raw_history) if m.get("role") == "user"]
+            if len(user_indices) > max_history:
+                start_idx = user_indices[-max_history]
+                sliced_history = raw_history[start_idx:]
+            else:
+                sliced_history = raw_history
+
+        # Convert sliced history to standard OpenAI API message format
+        for msg in sliced_history:
+            role = msg.get("role")
+            if role == "user":
+                messages.append({"role": "user", "content": msg.get("content") or ""})
+            elif role == "assistant":
+                messages.append({"role": "assistant", "content": msg.get("content") or ""})
+            elif role == "tool":
+                # Convert the custom tool/result format back to standard assistant/tool API format
+                tool_call_id = msg.get("tool_call_id") or "call_unknown"
+                tool_name = msg.get("toolName") or "run_plugin"
+                tool_args = msg.get("toolArgs") or {}
+
+                # 1. Append assistant tool call request
+                messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [{
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": json.dumps(tool_args, ensure_ascii=False) if isinstance(tool_args, dict) else str(tool_args)
+                        }
+                    }]
+                })
+
+                # 2. Append tool execution result
+                if msg.get("toolError"):
+                    content = json.dumps({"error": msg["toolError"]}, ensure_ascii=False)
+                else:
+                    content = json.dumps({"summary": msg.get("toolSummary", "")}, ensure_ascii=False)
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tool_call_id,
+                    "content": content
+                })
 
         messages.append({"role": "user", "content": user_message})
-        self._history.append({"role": "user", "content": user_message})
+        return messages
 
+    @staticmethod
+    def _accumulate_tool_calls(delta) -> dict[int, dict[str, Any]]:
+        """Accumulate streaming tool-call deltas.
+
+        Returns a dict keyed by tool-call index so callers can merge across chunks.
+        """
+        acc: dict[int, dict[str, Any]] = {}
+        if not delta.tool_calls:
+            return acc
+        for tc_delta in delta.tool_calls:
+            idx = tc_delta.index
+            if idx not in acc:
+                acc[idx] = {"id": "", "function_name": "", "function_arguments": ""}
+            entry = acc[idx]
+            if tc_delta.id:
+                entry["id"] = tc_delta.id
+            if tc_delta.function:
+                if tc_delta.function.name:
+                    entry["function_name"] += tc_delta.function.name
+                if tc_delta.function.arguments:
+                    entry["function_arguments"] += tc_delta.function.arguments
+        return acc
+
+    async def chat_stream(
+        self,
+        user_message: str,
+        plugin_context: Optional[dict] = None,
+        tool_executor: Optional[Callable[..., Any]] = None,
+        engine_id: str = "vol3",
+        os_family: str = "linux",
+        conversation_id: Optional[str] = None,
+    ) -> AsyncGenerator[dict, None]:
+        """Yield structured streaming events from the AI model.
+
+        When *tool_executor* is provided, the model is given access to
+        ``run_plugin`` / ``list_plugins`` tools and may autonomously
+        execute Volatility 3 plugins in a loop (up to ``_MAX_TOOL_ROUNDS``
+        iterations).
+        """
+        base_url, api_key, model = self._resolve_config()
+        client = self._get_openai_client(base_url, api_key)
         max_tokens = self._resolve_max_tokens(model)
         temperature = self._ai_temperature
+        agent_mode = tool_executor is not None
+
+        # The initial message list (without the user message appended to history yet).
+        base_messages = self._build_messages(
+            user_message, plugin_context, os_family=os_family, conversation_id=conversation_id
+        )
+        messages: list[dict[str, Any]] = list(base_messages)
+
+        # ── Tool-calling loop ──────────────────────────────────────
+        tool_round = 0
+        all_tool_calls_made: list[dict[str, Any]] = []
 
         try:
-            req = {
-                "model": model,
-                "messages": messages,
-                "temperature": temperature,
-                "stream": True,
-            }
-            if max_tokens is not None:
-                req["max_tokens"] = max_tokens
+            while tool_round < (_MAX_TOOL_ROUNDS if agent_mode else 1):
+                tool_round += 1
 
-            stream = await client.chat.completions.create(
-                model=model,
-                **{k: v for k, v in req.items() if k != "model"},
-            )
+                req: dict[str, Any] = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "stream": True,
+                }
+                if max_tokens is not None:
+                    req["max_tokens"] = max_tokens
+                if agent_mode:
+                    req["tools"] = _AGENT_TOOLS
+                    req["tool_choice"] = "auto"
 
-            full_response = []
-            async for chunk in stream:
-                delta = chunk.choices[0].delta if chunk.choices else None
-                if delta and delta.content:
-                    full_response.append(delta.content)
-                    yield {"type": "chunk", "content": delta.content}
+                stream = await client.chat.completions.create(
+                    model=model,
+                    **{k: v for k, v in req.items() if k != "model"},
+                )
 
-            assistant_text = "".join(full_response)
-            self._history.append({
-                "role": "assistant",
-                "content": assistant_text,
-            })
+                content_parts: list[str] = []
+                tool_call_acc: dict[int, dict[str, Any]] = {}
 
-            if self._ai_memory_enabled:
-                self._memory_status = "queued"
-                yield {"type": "memory_status", "status": "queued"}
-                # Cancel any in-flight memory update before starting a new one.
-                if self._memory_update_task and not self._memory_update_task.done():
-                    self._memory_update_task.cancel()
-                    try:
-                        await self._memory_update_task
-                    except (asyncio.CancelledError, Exception):
-                        pass
-                self._memory_update_task = asyncio.create_task(
-                    self._run_memory_update_async(
-                        base_url=base_url,
-                        api_key=api_key,
-                        model=model,
-                        user_message=user_message,
-                        assistant_message=assistant_text,
+                async for chunk in stream:
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    if delta is None:
+                        continue
+                    if delta.content:
+                        content_parts.append(delta.content)
+                        yield {"type": "chunk", "content": delta.content}
+                    if delta.tool_calls:
+                        for idx_str, tc_data in self._accumulate_tool_calls(delta).items():
+                            existing = tool_call_acc.get(idx_str)
+                            if existing is None:
+                                tool_call_acc[idx_str] = tc_data
+                            else:
+                                existing["id"] = existing["id"] or tc_data["id"]
+                                existing["function_name"] += tc_data["function_name"]
+                                existing["function_arguments"] += tc_data["function_arguments"]
+
+                # ── No tool calls → final text response ────────────
+                if not tool_call_acc:
+                    assistant_text = "".join(content_parts)
+                    self.append_history(conversation_id, {"role": "user", "content": user_message})
+                    self.append_history(conversation_id, {"role": "assistant", "content": assistant_text})
+                    if self._ai_memory_enabled:
+                        yield {"type": "memory_status", "status": "queued"}
+                    self._schedule_memory_update(
+                        base_url=base_url, api_key=api_key, model=model,
+                        user_message=user_message, assistant_message=assistant_text,
                         plugin_context=plugin_context,
                     )
+                    return
+
+                # ── Tool calls received → execute them ────────────
+                assistant_tool_calls = []
+                for idx in sorted(tool_call_acc.keys()):
+                    tc = tool_call_acc[idx]
+                    assistant_tool_calls.append({
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["function_name"],
+                            "arguments": tc["function_arguments"],
+                        },
+                    })
+
+                # Append the assistant message carrying tool_calls.
+                messages.append({
+                    "role": "assistant",
+                    "content": "".join(content_parts) or None,
+                    "tool_calls": assistant_tool_calls,
+                })
+                all_tool_calls_made.extend(assistant_tool_calls)
+
+                # Execute each tool and feed results back.
+                for tc in assistant_tool_calls:
+                    tool_name = tc["function"]["name"]
+                    try:
+                        tool_args = json.loads(tc["function"]["arguments"])
+                    except json.JSONDecodeError:
+                        tool_args = {}
+
+                    yield {
+                        "type": "tool_call",
+                        "tool_call_id": tc["id"],
+                        "tool_name": tool_name,
+                        "arguments": tool_args,
+                    }
+
+                    try:
+                        result = await tool_executor(tool_name, tool_args, engine_id)
+                        result_text = json.dumps(result, ensure_ascii=False)
+                        yield {
+                            "type": "tool_result",
+                            "tool_call_id": tc["id"],
+                            "tool_name": tool_name,
+                            "ok": True,
+                            "summary": result.get("summary", "") if isinstance(result, dict) else "",
+                        }
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": result_text,
+                        })
+                    except Exception as exc:
+                        error_text = f"工具执行失败: {exc}"
+                        logger.warning("Tool execution failed: %s %s: %s", tool_name, tool_args, exc)
+                        yield {
+                            "type": "tool_result",
+                            "tool_call_id": tc["id"],
+                            "tool_name": tool_name,
+                            "ok": False,
+                            "error": error_text,
+                        }
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": json.dumps({"error": error_text}, ensure_ascii=False),
+                        })
+
+            # ── Ran out of tool rounds → force a final summary ──
+            # The AI kept requesting tools without producing a final
+            # answer.  Make one last non-tool call so it can summarise
+            # everything it has collected.
+            if all_tool_calls_made:
+                # Append a system instruction asking for a final summary.
+                messages.append({
+                    "role": "system",
+                    "content": (
+                        "你已达到最大工具调用次数。请基于以上所有已获取的插件数据，"
+                        "立即输出完整的取证分析结论，不要再调用任何工具。"
+                        "按以下结构输出：结论概览 → 关键证据 → 可疑项分级 → 下一步建议。"
+                    ),
+                })
+                final_req: dict[str, Any] = {
+                    "model": model,
+                    "messages": messages,
+                    "temperature": temperature,
+                    "stream": True,
+                }
+                if max_tokens is not None:
+                    final_req["max_tokens"] = max_tokens
+
+                final_stream = await client.chat.completions.create(
+                    model=model,
+                    **{k: v for k, v in final_req.items() if k != "model"},
+                )
+                final_parts: list[str] = []
+                async for chunk in final_stream:
+                    delta = chunk.choices[0].delta if chunk.choices else None
+                    if delta and delta.content:
+                        final_parts.append(delta.content)
+                        yield {"type": "chunk", "content": delta.content}
+
+                assistant_text = "".join(final_parts) or "分析完成，但模型未生成结论。请重新提问或指定更具体的问题。"
+                self.append_history(conversation_id, {"role": "user", "content": user_message})
+                self.append_history(conversation_id, {"role": "assistant", "content": assistant_text})
+                if self._ai_memory_enabled:
+                    yield {"type": "memory_status", "status": "queued"}
+                self._schedule_memory_update(
+                    base_url=base_url, api_key=api_key, model=model,
+                    user_message=user_message, assistant_message=assistant_text,
+                    plugin_context=plugin_context,
                 )
 
         except Exception as e:
             logger.error("AI streaming error: %s", e, exc_info=True)
             raise
 
-    # ── History ────────────────────────────────────────────────────
+    def _schedule_memory_update(
+        self,
+        base_url: str,
+        api_key: str,
+        model: str,
+        user_message: str,
+        assistant_message: str,
+        plugin_context: Optional[dict],
+    ) -> None:
+        """Kick off a background memory-compression task (non-blocking)."""
+        if not self._ai_memory_enabled:
+            return
+        self._memory_status = "queued"
+        # Cancel any in-flight memory update before starting a new one.
+        if self._memory_update_task and not self._memory_update_task.done():
+            self._memory_update_task.cancel()
+        self._memory_update_task = asyncio.create_task(
+            self._run_memory_update_async(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                user_message=user_message,
+                assistant_message=assistant_message,
+                plugin_context=plugin_context,
+            )
+        )
 
-    def get_history(self) -> list[dict[str, str]]:
-        return list(self._history)
+    def get_history(self, conversation_id: Optional[str] = None) -> list[dict[str, Any]]:
+        conv_key = conversation_id or ""
+        if conv_key not in self._history:
+            self._history[conv_key] = []
+        return self._history[conv_key]
 
-    def clear_history(self) -> None:
-        self._history.clear()
+    def clear_history(self, conversation_id: Optional[str] = None) -> None:
+        conv_key = conversation_id or ""
+        if conv_key in self._history:
+            self._history[conv_key].clear()
+        else:
+            self._history[conv_key] = []
+        if conv_key:
+            from web.backend.services import conversation_store as conv_store
+            try:
+                conv_store.replace_messages(conv_key, [])
+            except Exception as e:
+                logger.warning("Failed to clear conversation history in store: %s", e)
+
+    def append_history(self, conversation_id: Optional[str], message: dict[str, Any]) -> None:
+        conv_key = conversation_id or ""
+        if conv_key not in self._history:
+            self._history[conv_key] = []
+        self._history[conv_key].append(message)
+        # Prune to prevent memory leaks (P2 Issue #8)
+        limit = self._ai_max_history * 4
+        if len(self._history[conv_key]) > limit:
+            self._history[conv_key] = self._history[conv_key][-limit:]
 
     def get_config_info(self) -> dict:
         base_url, _, model = self._resolve_config()
