@@ -193,9 +193,15 @@ AI 接口位于 `/api/ai/*`，用于配置 OpenAI-compatible 模型、提示词�
 
 - 获取/保存 AI 配置
 - 管理模型配置和提示词
-- 流式对话
+- 流式对话（智能体模式下可调用 `run_plugin` / `list_plugins` / `dump_process` / `dump_pe` 工具）
 - 清理历史和压缩记忆
 - 会话列表、加载、重命名、删除
+
+注意：
+
+- 会话历史单一数据源为 `conversation_store`（`.zero/ai/conversations/`）。`GET /api/ai/history` 已移除，加载历史请用 `GET /api/ai/conversations/{id}`；`DELETE /api/ai/history` 保留用于清空当前会话消息。
+- 运行时 profile / 设置只写 `.zero/ai/`（`profiles.json`、`settings.json`），不会回写 `config.py`。
+- 压缩记忆按 debounce 触发（每 3 轮对话或 60 秒），不是每条消息都压缩。
 
 ## Symbols
 

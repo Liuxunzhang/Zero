@@ -23,7 +23,13 @@ dependencies = [
 dev = [
     "black>=23.0.0",
     "ruff>=0.1.0",
+    "pytest>=7.0.0",
 ]
 [[tool.uv.index]]
 url = "https://mirrors.aliyun.com/pypi/simple"
 default = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-ra -q"

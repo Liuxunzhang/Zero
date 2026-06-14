@@ -1,4 +1,4 @@
-.PHONY: install uv-install venv frontend-deps frontend-build run run-backend test-run clean
+.PHONY: install uv-install venv frontend-deps frontend-build run run-backend test-run dev-deps test clean
 
 VENV_PATH ?= .venv
 PYTHON := $(VENV_PATH)/bin/python
@@ -36,6 +36,12 @@ run: install
 
 run-backend: venv
 	$(PYTHON) -m uvicorn web.backend.main:app --host 0.0.0.0 --port 8000 --reload
+
+dev-deps: venv
+	$(UV) pip install --python $(PYTHON) -i $(PYPI_INDEX_URL) -e ".[dev]"
+
+test: dev-deps
+	$(PYTHON) -m pytest tests/
 
 test-run: install
 	@echo "Backend: http://localhost:8000"

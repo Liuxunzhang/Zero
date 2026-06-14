@@ -28,7 +28,13 @@ black .                 # Format Python code
 ruff check .            # Lint Python code
 ```
 
-There is no test suite yet — the project is at version 0.1.0 and test infrastructure is planned but not implemented.
+**Tests** (dev dep: `pytest`):
+```bash
+make test               # install dev deps + run the pure-function test suite
+pytest tests/           # run tests directly
+```
+
+The suite covers pure functions (filter expression, memory store, conversation store, AI message construction) but not the engine or network layer.
 
 ## Architecture
 
@@ -66,7 +72,36 @@ Single Pinia store (`stores/app.js`) holds all global state. Components are dire
 
 ### AI integration
 
-Multi-provider AI assistant (`web/backend/services/ai_service.py`) supporting OpenAI-compatible APIs (siliconflow, openai, deepseek, ollama, baishanyun). Features: SSE streaming chat, compressed conversation memory (LLM-generated summaries), structured memory items with keyword retrieval, prompt library, persistent conversation store under `.zero/ai/conversations/`.
+Multi-provider AI assistant (`web/backend/services/ai_service.py`) supporting OpenAI-compatible APIs (siliconflow, openai, deepseek, ollama, baishanyun). Features: SSE streaming chat, agent tool-calling loop (`run_plugin` / `list_plugins` / `dump_process` / `dump_pe`), compressed conversation memory (LLM-generated summaries, debounced to one compression every 3 turns or 60s), structured memory items with keyword retrieval, prompt library.
+
+**Conversation history** has a single source of truth: `conversation_store` under `.zero/ai/conversations/`. The service is stateless w.r.t. history — `_build_messages` reads from the store on each `/chat` call. `GET /api/ai/history` is gone; the frontend loads history via `GET /api/ai/conversations/{id}`.
+
+**Agent token budget**: tool results folded back into the agent `messages` list are compacted (`_compact_tool_result_for_messages`, 30-row digest) so a multi-step tool chain doesn't balloon the prompt. The freshly-executed result is still surfaced to the model in full via the `tool_result` SSE event summary.
+
+**Runtime config persistence**: profile metadata and settings live exclusively under `.zero/ai/` (`profiles.json`, `settings.json`). `config.py` is **never rewritten** at runtime — it only holds static defaults. The `persist_to_config_py` flag still exists for compatibility but now only mirrors values into the in-memory `config` module, not the file.
+
+### Plugin result cache
+
+Volatility plugin results are cached both in memory (`VolatilityWrapper._cache`) and on disk (`DiskResultCache`, CSV under `saved_results/vol3/{image}/`). **The cache key incorporates plugin kwargs** (pid/offset/key/…) so that `handles.Handles pid=4376` and `handles.Handles pid=100` get distinct entries — without this, different parameters would collide and return wrong data.
+
+- `dump_dir` and `dump` kwargs are deliberately excluded from the key (they're per-run paths on the `use_cache=False` dump paths).
+- `use_cache=False` now gates **writes** too, not just reads — dump runs don't pollute the cache.
+- `clear_cache(plugin)` purges **all** kwargs variants of a plugin (in-memory + on-disk); `clear_cache(None)` wipes the whole image's cache.
+
+### Agent tool-call protocols
+
+The agent loop (`chat_stream`) supports two tool-call transports:
+
+1. **Standard OpenAI** (`delta.tool_calls` deltas) — the default for gpt-4o and most providers.
+2. **DSML in-band text** — some models (notably `deepseek-v4-pro`) emit tool calls as `<｜｜DSML｜｜invoke name="...">` markup inside `delta.content`. `DSMLStreamParser` (`web/backend/services/dsml_parser.py`) strips this markup before it reaches the user and feeds parsed calls into the same execution path. If a stream contains no DSML, the parser is zero-overhead.
+
+### Tests
+
+```bash
+make test   # install dev deps (pytest) + run the suite
+```
+
+Pure-function tests in `tests/` cover `filter_expression`, `memory_store`, `conversation_store`, AI message construction (`_build_messages`, `_compact_tool_result_for_messages`), the memory-compression debounce, the plugin result cache (kwargs-aware key isolation, `use_cache` write-skip, prefix-clear), and the DSML in-band tool-call parser. There is no engine/network integration test suite yet — the engine layer (`Vol3Engine`, `VolatilityWrapper`) is not thread-safe for concurrent plugin runs.
 
 ### Symbol table management
 

@@ -202,10 +202,6 @@ export function streamAiChat(message, includeContext, onChunk, onDone, onError, 
   return { abort: () => controller.abort() }
 }
 
-export function getAiHistory() {
-  return api.get('/api/ai/history')
-}
-
 export function clearAiHistory() {
   return api.delete('/api/ai/history')
 }

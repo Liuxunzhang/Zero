@@ -650,13 +650,29 @@ async def _sse_stream(
         assistant_content = "".join(assistant_parts)
         if assistant_content:
             messages_to_persist.append({"role": "assistant", "content": assistant_content})
-        
+
         conv_store.append_messages(conversation_id, messages_to_persist)
         yield (
             f"data: {json.dumps({'type': 'done', 'content': '', 'conversation_id': conversation_id})}\n\n"
         )
     except Exception as e:
         logger.error("SSE stream error: %s", e, exc_info=True)
+        # Persist whatever we collected before the crash (user message, any
+        # tool calls/results, and a partial assistant response) so the
+        # conversation isn't silently lost.  The in-memory history mirror
+        # used to provide this safety net; with it gone, this is the only
+        # place that bridges partial turns to the persistent store.
+        try:
+            partial_assistant = "".join(assistant_parts)
+            if partial_assistant:
+                messages_to_persist.append({
+                    "role": "assistant",
+                    "content": partial_assistant + "\n\n[生成中断]",
+                })
+            if len(messages_to_persist) > 1:  # more than just the user msg
+                conv_store.append_messages(conversation_id, messages_to_persist)
+        except Exception as persist_err:
+            logger.warning("Failed to persist partial conversation: %s", persist_err)
         payload = json.dumps({"type": "error", "content": str(e)}, ensure_ascii=False)
         yield f"data: {payload}\n\n"
 
@@ -743,15 +759,22 @@ async def ai_chat(req: ChatRequest):
 
 
 # ── History ────────────────────────────────────────────────────────
-
-@router.get("/history")
-async def ai_history(conversation_id: Optional[str] = None):
-    return {"history": get_ai_service().get_history(conversation_id)}
-
+#
+# The in-memory ``AiService._history`` mirror has been removed; conversation
+# state lives exclusively in ``conversation_store``.  ``GET /history`` is
+# gone (the frontend never read it — it uses ``GET /conversations/{id}``).
+# ``DELETE /history`` is kept for backwards-compat with the UI "clear" and
+# "new conversation" buttons, which call it on the active conversation.
 
 @router.delete("/history")
 async def clear_ai_history(conversation_id: Optional[str] = None):
-    get_ai_service().clear_history(conversation_id)
+    """Clear messages of a conversation in the persistent store."""
+    conv_id = (conversation_id or "").strip()
+    if conv_id:
+        try:
+            conv_store.replace_messages(conv_id, [])
+        except Exception as e:
+            logger.warning("Failed to clear conversation %s: %s", conv_id, e)
     return {"ok": True}
 
 
@@ -941,26 +964,16 @@ async def delete_conversation(conv_id: str):
 
 @router.post("/conversations/{conv_id}/load")
 async def load_conversation(conv_id: str):
-    """Load a saved conversation into the ai_service in-memory history
-    so subsequent /chat calls continue from that point."""
+    """Mark a conversation as active for the current client.
+
+    Conversation history is read directly from ``conversation_store`` on each
+    ``/chat`` call, so there is no in-memory mirror to warm.  This endpoint is
+    retained for backwards-compatibility with the frontend (which fires it on
+    sidebar selection) and returns the current message count so the caller can
+    confirm the conversation exists.
+    """
     meta = conv_store.get_conversation(conv_id)
     if not meta:
         raise HTTPException(404, f"Conversation {conv_id!r} not found")
     messages = conv_store.get_messages(conv_id)
-    ai = get_ai_service()
-    ai.clear_history(conv_id)
-    for msg in messages:
-        if msg.get("role") in ("user", "assistant", "tool"):
-            clean_msg = {"role": msg["role"]}
-            if "content" in msg:
-                clean_msg["content"] = msg["content"]
-            if msg.get("role") == "tool":
-                clean_msg.update({
-                    "tool_call_id": msg.get("tool_call_id"),
-                    "toolName": msg.get("toolName"),
-                    "toolArgs": msg.get("toolArgs"),
-                    "toolSummary": msg.get("toolSummary"),
-                    "toolError": msg.get("toolError"),
-                })
-            ai.append_history(conv_id, clean_msg)
     return {"ok": True, "loaded": len(messages), "conversation": meta}

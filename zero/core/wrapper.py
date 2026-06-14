@@ -755,6 +755,26 @@ class VolatilityWrapper:
         resolved = self._resolve_plugin_name(plugin_name)
         return resolved in self.plugin_list
 
+    # kwargs keys that must NOT participate in the cache key.  ``dump_dir``
+    # carries a per-run timestamped path and ``dump`` is only used on the
+    # ``use_cache=False`` dump paths, so including them would fragment the
+    # cache into uncacheable per-run entries.
+    _CACHE_KEY_IGNORED_KWARGS = frozenset({"dump_dir", "dump"})
+
+    def _cache_key(self, resolved_plugin_name: str, kwargs: dict) -> tuple:
+        """Build a cache key that incorporates plugin kwargs (pid/offset/key/…).
+
+        Without this, ``handles.Handles pid=4376`` and ``pid=100`` would hit
+        the same cache entry and return wrong data.  The key is a
+        ``(plugin_name, frozenset(canonical kwargs))`` tuple so that
+        ``clear_cache(plugin)`` can prefix-match on ``key[0]``.
+        """
+        filtered = tuple(sorted(
+            (k, str(v)) for k, v in kwargs.items()
+            if k not in self._CACHE_KEY_IGNORED_KWARGS
+        ))
+        return (resolved_plugin_name, filtered)
+
     def run_plugin(self, plugin_name: str, progress_callback=None, use_cache: bool = True, **kwargs) -> Tuple[List[str], List[Tuple]]:
         """Run a Volatility3 plugin using framework API
 
@@ -772,20 +792,24 @@ class VolatilityWrapper:
         resolved_plugin_name = self._resolve_plugin_name(plugin_name)
         display_plugin_name = self._to_display_plugin_name(resolved_plugin_name)
 
+        # Cache key includes plugin kwargs (pid/offset/key/…) so different
+        # parameter values get distinct entries — see ``_cache_key``.
+        cache_key = self._cache_key(resolved_plugin_name, kwargs)
+
         # Check cache first
-        if use_cache and resolved_plugin_name in self._cache:
-            logging.info(f"Returning cached results for {resolved_plugin_name}")
+        if use_cache and cache_key in self._cache:
+            logging.info(f"Returning cached results for {resolved_plugin_name} ({kwargs})")
             self._increment_cache_stat("memory_hits")
             if progress_callback:
                 progress_callback("Using cached results")
-            return self._cache[resolved_plugin_name]
+            return self._cache[cache_key]
 
         # Check persistent disk cache
         if use_cache:
-            disk_cached = self._disk_cache.load(self.image_path, resolved_plugin_name)
+            disk_cached = self._disk_cache.load(self.image_path, resolved_plugin_name, kwargs)
             if disk_cached is not None:
-                self._cache[resolved_plugin_name] = disk_cached
-                logging.info(f"Loaded persistent cached results for {resolved_plugin_name}")
+                self._cache[cache_key] = disk_cached
+                logging.info(f"Loaded persistent cached results for {resolved_plugin_name} ({kwargs})")
                 self._increment_cache_stat("disk_hits")
                 if progress_callback:
                     progress_callback(f"Loaded saved results: {display_plugin_name}")
@@ -823,9 +847,15 @@ class VolatilityWrapper:
                     plugin_kwargs=kwargs,
                 )
 
-            self._cache[resolved_plugin_name] = (columns, data_rows)
-            if self._disk_cache.save(self.image_path, resolved_plugin_name, columns, data_rows):
-                self._increment_cache_stat("disk_writes")
+            # Only populate the cache when the caller opted into it.  The dump
+            # paths pass ``use_cache=False`` (with a per-run timestamped
+            # ``dump_dir``); writing their results would bloat the cache with
+            # uncacheable entries.  This also guards the disk write so stale
+            # dump CSVs don't accumulate.
+            if use_cache:
+                self._cache[cache_key] = (columns, data_rows)
+                if self._disk_cache.save(self.image_path, resolved_plugin_name, columns, data_rows, kwargs):
+                    self._increment_cache_stat("disk_writes")
             return columns, data_rows
         finally:
             self._set_running_state(False)
@@ -1051,19 +1081,27 @@ class VolatilityWrapper:
         raise ValueError("插件执行失败，未返回结果")
 
     def clear_cache(self, plugin_name: Optional[str] = None):
-        """Clear cached results
+        """Clear cached results.
 
         Args:
-            plugin_name: If specified, clear only this plugin's cache.
-                        If None, clear all cache.
+            plugin_name: If specified, clear ALL kwargs variants of this
+                        plugin (handles pid=4376 AND pid=100, etc.).  If
+                        None, clear the entire cache.
         """
         if plugin_name:
             resolved_plugin_name = self._resolve_plugin_name(plugin_name)
-            self._cache.pop(resolved_plugin_name, None)
+            # In-memory keys are ``(plugin_name, kwargs)`` tuples; wipe every
+            # variant whose first element matches the resolved plugin name.
+            for key in list(self._cache.keys()):
+                if isinstance(key, tuple) and key[0] == resolved_plugin_name:
+                    del self._cache[key]
+            # On-disk: delete every CSV variant for this plugin.
+            self._disk_cache.delete(self.image_path, resolved_plugin_name)
             self._increment_cache_stat("clear_operations")
-            logging.info(f"Cleared cache for {resolved_plugin_name}")
+            logging.info(f"Cleared cache for {resolved_plugin_name} (all kwargs variants)")
         else:
             self._cache.clear()
+            self._disk_cache.delete_all(self.image_path)
             self._increment_cache_stat("clear_operations")
             logging.info("Cleared all cache")
 

@@ -17,6 +17,7 @@ from openai import AsyncOpenAI
 
 from zero import config
 from web.backend.services.memory_store import MemoryStore, build_memory_items_from_text
+from web.backend.services.dsml_parser import DSMLStreamParser
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +58,18 @@ _MODEL_TOKEN_LIMITS = {
 # ── Agent tool definitions (OpenAI function calling) ──────────────
 
 # Maximum tool-calling rounds per user message to prevent infinite loops.
-_MAX_TOOL_ROUNDS = 5
+# A typical forensic chain (pslist → identify suspicious PID → malfind pid →
+# netscan → dlllist pid → cmdline pid) easily spans 5-7 steps, so we allow
+# up to 8 rounds before forcing a final summary.
+_MAX_TOOL_ROUNDS = 8
+
+# Memory-compression debounce.  Each compression is an extra non-streaming
+# LLM call, so we don't run one after *every* message.  Instead we trigger
+# when at least ``_MEMORY_DEBOUNCE_TURNS`` turns have elapsed since the last
+# compression OR ``_MEMORY_DEBOUNCE_SECONDS`` have passed — whichever comes
+# first — so a burst of short questions still gets compressed promptly.
+_MEMORY_DEBOUNCE_TURNS = 3
+_MEMORY_DEBOUNCE_SECONDS = 60.0
 
 # Plugins the AI agent is allowed to execute.  Plugins that write files
 # (dumpfiles, procdump, etc.) are intentionally excluded to prevent the
@@ -459,21 +471,6 @@ def _find_bracket_end(text: str, open_pos: int) -> int:
     return -1
 
 
-def _update_config_value(content: str, key: str, value) -> str:
-    """Update a single KEY = VALUE line in config.py, preserving inline comments."""
-    val_str = json.dumps(value, ensure_ascii=False) if isinstance(value, str) else repr(value)
-    pattern = rf'^({key}\s*=\s*)("(?:[^"\\]|\\.)*"|\x27(?:[^\x27\\]|\\.)*\x27|[^\s#]+)(.*?)$'
-
-    def _replacer(m):
-        prefix, _, tail = m.group(1), m.group(2), (m.group(3) or '').lstrip()
-        new_val = f"{prefix}{val_str}"
-        if tail:
-            pad = max(1, 50 - len(new_val))
-            return f"{new_val}{' ' * pad}{tail}"
-        return new_val
-
-    return re.sub(pattern, _replacer, content, count=1, flags=re.MULTILINE)
-
 
 def _ensure_ai_data_dir() -> None:
     _AI_DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -560,36 +557,25 @@ def _load_profiles_from_config() -> list[dict]:
 
 
 def _save_profiles_to_config(profiles: list[dict]) -> None:
-    """Write non-secret AI_PROFILES metadata back to config.py."""
+    """Sync profiles metadata into the in-memory ``zero.config`` module.
+
+    Previously this rewrote ``config.py`` on disk via regex to persist the
+    ``AI_PROFILES`` list.  That was fragile (regex edits to a git-tracked
+    file) and risked leaking profile metadata.  Runtime profiles now live
+    exclusively in ``.zero/ai/profiles.json``; we only mirror the non-secret
+    metadata into ``config`` so legacy code paths that read
+    ``config.AI_PROFILES`` keep working in-process.
+    """
     try:
-        content = _CONFIG_FILE.read_text("utf-8")
-        # Build new block
-        if not profiles:
-            new_block = "AI_PROFILES = []\n"
-        else:
-            lines = ["AI_PROFILES = ["]
-            for p in profiles:
-                entry = {k: p.get(k, "") for k in ("id", "name", "base_url", "model")}
-                entry["api_key"] = ""
-                lines.append(f"    {json.dumps(entry, ensure_ascii=False)},")
-            lines.append("]")
-            new_block = "\n".join(lines) + "\n"
-        # Replace existing block
-        match = re.search(r'AI_PROFILES\s*=\s*\[', content)
-        if match:
-            bracket_start = content.index('[', match.start())
-            bracket_end = _find_bracket_end(content, bracket_start)
-            if bracket_end >= 0:
-                line_end = bracket_end + 1
-                while line_end < len(content) and content[line_end] in (' ', '\t'):
-                    line_end += 1
-                if line_end < len(content) and content[line_end] == '\n':
-                    line_end += 1
-                content = content[:match.start()] + new_block + content[line_end:]
-        else:
-            content = content.rstrip() + "\n\n" + new_block
-        _CONFIG_FILE.write_text(content, "utf-8")
-        # Sync in-memory module
+        # api_key is always blanked here — real keys stay in profiles.json only.
+        sanitized = []
+        for p in (profiles or []):
+            entry = {k: p.get(k, "") for k in ("id", "name", "base_url", "model")}
+            entry["api_key"] = ""
+            sanitized.append(entry)
+        config.AI_PROFILES = sanitized
+    except Exception as e:
+        logger.error("Failed to sync AI_PROFILES into config module: %s", e, exc_info=True)
         config.AI_PROFILES = profiles
     except Exception as e:
         logger.error("Failed to write AI_PROFILES to config.py: %s", e, exc_info=True)
@@ -623,21 +609,26 @@ def _save_profiles_to_json(profiles: list[dict]) -> None:
 
 
 def _persist_active_to_config(profile: Optional[dict]) -> None:
-    """Write active profile's non-secret settings to config.py."""
+    """Sync the active profile's non-secret settings into the in-memory
+    ``zero.config`` module.
+
+    The ``config.py`` file on disk is deliberately NOT rewritten: it is
+    tracked by git and rewriting it via regex is fragile and risks leaking
+    profile metadata.  Runtime configuration now lives exclusively under
+    ``.zero/ai/`` (``profiles.json``, ``settings.json``).  We still mirror
+    base_url/model/key into ``config`` so the ``_resolve_config`` fallback
+    path keeps working when no profile is selected.
+    """
     if not profile:
         return
     try:
-        content = _CONFIG_FILE.read_text("utf-8")
-        content = _update_config_value(content, "AI_BASE_URL", profile.get("base_url", ""))
-        content = _update_config_value(content, "AI_API_KEY", "")
-        content = _update_config_value(content, "AI_MODEL", profile.get("model", ""))
-        _CONFIG_FILE.write_text(content, "utf-8")
-        # Sync in-memory module
         config.AI_BASE_URL = profile.get("base_url", "")
-        config.AI_API_KEY = ""
         config.AI_MODEL = profile.get("model", "")
+        # Never carry a real key into config.*; profile key is read at call
+        # time via _resolve_config.
+        config.AI_API_KEY = ""
     except Exception as e:
-        logger.error("Failed to persist active profile to config.py: %s", e, exc_info=True)
+        logger.error("Failed to sync active profile into config module: %s", e, exc_info=True)
 
 
 def _load_custom_prompts() -> list[dict]:
@@ -722,7 +713,6 @@ class AiService:
     """Manages multi-model profiles, prompt library, and streaming."""
 
     def __init__(self) -> None:
-        self._history: dict[str, list[dict[str, Any]]] = {}
         self._openai_clients: dict[tuple[str, str], AsyncOpenAI] = {}
         # Active profile overrides — set at runtime from frontend
         self._active_profile: Optional[dict] = None
@@ -745,6 +735,9 @@ class AiService:
         self._memory_last_error: str = ""
         self._memory_update_task: Optional[asyncio.Task] = None
         self._memory_update_lock = asyncio.Lock()
+        # Debounce bookkeeping for memory compression (see _schedule_memory_update).
+        self._memory_turns_since_compress: int = 0
+        self._memory_last_compress_ts: float = 0.0
         self._load_runtime_state()
 
     def _normalize_int_or_max(self, value, fallback: int, min_value: int = 1) -> int | str:
@@ -1002,19 +995,16 @@ class AiService:
         self._memory_store.cleanup(ttl_days=self._ai_memory_ttl_days)
 
         if self._persist_to_config_py:
+            # config.py is no longer rewritten on disk (git-tracked + fragile
+            # regex edits).  We still mirror the tunables into the in-memory
+            # ``config`` module so legacy fallbacks that read it stay in sync.
             try:
-                content = _CONFIG_FILE.read_text("utf-8")
-                content = _update_config_value(content, "AI_MAX_TOKENS", self._ai_max_tokens)
-                content = _update_config_value(content, "AI_TEMPERATURE", self._ai_temperature)
-                content = _update_config_value(content, "AI_MAX_HISTORY", self._ai_max_history)
-                content = _update_config_value(content, "AI_CONTEXT_MAX_ROWS", self._ai_context_max_rows)
-                _CONFIG_FILE.write_text(content, "utf-8")
                 config.AI_MAX_TOKENS = self._ai_max_tokens
                 config.AI_TEMPERATURE = self._ai_temperature
                 config.AI_MAX_HISTORY = self._ai_max_history
                 config.AI_CONTEXT_MAX_ROWS = self._ai_context_max_rows
             except Exception as e:
-                logger.error("Failed to persist AI settings to config.py: %s", e, exc_info=True)
+                logger.error("Failed to sync AI settings into config module: %s", e, exc_info=True)
 
         return self.get_ai_settings()
 
@@ -1090,6 +1080,11 @@ class AiService:
         self._compressed_memory = ""
         _save_compressed_memory("")
         removed = self._memory_store.clear_all()
+        # Reset debounce bookkeeping so the next compression fires on its
+        # normal turn/threshold cadence rather than immediately or stale.
+        self._memory_turns_since_compress = 0
+        self._memory_last_compress_ts = 0.0
+        self._memory_status = "idle"
         return removed
 
     def get_memory_stats(self) -> dict:
@@ -1147,6 +1142,9 @@ class AiService:
                 self._memory_store.upsert_items(new_items)
                 self._memory_store.cleanup(ttl_days=self._ai_memory_ttl_days)
                 self._memory_status = "done"
+                # Stamp the debounce clock so the next compression waits for
+                # a fresh turn/threshold instead of firing immediately.
+                self._memory_last_compress_ts = time.monotonic()
             except Exception as e:
                 ok = False
                 self._memory_status = "failed"
@@ -1292,17 +1290,15 @@ class AiService:
                 ),
             })
 
-        # Load history from the persistent store if available
-        raw_history = []
+        # Load history from the persistent conversation store.  Conversation
+        # state lives ONLY in conversation_store — there is no in-memory mirror.
+        raw_history: list[dict[str, Any]] = []
         if conversation_id:
             from web.backend.services import conversation_store as conv_store
             try:
                 raw_history = conv_store.get_messages(conversation_id)
             except Exception as e:
                 logger.warning("Failed to lazily load conversation history: %s", e)
-
-        if not raw_history:
-            raw_history = self.get_history(conversation_id)
 
         # Slice history by turns (last N user queries)
         max_history = self._ai_max_history
@@ -1402,6 +1398,64 @@ class AiService:
             lines.append("结果已截断，仅返回前 100 行。")
         return "\n".join(lines)
 
+    # Maximum number of data rows kept in a tool result when it is folded
+    # back into the ``messages`` list for subsequent agent rounds.  Keeping
+    # the full 100-row preview in every round balloons the prompt token
+    # budget after a few tool calls; this keeps the most recent detail while
+    # trimming older tool outputs to a compact digest.
+    _TOOL_RESULT_HISTORY_MAX_ROWS = 30
+
+    @classmethod
+    def _compact_tool_result_for_messages(cls, result: Any) -> str:
+        """Compress a tool result before appending it to ``messages``.
+
+        The freshly-executed result was already surfaced to the model via the
+        ``tool_result`` SSE event (``summary`` field).  When the same result
+        is folded back into ``messages`` for the *next* agent round, we keep a
+        compact digest — enough rows for the model to reference specifics,
+        plus the structured summary fields — instead of the full 100-row
+        preview.  This caps per-round token growth as the tool loop runs.
+        """
+        if not isinstance(result, dict):
+            # Non-dict results (e.g. raised exceptions never reach here) are
+            # serialised as-is — they are already small.
+            return json.dumps(result, ensure_ascii=False)
+
+        compact: dict[str, Any] = {
+            "plugin": result.get("plugin"),
+            "summary": str(result.get("summary") or "").strip() or None,
+            "total": result.get("total"),
+            "truncated": result.get("truncated"),
+        }
+
+        columns = result.get("columns")
+        if isinstance(columns, list):
+            compact["columns"] = list(columns)[:30]
+
+        rows = result.get("rows")
+        if isinstance(rows, list):
+            max_rows = cls._TOOL_RESULT_HISTORY_MAX_ROWS
+            compact["rows"] = [list(r) for r in rows[:max_rows]]
+            if len(rows) > max_rows:
+                compact["history_rows_truncated"] = len(rows) - max_rows
+
+        files = result.get("files")
+        if isinstance(files, list) and files:
+            compact["files"] = [
+                {"path": f.get("path"), "size_bytes": f.get("size_bytes")}
+                for f in files[:10]
+                if isinstance(f, dict) and f.get("path")
+            ] or None
+
+        details = result.get("details")
+        if isinstance(details, list) and details:
+            # Per-dump metadata can be large; keep only plugin + pid markers.
+            compact["details_count"] = len(details)
+
+        # Drop keys whose value is None so the payload stays tight.
+        compact = {k: v for k, v in compact.items() if v is not None}
+        return json.dumps(compact, ensure_ascii=False)
+
     async def chat_stream(
         self,
         user_message: str,
@@ -1457,14 +1511,28 @@ class AiService:
 
                 content_parts: list[str] = []
                 tool_call_acc: dict[int, dict[str, Any]] = {}
+                # DSML fallback parser: some models (e.g. deepseek-v4-pro)
+                # emit tool calls as in-band text in delta.content instead of
+                # structured delta.tool_calls.  The parser strips that markup
+                # before it reaches the user and feeds parsed calls into the
+                # same tool_call_acc used by the standard path below.
+                dsml_parser = DSMLStreamParser()
 
                 async for chunk in stream:
                     delta = chunk.choices[0].delta if chunk.choices else None
                     if delta is None:
                         continue
                     if delta.content:
-                        content_parts.append(delta.content)
-                        yield {"type": "chunk", "content": delta.content}
+                        # Route through the DSML parser first: it returns the
+                        # visible text fragments (DSML markup stripped) and any
+                        # tool calls it decoded from the in-band protocol.
+                        dsml_visible, dsml_calls = dsml_parser.feed(delta.content)
+                        for vc in dsml_visible:
+                            content_parts.append(vc)
+                            yield {"type": "chunk", "content": vc}
+                        for tc in dsml_calls:
+                            idx = len(tool_call_acc)
+                            tool_call_acc[idx] = tc
                     if delta.tool_calls:
                         for idx_str, tc_data in self._accumulate_tool_calls(delta).items():
                             existing = tool_call_acc.get(idx_str)
@@ -1475,11 +1543,19 @@ class AiService:
                                 existing["function_name"] += tc_data["function_name"]
                                 existing["function_arguments"] += tc_data["function_arguments"]
 
+                # Flush any residual DSML buffer as visible text (an unclosed
+                # block is treated as malformed and surfaced verbatim).
+                dsml_visible, _ = dsml_parser.flush()
+                for vc in dsml_visible:
+                    content_parts.append(vc)
+                    yield {"type": "chunk", "content": vc}
+
                 # ── No tool calls → final text response ────────────
                 if not tool_call_acc:
                     assistant_text = "".join(content_parts)
-                    self.append_history(conversation_id, {"role": "user", "content": user_message})
-                    self.append_history(conversation_id, {"role": "assistant", "content": assistant_text})
+                    # History persistence happens in the SSE route layer
+                    # (ai_routes._sse_stream → conversation_store.append_messages);
+                    # the service stays stateless w.r.t. history.
                     if self._ai_memory_enabled:
                         yield {"type": "memory_status", "status": "queued"}
                     self._schedule_memory_update(
@@ -1527,7 +1603,10 @@ class AiService:
 
                     try:
                         result = await tool_executor(tool_name, tool_args, engine_id)
-                        result_text = json.dumps(result, ensure_ascii=False)
+                        # Yield the human-readable summary to the client, then
+                        # fold a COMPACT digest of the result into ``messages``
+                        # for the next agent round.  The full 100-row preview
+                        # would balloon the prompt after a few tool calls.
                         yield {
                             "type": "tool_result",
                             "tool_call_id": tc["id"],
@@ -1538,7 +1617,7 @@ class AiService:
                         messages.append({
                             "role": "tool",
                             "tool_call_id": tc["id"],
-                            "content": result_text,
+                            "content": self._compact_tool_result_for_messages(result),
                         })
                     except Exception as exc:
                         error_text = f"工具执行失败: {exc}"
@@ -1591,8 +1670,8 @@ class AiService:
                         yield {"type": "chunk", "content": delta.content}
 
                 assistant_text = "".join(final_parts) or "分析完成，但模型未生成结论。请重新提问或指定更具体的问题。"
-                self.append_history(conversation_id, {"role": "user", "content": user_message})
-                self.append_history(conversation_id, {"role": "assistant", "content": assistant_text})
+                # History persistence happens in the SSE route layer; see
+                # ai_routes._sse_stream.
                 if self._ai_memory_enabled:
                     yield {"type": "memory_status", "status": "queued"}
                 self._schedule_memory_update(
@@ -1614,10 +1693,35 @@ class AiService:
         assistant_message: str,
         plugin_context: Optional[dict],
     ) -> None:
-        """Kick off a background memory-compression task (non-blocking)."""
+        """Kick off a background memory-compression task (non-blocking).
+
+        Compressions are debounced: a new LLM compression only runs after
+        ``_MEMORY_DEBOUNCE_TURNS`` turns have elapsed, OR if
+        ``_MEMORY_DEBOUNCE_SECONDS`` have passed since the last successful
+        compression.  Until then we stay in the ``queued`` state so the
+        frontend can show a pending indicator without paying a second LLM
+        call on every single message.
+        """
         if not self._ai_memory_enabled:
             return
+
+        self._memory_turns_since_compress += 1
+        now = time.monotonic()
+        # Only consider the time threshold once at least one compression has
+        # actually run — otherwise ``last_compress_ts == 0`` makes ``elapsed``
+        # span decades and would fire on every single message.
+        elapsed = now - self._memory_last_compress_ts if self._memory_last_compress_ts > 0 else 0.0
+        should_compress = (
+            self._memory_turns_since_compress >= _MEMORY_DEBOUNCE_TURNS
+            or elapsed >= _MEMORY_DEBOUNCE_SECONDS
+        )
+
         self._memory_status = "queued"
+        if not should_compress:
+            return  # wait for the turn/time threshold; status stays "queued"
+
+        # Threshold reached — reset counters and fire the compression.
+        self._memory_turns_since_compress = 0
         # Cancel any in-flight memory update before starting a new one.
         if self._memory_update_task and not self._memory_update_task.done():
             self._memory_update_task.cancel()
@@ -1631,35 +1735,6 @@ class AiService:
                 plugin_context=plugin_context,
             )
         )
-
-    def get_history(self, conversation_id: Optional[str] = None) -> list[dict[str, Any]]:
-        conv_key = conversation_id or ""
-        if conv_key not in self._history:
-            self._history[conv_key] = []
-        return self._history[conv_key]
-
-    def clear_history(self, conversation_id: Optional[str] = None) -> None:
-        conv_key = conversation_id or ""
-        if conv_key in self._history:
-            self._history[conv_key].clear()
-        else:
-            self._history[conv_key] = []
-        if conv_key:
-            from web.backend.services import conversation_store as conv_store
-            try:
-                conv_store.replace_messages(conv_key, [])
-            except Exception as e:
-                logger.warning("Failed to clear conversation history in store: %s", e)
-
-    def append_history(self, conversation_id: Optional[str], message: dict[str, Any]) -> None:
-        conv_key = conversation_id or ""
-        if conv_key not in self._history:
-            self._history[conv_key] = []
-        self._history[conv_key].append(message)
-        # Prune to prevent memory leaks (P2 Issue #8)
-        limit = self._ai_max_history * 4
-        if len(self._history[conv_key]) > limit:
-            self._history[conv_key] = self._history[conv_key][-limit:]
 
     def get_config_info(self) -> dict:
         base_url, _, model = self._resolve_config()
