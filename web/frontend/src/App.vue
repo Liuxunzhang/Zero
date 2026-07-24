@@ -83,6 +83,33 @@
           <span class="ai-toggle-icon">SYM</span>
           <span class="ai-toggle-text">符号</span>
         </button>
+        <div class="topbar-token-wrap" ref="tokenWrapRef">
+          <button
+            class="ai-toggle-btn"
+            :class="{ active: showTokenMenu }"
+            title="API Token（后端开启鉴权时使用）"
+            @click="showTokenMenu = !showTokenMenu"
+          >
+            <span class="ai-toggle-icon">KEY</span>
+            <span class="ai-toggle-text">Token</span>
+          </button>
+          <div v-if="showTokenMenu" class="topbar-token-popover" @click.stop>
+            <div class="topbar-token-title">API Token</div>
+            <p class="topbar-token-hint">仅保存在本机 localStorage。后端未设置 API_TOKEN 时可留空。</p>
+            <input
+              v-model="localApiToken"
+              class="topbar-token-input"
+              type="password"
+              autocomplete="off"
+              placeholder="Bearer / X-API-Token"
+              @keydown.enter="saveApiToken"
+            />
+            <div class="topbar-token-actions">
+              <button class="topbar-load-btn" type="button" @click="saveApiToken">保存</button>
+              <button class="page-btn" type="button" @click="clearApiToken">清除</button>
+            </div>
+          </div>
+        </div>
         <button class="theme-toggle" @click="toggleTheme" :title="themeLabel">
           {{ themeIcon }}
         </button>
@@ -189,7 +216,7 @@
 <script setup>
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useAppStore } from './stores/app'
-import { listImages } from './api'
+import { listImages, getApiToken, setApiToken } from './api'
 import AppSidebar from './components/AppSidebar.vue'
 import AiPanel from './components/AiPanel.vue'
 import AiConfigModal from './components/AiConfigModal.vue'
@@ -209,6 +236,29 @@ const showAiPanel = ref(false)
 const showAiConfig = ref(false)
 const showSymbolManager = ref(false)
 const showNotepad = ref(false)
+const showTokenMenu = ref(false)
+const localApiToken = ref(getApiToken())
+const tokenWrapRef = ref(null)
+
+function saveApiToken() {
+  setApiToken(localApiToken.value)
+  localApiToken.value = getApiToken()
+  showTokenMenu.value = false
+  store.pushMessage(localApiToken.value ? 'API Token 已保存到本机' : 'API Token 已清空', 'success')
+}
+
+function clearApiToken() {
+  setApiToken('')
+  localApiToken.value = ''
+  store.pushMessage('API Token 已清除', 'info')
+}
+
+function onDocClickToken(e) {
+  if (!showTokenMenu.value) return
+  if (tokenWrapRef.value && !tokenWrapRef.value.contains(e.target)) {
+    showTokenMenu.value = false
+  }
+}
 const aiPanelRef = ref(null)
 const dumpFiles = ref([])
 const aiPanelWidth = ref(420)
@@ -448,6 +498,7 @@ onMounted(async () => {
   document.documentElement.setAttribute('data-theme', currentTheme.value)
 
   document.addEventListener('click', handleClickOutside)
+  document.addEventListener('click', onDocClickToken)
   window.addEventListener('zero:send-to-ai', handleSendToAiEvent)
 
   const savedWidth = Number(localStorage.getItem(AI_PANEL_WIDTH_KEY))
@@ -474,6 +525,7 @@ onMounted(async () => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('click', handleClickOutside)
+  document.removeEventListener('click', onDocClickToken)
   window.removeEventListener('zero:send-to-ai', handleSendToAiEvent)
   stopAiResize()
   _stopFloatDrag()

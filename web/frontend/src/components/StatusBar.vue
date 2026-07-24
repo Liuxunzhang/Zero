@@ -47,6 +47,13 @@
       title="取消执行"
     >停止</button>
 
+    <button
+      v-if="!store.pluginBusy && (store.currentPlugin || store.lastRunPayload?.plugin)"
+      class="page-btn"
+      @click="store.forceRerunCurrentPlugin()"
+      title="忽略结果缓存，强制重新运行当前插件"
+    >强制重跑</button>
+
     <div v-if="store.hasData" class="statusbar-pagination">
       <button
         class="page-btn"

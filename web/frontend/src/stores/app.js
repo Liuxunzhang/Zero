@@ -228,8 +228,10 @@ export const useAppStore = defineStore("app", () => {
       const msgEngine = msg.engine || engineId
       const target = engineStates[msgEngine]
       if (msg.type === "progress") {
-        pushMessage(msg.data)
-        const m = String(msg.data).match(/(\d+(?:\.\d+)?)/)
+        const text = String(msg.data || "")
+        const fromCache = /cached|缓存|saved results|Loaded saved|Using cached/i.test(text)
+        pushMessage(fromCache ? ("[" + msgEngine + "] 结果来自缓存 — " + text) : text, fromCache ? "success" : "info")
+        const m = text.match(/(\d+(?:\.\d+)?)/)
         if (m && target) target.progress = Math.min(parseFloat(m[1]) * 100, 100)
       } else if (msg.type === "result") {
         const d = msg.data
@@ -237,6 +239,9 @@ export const useAppStore = defineStore("app", () => {
           target.page = 1
           target.pluginBusy = false
           target.progress = -1
+          if (d?.total != null) target.totalRows = d.total
+          if (d?.plugin) target.currentPlugin = d.plugin
+          if (Array.isArray(d?.columns) && d.columns.length) target.columns = d.columns
         }
         pushMessage("[" + msgEngine + "] 插件完成: " + d.plugin + " - " + d.total + " 行", "success")
         if (msgEngine === selectedEngine.value) {
@@ -259,21 +264,15 @@ export const useAppStore = defineStore("app", () => {
     return _sockets[engineId]
   }
 
-  function runPlugin(pluginName) {
-    const engineId = selectedEngine.value
-    const st = engineStates[engineId]
-    if (!requireImageLoaded("运行插件", engineId)) return
-    if (st.pluginBusy) { pushMessage("[" + engineId + "] 已有插件正在运行", "warning"); return }
-    st.runningPlugin = pluginName
-    st.page = 1
-    st.pluginBusy = true
-    st.progress = 0
-    pushMessage("[" + engineId + "] 运行插件: " + pluginName + "...")
-    const socket = _getSocket(engineId)
-    const payload = { plugin: pluginName, engine: engineId, os_family: st.osFamily || "linux" }
-    const doSend = () => socket.send("run", payload)
-    if (socket.ready) doSend()
-    else socket.onOpen(doSend)
+  // Last successful run request — used by force re-run with same params.
+  const lastRunPayload = reactive({
+    plugin: "",
+    engineId: "",
+    params: {},
+  })
+
+  function runPlugin(pluginName, options = {}) {
+    runPluginWithPayload(pluginName, selectedEngine.value, {}, options)
   }
 
   async function cancelRunningPlugin() {
@@ -300,7 +299,12 @@ export const useAppStore = defineStore("app", () => {
     const engineId = selectedEngine.value
     try {
       await apiClearCache(plugin, engineId)
-      pushMessage("缓存已清除", "success")
+      pushMessage(
+        plugin
+          ? "缓存已清除（当前表格仍可能显示上次结果，可点「强制重跑」刷新）"
+          : "缓存已清除",
+        "success",
+      )
     } catch (e) { pushMessage("清除失败: " + e.message, "error") }
   }
 
@@ -494,18 +498,34 @@ export const useAppStore = defineStore("app", () => {
   }
 
   /**
-   * Internal: send a plugin run via websocket with arbitrary params.
+   * Send a plugin run via websocket with arbitrary params.
+   * @param {object} options - { force?: boolean } when true, ignore result cache
    */
-  function runPluginWithPayload(pluginName, engineId, params) {
+  function runPluginWithPayload(pluginName, engineId, params, options = {}) {
     const st = engineStates[engineId]
+    if (!requireImageLoaded("运行插件", engineId)) return
     if (st.pluginBusy) { pushMessage("[" + engineId + "] 已有插件正在运行", "warning"); return }
+    const force = Boolean(options.force)
+    const cleanParams = { ...(params || {}) }
+    lastRunPayload.plugin = pluginName
+    lastRunPayload.engineId = engineId
+    lastRunPayload.params = { ...cleanParams }
     st.runningPlugin = pluginName
     st.page = 1
     st.pluginBusy = true
     st.progress = 0
-    pushMessage("[" + engineId + "] 运行插件: " + pluginName + "...")
+    pushMessage(
+      "[" + engineId + "] " + (force ? "强制重跑: " : "运行插件: ") + pluginName + "...",
+      force ? "warning" : "info",
+    )
     const socket = _getSocket(engineId)
-    const payload = { plugin: pluginName, engine: engineId, os_family: st.osFamily || "linux", ...params }
+    const payload = {
+      plugin: pluginName,
+      engine: engineId,
+      os_family: st.osFamily || "linux",
+      ...cleanParams,
+    }
+    if (force) payload.force = true
     const doSend = () => socket.send("run", payload)
     if (socket.ready) doSend()
     else socket.onOpen(doSend)
@@ -516,6 +536,26 @@ export const useAppStore = defineStore("app", () => {
     const pluginName = pluginArgsModal.pluginName
     pluginArgsModal.show = false
     runPluginWithPayload(pluginName, engineId, params)
+  }
+
+  /** Re-run last (or current) plugin ignoring cache. */
+  function forceRerunCurrentPlugin() {
+    const engineId = selectedEngine.value
+    const st = engineStates[engineId]
+    const plugin =
+      lastRunPayload.plugin ||
+      st.runningPlugin ||
+      st.currentPlugin ||
+      ""
+    if (!plugin) {
+      pushMessage("没有可重跑的插件", "warning")
+      return
+    }
+    const params =
+      lastRunPayload.plugin === plugin && lastRunPayload.engineId === engineId
+        ? { ...lastRunPayload.params }
+        : {}
+    runPluginWithPayload(plugin, engineId, params, { force: true })
   }
 
   function rerunFromCmdString(cmdStr) {
@@ -536,7 +576,8 @@ export const useAppStore = defineStore("app", () => {
     toggleSort, resetSort, setFilter, goToPage, setPageSize,
     appendFilterCondition,
     pushMessage, init, reloadAllPlugins, fetchEngineSettings, setEngineProfile,
-    pluginArgsModal, openPluginWithArgs, runPluginWithParams,
+    pluginArgsModal, openPluginWithArgs, runPluginWithParams, runPluginWithPayload,
+    forceRerunCurrentPlugin, lastRunPayload,
     globalArgs, showArgsPanel, saveGlobalArgs,
     lastCmdDisplay, rerunFromCmdString,
   }

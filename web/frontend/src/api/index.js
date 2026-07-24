@@ -3,9 +3,47 @@
  */
 import axios from 'axios'
 
+const API_TOKEN_KEY = 'zero-api-token'
+
+export function getApiToken() {
+  try {
+    return String(localStorage.getItem(API_TOKEN_KEY) || '').trim()
+  } catch {
+    return ''
+  }
+}
+
+export function setApiToken(token) {
+  const value = String(token || '').trim()
+  try {
+    if (value) localStorage.setItem(API_TOKEN_KEY, value)
+    else localStorage.removeItem(API_TOKEN_KEY)
+  } catch {
+    /* ignore quota / private mode */
+  }
+  return value
+}
+
+function authHeaders() {
+  const token = getApiToken()
+  if (!token) return {}
+  return {
+    'X-API-Token': token,
+    Authorization: `Bearer ${token}`,
+  }
+}
+
 const api = axios.create({
   baseURL: '',   // Vite proxy handles /api to backend
   timeout: 30000,
+})
+
+api.interceptors.request.use((config) => {
+  const headers = authHeaders()
+  if (Object.keys(headers).length) {
+    config.headers = { ...config.headers, ...headers }
+  }
+  return config
 })
 
 api.interceptors.response.use(
@@ -97,7 +135,9 @@ export function downloadSymbols(paths) {
 
 export function createPluginSocket(onMessage) {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const ws = new WebSocket(`${protocol}//${location.host}/ws/plugin`)
+  const token = getApiToken()
+  const qs = token ? `?token=${encodeURIComponent(token)}` : ''
+  const ws = new WebSocket(`${protocol}//${location.host}/ws/plugin${qs}`)
 
   ws.onmessage = (event) => {
     try {
@@ -138,7 +178,7 @@ export function streamAiChat(message, includeContext, onChunk, onDone, onError, 
 
   fetch('/api/ai/chat', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({
       message,
       include_context: includeContext,

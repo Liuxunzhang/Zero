@@ -40,7 +40,7 @@
       </div>
     </div>
 
-    <!-- Table -->
+    <!-- Table (virtualized body for large page sizes) -->
     <table v-else class="data-table">
       <thead>
         <tr>
@@ -58,18 +58,34 @@
         </tr>
       </thead>
       <tbody>
-        <tr v-for="(row, idx) in store.rows" :key="idx">
+        <tr v-if="padTop > 0" class="virtual-pad-row" aria-hidden="true">
           <td
-            v-for="(cell, ci) in row"
+            :colspan="Math.max(store.columns.length, 1)"
+            :style="{ height: padTop + 'px', padding: 0, border: 'none' }"
+          ></td>
+        </tr>
+        <tr
+          v-for="vr in virtualRows"
+          :key="vr.key"
+          :data-index="vr.index"
+        >
+          <td
+            v-for="(cell, ci) in store.rows[vr.index]"
             :key="ci"
             :title="String(cell)"
-            :class="{ 'cell-selected': selectedCell.row === idx && selectedCell.col === ci }"
-            @click="setSelectedCell(idx, ci)"
+            :class="{ 'cell-selected': selectedCell.row === vr.index && selectedCell.col === ci }"
+            @click="setSelectedCell(vr.index, ci)"
             @dblclick="copyCellValue(cell)"
-            @contextmenu.prevent.stop="openCellMenu($event, store.columns[ci], cell, idx, ci)"
+            @contextmenu.prevent.stop="openCellMenu($event, store.columns[ci], cell, vr.index, ci)"
           >
             {{ cell }}
           </td>
+        </tr>
+        <tr v-if="padBottom > 0" class="virtual-pad-row" aria-hidden="true">
+          <td
+            :colspan="Math.max(store.columns.length, 1)"
+            :style="{ height: padBottom + 'px', padding: 0, border: 'none' }"
+          ></td>
         </tr>
       </tbody>
     </table>
@@ -103,10 +119,47 @@
 
 <script setup>
 import { reactive, ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
+import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useAppStore } from '../stores/app'
 
 const store = useAppStore()
 const containerRef = ref(null)
+
+const ROW_HEIGHT = 28
+const rowCount = computed(() => store.rows?.length || 0)
+
+const rowVirtualizer = useVirtualizer(
+  computed(() => ({
+    count: rowCount.value,
+    getScrollElement: () => containerRef.value,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 12,
+  })),
+)
+
+const virtualRows = computed(() => rowVirtualizer.value.getVirtualItems())
+const padTop = computed(() => {
+  const items = virtualRows.value
+  return items.length ? items[0].start : 0
+})
+const padBottom = computed(() => {
+  const items = virtualRows.value
+  if (!items.length) return 0
+  const total = rowVirtualizer.value.getTotalSize()
+  const last = items[items.length - 1]
+  return Math.max(0, total - last.end)
+})
+
+watch(rowCount, () => {
+  // Reset scroll when result set is replaced (new plugin / filter page).
+  nextTick(() => {
+    try {
+      rowVirtualizer.value.scrollToOffset(0)
+    } catch {
+      /* ignore */
+    }
+  })
+})
 
 // ── Loading hints ────────────────────────────────────
 const HINTS = [
