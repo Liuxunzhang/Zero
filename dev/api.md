@@ -108,6 +108,26 @@ Client message:
 }
 ```
 
+可选缓存控制：`force: true` 或 `use_cache: false` 表示忽略结果缓存强制重跑。
+
+若后端配置了 `API_TOKEN`，HTTP 请求需携带：
+
+```text
+Authorization: Bearer <token>
+```
+
+或：
+
+```text
+X-API-Token: <token>
+```
+
+WebSocket 连接：
+
+```text
+/ws/plugin?token=<token>
+```
+
 Cancel:
 
 ```json
@@ -124,6 +144,20 @@ progress
 result
 error
 status
+```
+
+`result` 仅包含元数据（不含全量 rows），完整数据请用 `GET /api/results` 分页拉取：
+
+```json
+{
+  "type": "result",
+  "data": {
+    "plugin": "linux.pslist.PsList",
+    "total": 128,
+    "columns": ["PID", "PPID", "COMM"]
+  },
+  "engine": "vol3"
+}
 ```
 
 ## Results

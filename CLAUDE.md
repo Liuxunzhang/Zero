@@ -28,7 +28,9 @@ black .                 # Format Python code
 ruff check .            # Lint Python code
 ```
 
-There is no test suite yet — the project is at version 0.1.0 and test infrastructure is planned but not implemented.
+```bash
+make test               # pytest (tests/ — cache key, disk cache, get_results LRU)
+```
 
 ## Architecture
 
@@ -55,7 +57,7 @@ VolatilityWrapper (zero/core/wrapper.py) — raw vol3 API calls, plugin process 
 - **Multi-engine abstraction** (`zero/engines/base.py`): `EngineBase` defines a uniform interface (load image, list plugins, run plugin, get results, export). Only `Vol3Engine` exists today, but the design supports adding other engines. The web layer never touches engine internals directly — all access goes through `EngineManager`.
 - **EngineManager singleton** (`zero/engines/manager.py`): Lazy-initialized on first `get_manager()` call. Holds one adapter instance per `engine_id` with fully independent state (image, plugin, results, cache). Engines are registered via `register_factory()`, allowing deferred construction.
 - **Plugin process isolation** (`zero/core/plugin_worker.py`): Plugins run in a **separate process** — `multiprocessing.Process` on Linux (`fork`), `subprocess.Popen` on macOS (`spawn`, to avoid fork-safety issues with vol3's native libraries). This enables hard cancellation and timeout enforcement. Communication via `multiprocessing.Queue` or JSON-over-stdout.
-- **Disk-backed result cache** (`zero/core/result_cache.py`): CSV files under `saved_results/vol3/{image_name}/{plugin_name}.csv`. In-memory LRU query cache (max 64 entries). Cache survives restarts via `ENABLE_DISK_CACHE` config.
+- **Disk-backed result cache** (`zero/core/result_cache.py`): CSV under `saved_results/vol3/{image_id}/{plugin}/{kwargs_digest}.csv`. Cache key includes image identity (path+mtime+size) and normalized plugin kwargs (`zero/core/cache_key.py`). `clear_cache` clears memory **and** disk. In-memory filter/sort LRU (`RESULTS_QUERY_CACHE_MAX`, default 64) caches filtered sets; pagination only slices.
 - **All config is centralized** in `zero/config.py` — timeouts, paths, AI settings, cache strategy, feature flags. No magic values scattered through the codebase.
 - **Services are module-level singletons**: `EngineService`, `AiService`, `SymbolService` in `web/backend/services/` — each is a thin wrapper initialized at import time, exposing methods that the API routes call.
 - **Advanced filter expression parser** (`zero/utils/filter_expression.py`): Custom tokenizer/evaluator supporting 11 operators (`-eq`, `-contain`, `-match`, `-startswith`, etc.) with `&&`/`||` logic. Evaluated server-side against cached results.
@@ -80,6 +82,8 @@ Multi-provider AI assistant (`web/backend/services/ai_service.py`) supporting Op
 | `zero/engines/base.py` | `EngineBase` abstract class + `EngineResult` dataclass |
 | `zero/engines/manager.py` | `EngineManager` singleton — entry point for all engine access |
 | `zero/core/wrapper.py` | `VolatilityWrapper` — core vol3 integration (largest file) |
+| `zero/core/cache_key.py` | Result cache keys: image identity + kwargs digest |
+| `zero/core/result_cache.py` | Disk CSV load/save/delete for plugin results |
 | `web/backend/main.py` | FastAPI app creation and route registration |
 | `web/backend/api/routes.py` | REST endpoints (engines, images, plugins, results, export, cache) |
 | `web/backend/api/websocket.py` | WebSocket for plugin execution progress |

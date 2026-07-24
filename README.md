@@ -70,6 +70,12 @@ http://localhost:8000
 
 `make run` 只启动 FastAPI，并直接服务 `web/frontend/dist` 中的静态前端，不启动 Vite。
 
+默认只监听本机 `127.0.0.1`。局域网访问需要显式放开：
+
+```bash
+make run ZERO_BIND_HOST=0.0.0.0
+```
+
 ## 开发模式
 
 ```bash
@@ -83,6 +89,45 @@ http://localhost:5173
 ```
 
 `make test-run` 会启动后端 reload 和 Vite 开发服务器。
+
+## 测试
+
+```bash
+make test
+```
+
+运行 `tests/` 下的 pytest（缓存 key、磁盘缓存、过滤、分页 LRU 等，不依赖真实内存镜像）。
+
+## 安全部署
+
+| 配置 | 说明 |
+|------|------|
+| `BIND_HOST` / `ZERO_BIND_HOST` | 默认 `127.0.0.1`；公网/局域网改为 `0.0.0.0` 时务必配合鉴权 |
+| `API_TOKEN`（`zero/config.py`） | 非空时，API/WS 需要 `Authorization: Bearer <token>` 或 `X-API-Token`；WebSocket 可用 `?token=` |
+| 前端 Token | 顶栏 **Token** 按钮，写入本机 `localStorage`（`zero-api-token`） |
+| `ALLOW_IMAGE_PATHS` | 若设为路径列表，则 `image/load` 只能加载白名单根目录下的镜像 |
+
+## 结果缓存
+
+插件结果会写入磁盘以便重启后复用：
+
+```text
+saved_results/vol3/{image_id}/{plugin}/{kwargs_digest}.csv
+saved_results/vol3/{image_id}/{plugin}/{kwargs_digest}.meta.json
+```
+
+- `image_id` 由镜像路径 + mtime + size 生成，同名不同内容的 dump 不会撞缓存。
+- 缓存 key **包含插件参数**（如 pid）；不同参数不会互相命中。
+- 旧版 `saved_results/vol3/{image_name}/{plugin}.csv` **不再读取**，可手动删除或使用清理脚本。
+- UI 状态栏 **强制重跑** 会忽略缓存重新执行插件（`force: true`）。
+
+清理磁盘缓存：
+
+```bash
+python scripts/clear_stale_cache.py --all --dry-run
+python scripts/clear_stale_cache.py --older-than-days 30
+python scripts/clear_stale_cache.py --all
+```
 
 ## 基本使用
 
