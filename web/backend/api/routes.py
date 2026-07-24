@@ -103,6 +103,29 @@ async def update_engine_settings(engine_id: str, req: EngineSettingsRequest):
 
 # ── Image ──────────────────────────────────────────────────────────
 
+def _image_path_allowed(resolved: Path) -> bool:
+    """If ALLOW_IMAGE_PATHS is configured, require path under a whitelist root."""
+    try:
+        from zero import config as zero_config
+        roots = getattr(zero_config, "ALLOW_IMAGE_PATHS", None)
+    except Exception:
+        roots = None
+    if not roots:
+        return True
+    resolved_str = str(resolved)
+    for root in roots:
+        try:
+            root_path = Path(root).expanduser().resolve()
+        except OSError:
+            continue
+        if resolved_str == str(root_path) or resolved_str.startswith(str(root_path) + "/"):
+            return True
+        # Windows-style prefix safety is not required on this stack.
+        if resolved_str.startswith(str(root_path) + "\\"):
+            return True
+    return False
+
+
 @router.post("/image/load")
 async def load_image(req: ImageLoadRequest):
     p = Path(req.path).expanduser().resolve()
@@ -111,6 +134,11 @@ async def load_image(req: ImageLoadRequest):
             400,
             f"Unsupported file extension '{p.suffix}'. "
             f"Allowed: {', '.join(sorted(_IMAGE_EXTENSIONS))}",
+        )
+    if not _image_path_allowed(p):
+        raise HTTPException(
+            403,
+            "Image path is outside ALLOW_IMAGE_PATHS whitelist",
         )
     svc = get_service()
     try:

@@ -1,4 +1,4 @@
-.PHONY: install uv-install venv frontend-deps frontend-build run run-backend test-run clean
+.PHONY: install uv-install venv frontend-deps frontend-build run run-backend test-run test clean
 
 VENV_PATH ?= .venv
 PYTHON := $(VENV_PATH)/bin/python
@@ -31,17 +31,26 @@ frontend-deps:
 frontend-build: frontend-deps
 	cd "$(FRONTEND_DIR)" && npm run build
 
+# Override with: make run ZERO_BIND_HOST=0.0.0.0
+ZERO_BIND_HOST ?= 127.0.0.1
+ZERO_BIND_PORT ?= 8000
+
 run: install
-	$(PYTHON) -m uvicorn web.backend.main:app --host 0.0.0.0 --port 8000
+	$(PYTHON) -m uvicorn web.backend.main:app --host $(ZERO_BIND_HOST) --port $(ZERO_BIND_PORT)
 
 run-backend: venv
-	$(PYTHON) -m uvicorn web.backend.main:app --host 0.0.0.0 --port 8000 --reload
+	$(PYTHON) -m uvicorn web.backend.main:app --host $(ZERO_BIND_HOST) --port $(ZERO_BIND_PORT) --reload
 
 test-run: install
-	@echo "Backend: http://localhost:8000"
+	@echo "Backend: http://$(ZERO_BIND_HOST):$(ZERO_BIND_PORT)"
 	@echo "Vite:    http://localhost:5173"
-	@$(PYTHON) -m uvicorn web.backend.main:app --host 0.0.0.0 --port 8000 --reload & \
+	@$(PYTHON) -m uvicorn web.backend.main:app --host $(ZERO_BIND_HOST) --port $(ZERO_BIND_PORT) --reload & \
 	cd "$(FRONTEND_DIR)" && npm run dev
+
+test: venv
+	@$(UV) pip install --python $(PYTHON) -i $(PYPI_INDEX_URL) pytest >/dev/null 2>&1 || \
+		$(PYTHON) -m pip install -q pytest
+	$(PYTHON) -m pytest -q
 
 clean:
 	find . -type d -name "__pycache__" -prune -exec rm -rf {} + 2>/dev/null || true

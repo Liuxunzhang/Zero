@@ -4,6 +4,13 @@ import sys
 EXPORT_DIR = "~/zero_exports"
 DEFAULT_EXPORT_FORMAT = "csv"  # csv、json、txt
 
+# HTTP 服务绑定（局域网暴露请显式改为 0.0.0.0，并考虑设置 API_TOKEN）
+BIND_HOST = "127.0.0.1"
+BIND_PORT = 8000
+API_TOKEN = ""  # 非空时要求 Authorization: Bearer <token> 或 X-API-Token
+# 若设置列表，image/load 路径必须落在这些根目录下；None 表示不限制（本地取证默认）
+ALLOW_IMAGE_PATHS = None
+
 # 日志设置
 LOG_FILE = "logs/zero.log"
 LOG_LEVEL = "INFO"  # DEBUG、INFO、WARNING、ERROR
@@ -27,8 +34,9 @@ HARD_INTERRUPT_MODE = True  # 是否启用硬中断（插件在独立进程中�
 WORKER_START_METHOD = "spawn" if sys.platform == "darwin" else "fork"  # 插件进程启动方式：fork / spawn / forkserver
 
 # 性能设置
-MAX_TABLE_ROWS = 10000  # 表格最大显示行数
-ENABLE_PAGINATION = False  # 大结果集是否启用分页
+MAX_TABLE_ROWS = 10000  # 单次导出/AI 上下文等场景的软上限（表格本身始终服务端分页）
+# 服务端 get_results 对 filter+sort 结果集的 LRU 条数（按 filter/sort 计，不含 page）
+RESULTS_QUERY_CACHE_MAX = 64
 
 # 功能开关
 ENABLE_EXPORT = True
