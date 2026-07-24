@@ -14,6 +14,7 @@ from typing import List, Dict, Tuple, Optional, Any
 from pathlib import Path
 
 from zero import config
+from .cache_key import make_cache_key, plugin_key_prefix
 from .result_cache import DiskResultCache
 
 try:
@@ -762,6 +763,8 @@ class VolatilityWrapper:
             plugin_name: Name of the plugin to run
             progress_callback: Optional callback for progress updates
             use_cache: If True, return cached results if available
+            **kwargs: Plugin parameters; included in cache key so different
+                args (e.g. pid) never share a cache entry.
 
         Returns:
             Tuple of (columns, rows)
@@ -771,21 +774,24 @@ class VolatilityWrapper:
 
         resolved_plugin_name = self._resolve_plugin_name(plugin_name)
         display_plugin_name = self._to_display_plugin_name(resolved_plugin_name)
+        cache_key = make_cache_key(self.image_path, resolved_plugin_name, kwargs)
 
-        # Check cache first
-        if use_cache and resolved_plugin_name in self._cache:
-            logging.info(f"Returning cached results for {resolved_plugin_name}")
+        # Check cache first (key includes image identity + kwargs digest).
+        if use_cache and cache_key in self._cache:
+            logging.info("Returning cached results for %s", cache_key)
             self._increment_cache_stat("memory_hits")
             if progress_callback:
                 progress_callback("Using cached results")
-            return self._cache[resolved_plugin_name]
+            return self._cache[cache_key]
 
         # Check persistent disk cache
         if use_cache:
-            disk_cached = self._disk_cache.load(self.image_path, resolved_plugin_name)
+            disk_cached = self._disk_cache.load(
+                self.image_path, resolved_plugin_name, kwargs=kwargs
+            )
             if disk_cached is not None:
-                self._cache[resolved_plugin_name] = disk_cached
-                logging.info(f"Loaded persistent cached results for {resolved_plugin_name}")
+                self._cache[cache_key] = disk_cached
+                logging.info("Loaded persistent cached results for %s", cache_key)
                 self._increment_cache_stat("disk_hits")
                 if progress_callback:
                     progress_callback(f"Loaded saved results: {display_plugin_name}")
@@ -823,8 +829,14 @@ class VolatilityWrapper:
                     plugin_kwargs=kwargs,
                 )
 
-            self._cache[resolved_plugin_name] = (columns, data_rows)
-            if self._disk_cache.save(self.image_path, resolved_plugin_name, columns, data_rows):
+            self._cache[cache_key] = (columns, data_rows)
+            if self._disk_cache.save(
+                self.image_path,
+                resolved_plugin_name,
+                columns,
+                data_rows,
+                kwargs=kwargs,
+            ):
                 self._increment_cache_stat("disk_writes")
             return columns, data_rows
         finally:
@@ -1051,29 +1063,65 @@ class VolatilityWrapper:
         raise ValueError("插件执行失败，未返回结果")
 
     def clear_cache(self, plugin_name: Optional[str] = None):
-        """Clear cached results
+        """Clear cached results from memory and disk.
 
         Args:
-            plugin_name: If specified, clear only this plugin's cache.
-                        If None, clear all cache.
+            plugin_name: If specified, clear all kwargs variants for this plugin
+                on the current image. If None, clear all memory entries and the
+                current image's disk cache directory (or entire disk cache when
+                no image is loaded).
         """
         if plugin_name:
             resolved_plugin_name = self._resolve_plugin_name(plugin_name)
-            self._cache.pop(resolved_plugin_name, None)
+            if self.image_path:
+                prefix = plugin_key_prefix(self.image_path, resolved_plugin_name)
+                stale = [k for k in self._cache if k.startswith(prefix)]
+            else:
+                # No image: drop any entry whose plugin segment matches.
+                marker = f":{resolved_plugin_name}:"
+                stale = [k for k in self._cache if marker in k]
+            for key in stale:
+                self._cache.pop(key, None)
+            disk_removed = 0
+            if self.image_path:
+                disk_removed = self._disk_cache.delete(
+                    self.image_path, resolved_plugin_name, kwargs=None
+                )
             self._increment_cache_stat("clear_operations")
-            logging.info(f"Cleared cache for {resolved_plugin_name}")
+            logging.info(
+                "Cleared cache for %s (memory=%d, disk_files=%d)",
+                resolved_plugin_name,
+                len(stale),
+                disk_removed,
+            )
         else:
+            mem_count = len(self._cache)
             self._cache.clear()
+            disk_removed = 0
+            if self.image_path:
+                disk_removed = self._disk_cache.clear_image(self.image_path)
+            else:
+                disk_removed = self._disk_cache.clear_all()
             self._increment_cache_stat("clear_operations")
-            logging.info("Cleared all cache")
+            logging.info(
+                "Cleared all cache (memory=%d, disk_files=%d)",
+                mem_count,
+                disk_removed,
+            )
 
     def get_cache_stats(self) -> Dict[str, Any]:
         """Return cache hit/miss counters and current cache footprint."""
         with self._state_lock:
             stats = dict(self._cache_stats)
+        disk_files = 0
+        try:
+            disk_files = self._disk_cache.count_files(self.image_path)
+        except Exception:
+            disk_files = 0
         return {
             **stats,
             "memory_entries": len(self._cache),
+            "disk_entries": disk_files,
             "disk_cache_enabled": self.enable_disk_cache,
             "disk_cache_format": self.disk_cache_format,
             "results_cache_dir": str(self.results_root),
