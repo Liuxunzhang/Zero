@@ -71,14 +71,20 @@ async def plugin_ws(websocket: WebSocket):
 
                 # Extract plugin kwargs: everything except control fields.
                 # Includes profile, dump_dir, pid, offset, base, key, regex, etc.
-                _CONTROL = {"action", "plugin", "engine", "os_family"}
+                # force / use_cache control result-cache reuse (not plugin args).
+                _CONTROL = {"action", "plugin", "engine", "os_family", "force", "use_cache"}
                 plugin_kwargs = {
                     k: v for k, v in msg.items()
                     if k not in _CONTROL and v is not None and v != ""
                 }
+                use_cache = True
+                if msg.get("force") is True or str(msg.get("force", "")).lower() in {"1", "true", "yes"}:
+                    use_cache = False
+                if "use_cache" in msg:
+                    use_cache = bool(msg.get("use_cache"))
                 logger.debug(
-                    "WS run %s/%s kwargs=%s",
-                    engine_id, plugin_name, list(plugin_kwargs.keys()),
+                    "WS run %s/%s kwargs=%s use_cache=%s",
+                    engine_id, plugin_name, list(plugin_kwargs.keys()), use_cache,
                 )
 
                 progress_queue: asyncio.Queue = asyncio.Queue()
@@ -94,6 +100,7 @@ async def plugin_ws(websocket: WebSocket):
                         plugin_name,
                         progress_callback=progress_cb,
                         engine_id=engine_id,
+                        use_cache=use_cache,
                         **plugin_kwargs,
                     ),
                 )
@@ -112,11 +119,12 @@ async def plugin_ws(websocket: WebSocket):
 
                 try:
                     columns, rows = run_task.result()
+                    # Metadata only — full rows are fetched via GET /api/results
+                    # to avoid double-shipping large result sets over the socket.
                     await websocket.send_json({
                         "type": "result",
                         "data": {
                             "columns": columns,
-                            "rows": [list(r) for r in rows],
                             "total": len(rows),
                             "plugin": plugin_name,
                         },

@@ -64,10 +64,15 @@ class EngineService:
         plugin_name: str,
         progress_callback: Optional[Callable[[str], None]] = None,
         engine_id: str = "vol3",
+        use_cache: bool = True,
         **kwargs: Any,
     ) -> Tuple[List[str], List]:
         return self._manager.run_plugin(
-            engine_id, plugin_name, progress_callback, **kwargs
+            engine_id,
+            plugin_name,
+            progress_callback,
+            use_cache=use_cache,
+            **kwargs,
         )
 
     def cancel_plugin(self, engine_id: str = "vol3") -> bool:
