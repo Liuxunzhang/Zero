@@ -342,11 +342,17 @@ class AdvancedFilter:
         self._error: Optional[str] = None
 
     def set_expression(self, expression_str: str) -> bool:
-        """Set and parse a filter expression. Returns True if valid."""
+        """Set and parse a filter expression.
+
+        Returns True only when an advanced expression was parsed successfully.
+        Returns False for empty/simple text (caller should use substring match)
+        or on parse errors.
+        """
         try:
             self._expression = self.parser.parse(expression_str)
             self._error = None
-            return True
+            # parse() returns None for simple substring filters (no operators).
+            return self._expression is not None
         except ValueError as e:
             self._expression = None
             self._error = str(e)

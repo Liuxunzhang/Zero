@@ -8,12 +8,19 @@ multiple Vol3Engine instances are fully independent.
 from __future__ import annotations
 
 import threading
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from zero.engines.base import EngineBase
 from zero.utils.exporter import ResultExporter
 from zero.utils.filter_expression import AdvancedFilter
+
+try:
+    from zero import config as _zero_config
+    _DEFAULT_QUERY_CACHE_MAX = int(getattr(_zero_config, "RESULTS_QUERY_CACHE_MAX", 64))
+except Exception:
+    _DEFAULT_QUERY_CACHE_MAX = 64
 
 # Internal requirement types to skip (infrastructure, not user params).
 _SKIP_REQ_TYPES = frozenset({
@@ -115,8 +122,9 @@ class Vol3Engine(EngineBase):
         self._columns: List[str] = []
         self._rows: List[Tuple] = []
         self._results_version: int = 0
-        self._results_query_cache: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
-        self._results_query_cache_max_entries: int = 64
+        # Filtered+sorted result sets (not per-page). True LRU via OrderedDict.
+        self._fs_cache: "OrderedDict[Tuple[Any, ...], Dict[str, Any]]" = OrderedDict()
+        self._results_query_cache_max_entries: int = _DEFAULT_QUERY_CACHE_MAX
         self._os_family: str = "linux"
 
     # ------------------------------------------------------------------
@@ -213,8 +221,9 @@ class Vol3Engine(EngineBase):
                 **kwargs,
             )
             with self._lock:
-                self._columns = list(columns)
-                self._rows = list(rows)
+                # Keep references; wrapper cache owns the lists (read-only to callers).
+                self._columns = columns
+                self._rows = rows
                 self._invalidate_results_query_cache()
             return columns, rows
         finally:
@@ -258,7 +267,61 @@ class Vol3Engine(EngineBase):
 
     def _invalidate_results_query_cache(self) -> None:
         self._results_version += 1
-        self._results_query_cache.clear()
+        self._fs_cache.clear()
+
+    def _get_filtered_sorted(
+        self,
+        cols: List[str],
+        rows: List[Tuple],
+        results_version: int,
+        filter_text: Optional[str],
+        sort_column: Optional[str],
+        sort_desc: bool,
+    ) -> Tuple[List[str], List[Tuple], int]:
+        """Return (columns, filtered_sorted_rows, total) with LRU cache.
+
+        Cache key excludes page/page_size so pagination only slices.
+        """
+        fs_key = (
+            results_version,
+            filter_text or "",
+            sort_column or "",
+            bool(sort_desc),
+        )
+        with self._lock:
+            cached = self._fs_cache.get(fs_key)
+            if cached is not None:
+                self._fs_cache.move_to_end(fs_key)
+                return cached["columns"], cached["rows"], cached["total"]
+
+        work_rows = list(rows)
+        if filter_text and filter_text.strip():
+            af = AdvancedFilter(cols)
+            if af.set_expression(filter_text):
+                work_rows = af.filter_rows(work_rows)
+            else:
+                # Simple substring: short-circuit per row (avoid join).
+                fl = filter_text.lower()
+                work_rows = [
+                    r for r in work_rows
+                    if any(fl in str(c).lower() for c in r)
+                ]
+
+        if sort_column and sort_column in cols:
+            idx = cols.index(sort_column)
+            work_rows.sort(
+                key=lambda r: self._sort_key(r[idx] if idx < len(r) else ""),
+                reverse=sort_desc,
+            )
+
+        total = len(work_rows)
+        entry = {"columns": cols, "rows": work_rows, "total": total}
+        with self._lock:
+            self._fs_cache[fs_key] = entry
+            self._fs_cache.move_to_end(fs_key)
+            while len(self._fs_cache) > self._results_query_cache_max_entries:
+                self._fs_cache.popitem(last=False)
+        return cols, work_rows, total
 
     def get_results(
         self,
@@ -270,45 +333,22 @@ class Vol3Engine(EngineBase):
     ) -> Dict[str, Any]:
         with self._lock:
             cols = list(self._columns)
-            rows = list(self._rows)
+            # Share row list reference for filtering; filter path copies as needed.
+            rows = self._rows
             current_plugin = self._current_plugin
             results_version = self._results_version
 
-        query_key = (
-            results_version,
-            filter_text or "",
-            sort_column or "",
-            bool(sort_desc),
-            int(page),
-            int(page_size),
+        cols, work_rows, total = self._get_filtered_sorted(
+            cols, rows, results_version, filter_text, sort_column, sort_desc
         )
-        with self._lock:
-            cached = self._results_query_cache.get(query_key)
-        if cached is not None:
-            return {k: (list(v) if isinstance(v, list) else v) for k, v in cached.items()}
 
-        if filter_text and filter_text.strip():
-            af = AdvancedFilter(cols)
-            if af.set_expression(filter_text):
-                rows = af.filter_rows(rows)
-            else:
-                fl = filter_text.lower()
-                rows = [r for r in rows if fl in "|".join(str(c).lower() for c in r)]
-
-        total = len(rows)
-
-        if sort_column and sort_column in cols:
-            idx = cols.index(sort_column)
-            rows.sort(
-                key=lambda r: self._sort_key(r[idx] if idx < len(r) else ""),
-                reverse=sort_desc,
-            )
-
+        page = max(1, int(page or 1))
+        page_size = max(1, int(page_size or 200))
         start = (page - 1) * page_size
         end = start + page_size
-        page_rows = rows[start:end]
+        page_rows = work_rows[start:end]
 
-        result = {
+        return {
             "columns": cols,
             "rows": [list(r) for r in page_rows],
             "total": total,
@@ -317,11 +357,6 @@ class Vol3Engine(EngineBase):
             "total_pages": max(1, (total + page_size - 1) // page_size),
             "current_plugin": current_plugin,
         }
-        with self._lock:
-            self._results_query_cache[query_key] = result
-            if len(self._results_query_cache) > self._results_query_cache_max_entries:
-                self._results_query_cache.pop(next(iter(self._results_query_cache)))
-        return result
 
     # ------------------------------------------------------------------
     # Cache
@@ -329,12 +364,13 @@ class Vol3Engine(EngineBase):
 
     def clear_cache(self, plugin_name: Optional[str] = None) -> None:
         self._wrapper.clear_cache(plugin_name)
-        if plugin_name is None:
-            with self._lock:
+        with self._lock:
+            if plugin_name is None:
                 self._columns = []
                 self._rows = []
                 self._current_plugin = None
-                self._invalidate_results_query_cache()
+            # Always drop filter/sort page cache after any cache clear.
+            self._invalidate_results_query_cache()
 
     def get_cache_stats(self) -> Dict[str, Any]:
         return self._wrapper.get_cache_stats()
