@@ -686,6 +686,13 @@ body.ai-resizing-ai {
   color: var(--accent-bright);
 }
 
+/* Keyboard focus ring for the now-focusable tree items. */
+.tree-plugin:focus-visible,
+.tree-category-header:focus-visible {
+  outline: 2px solid var(--border-focus);
+  outline-offset: -2px;
+}
+
 .tree-plugin.active {
   background: var(--accent-glow);
   border-left-color: var(--accent);
@@ -1206,6 +1213,20 @@ body.ai-resizing-ai {
   color: var(--text-muted);
   font-size: 11px;
   white-space: nowrap;
+}
+
+@media (max-width: 1280px) {
+  /* Collapse the topbar action buttons to icon-only; every one carries an
+     icon (Phase 2) and a title tooltip, so the label is redundant here and
+     the row would otherwise overflow. */
+  .ai-toggle-text,
+  .topbar-image-label {
+    display: none;
+  }
+
+  .topbar-image-input {
+    width: clamp(160px, 22vw, 320px);
+  }
 }
 
 @media (max-width: 1180px) {

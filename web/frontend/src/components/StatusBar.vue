@@ -46,10 +46,10 @@
 
     <div v-if="store.imageLoaded" class="statusbar-context">
       <span class="statusbar-chip" :class="{ active: store.hasFilter }">
-        过滤 {{ store.hasFilter ? 'ON' : 'OFF' }}
+        过滤 {{ store.hasFilter ? '开' : '关' }}
       </span>
       <span class="statusbar-chip" :class="{ active: store.hasSort }">
-        排序 {{ store.hasSort ? 'ON' : 'OFF' }}
+        排序 {{ store.hasSort ? '开' : '关' }}
       </span>
       <span class="statusbar-chip">
         每页 {{ store.pageSize }}
@@ -113,7 +113,7 @@
           :max="store.totalPages"
           @keydown.enter="goJumpPage"
         />
-        <button class="page-btn page-jump-btn" @click="goJumpPage">GO</button>
+        <button class="page-btn page-jump-btn" @click="goJumpPage">前往</button>
       </div>
     </div>
   </div>

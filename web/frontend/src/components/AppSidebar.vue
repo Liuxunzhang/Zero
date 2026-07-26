@@ -48,13 +48,21 @@
       />
     </div>
 
-    <div class="sidebar-tree">
+    <div class="sidebar-tree" @keydown="onTreeKeydown">
       <div
         v-for="(group, category) in filteredCategories"
         :key="category"
         class="tree-category"
       >
-        <div class="tree-category-header" @click="toggle(category)">
+        <div
+          class="tree-category-header"
+          role="button"
+          tabindex="0"
+          :aria-expanded="!!expanded[category]"
+          @click="toggle(category)"
+          @keydown.enter.prevent="toggle(category)"
+          @keydown.space.prevent="toggle(category)"
+        >
           <span class="chevron" :class="{ expanded: expanded[category] }"><AppIcon name="chevron-right" :size="12" /></span>
           <span>{{ category }}</span>
           <span class="tree-category-count">
@@ -66,8 +74,12 @@
             v-for="plugin in group.plugins"
             :key="plugin"
             class="tree-plugin"
+            role="button"
+            tabindex="0"
             :class="{ active: store.currentPlugin === plugin }"
             @click.prevent="selectPlugin(plugin)"
+            @keydown.enter.prevent="selectPlugin(plugin)"
+            @keydown.space.prevent="selectPlugin(plugin)"
           >
             <template v-if="normalizedSearch">
               <span
@@ -196,6 +208,23 @@ watch(filteredCategories, (cats) => {
 
 function toggle(category) {
   expanded[category] = !expanded[category]
+}
+
+// Arrow-key navigation across the visible tree items (category headers +
+// expanded plugins). Enter/Space activation lives on the elements themselves.
+function onTreeKeydown(e) {
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
+  const root = e.currentTarget
+  const items = Array.from(root.querySelectorAll('[tabindex="0"]')).filter(
+    (el) => el.offsetParent !== null,
+  )
+  const idx = items.indexOf(document.activeElement)
+  if (idx < 0) return
+  e.preventDefault()
+  const next = e.key === 'ArrowDown'
+    ? Math.min(idx + 1, items.length - 1)
+    : Math.max(idx - 1, 0)
+  items[next]?.focus()
 }
 
 function switchOS(os) {
