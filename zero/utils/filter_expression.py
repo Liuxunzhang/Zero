@@ -21,6 +21,10 @@ Logic operators:
     &&       AND
     ||       OR
 
+Logic operators are applied strictly left to right with no precedence and no
+short-circuiting, so `a || b && c` means `(a || b) && c`, not `a || (b && c)`.
+Parentheses are not supported.
+
 Examples:
     imagename -contain "csrss.exe" && pid -eq 443
     username -eq "admin" || username -eq "root"
@@ -28,7 +32,7 @@ Examples:
 """
 
 import re
-from typing import List, Dict, Any, Optional, Callable, Tuple, Union, Sequence
+from typing import List, Dict, Any, Optional, Tuple, Sequence
 from dataclasses import dataclass
 from enum import Enum
 
@@ -210,118 +214,152 @@ class FilterParser:
             raise ValueError(f"Failed to parse filter expression: {str(e)}")
 
 
+class _CompiledCondition:
+    """A condition with everything row-independent resolved up front.
+
+    Evaluating a filter over a large result set is the hot path: without this,
+    every row re-did the column lookup, the ``str(...).lower()`` of the condition
+    value, and the regex cache probe.
+    """
+
+    __slots__ = ("col_idx", "operator", "is_number", "number_value", "text_value", "regex")
+
+    def __init__(self, condition: FilterCondition, column_indexes: Dict[str, int]):
+        self.col_idx: Optional[int] = column_indexes.get(condition.column.lower())
+        self.operator = condition.operator
+        self.is_number = condition.value_type == "number"
+        self.number_value = condition.value if self.is_number else None
+        # Doubles as the lowered comparison value and the substring needle: in the
+        # string case the original code derived both from str(value).lower().
+        self.text_value = str(condition.value).lower()
+        self.regex: Optional["re.Pattern"] = None
+        if condition.operator == Operator.MATCH:
+            try:
+                self.regex = re.compile(str(condition.value), re.IGNORECASE)
+            except re.error:
+                self.regex = None
+
+
 class FilterEvaluator:
     """Evaluates filter expressions against data rows."""
 
     def __init__(self, columns: List[str]):
         self.columns = columns
         self._column_indexes = {col.lower(): i for i, col in enumerate(columns)}
-        self._regex_cache: Dict[str, "re.Pattern"] = {}
+        # Memo of the most recent compilation. The expression is kept alive by
+        # this reference, so identity comparison cannot be fooled by id() reuse.
+        self._last_expression: Optional[FilterExpression] = None
+        self._last_compiled: List["_CompiledCondition"] = []
 
     def _get_column_index(self, column: str) -> Optional[int]:
         """Get column index by name (case-insensitive)."""
         return self._column_indexes.get(column.lower())
 
-    def _convert_value(self, value: Any, target_type: str) -> Any:
-        """Convert value to target type for comparison."""
-        if target_type == "number":
-            try:
-                return float(value)
-            except (ValueError, TypeError):
-                return None
-        return str(value)
+    def compile(self, expression: FilterExpression) -> List["_CompiledCondition"]:
+        """Resolve an expression's conditions once, memoized on the last one."""
+        if expression is self._last_expression:
+            return self._last_compiled
+        compiled = [
+            _CompiledCondition(cond, self._column_indexes)
+            for cond in expression.conditions
+        ]
+        self._last_expression = expression
+        self._last_compiled = compiled
+        return compiled
 
-    def _evaluate_condition(self, row: tuple, condition: FilterCondition) -> bool:
-        """Evaluate a single condition against a row."""
-        col_idx = self._get_column_index(condition.column)
-        if col_idx is None or col_idx >= len(row):
+    @staticmethod
+    def _evaluate_compiled(row: tuple, cond: _CompiledCondition) -> bool:
+        """Evaluate a pre-compiled condition against one row."""
+        idx = cond.col_idx
+        if idx is None or idx >= len(row):
             return False
 
-        cell_value = row[col_idx]
-        
-        # Convert cell value to string for most operations
-        cell_str = str(cell_value).lower() if cell_value is not None else ""
-        
-        # Convert condition value
-        cond_value = condition.value
-        cond_text = str(condition.value).lower()
-        if condition.value_type == "string":
-            cond_value = str(cond_value).lower()
-        elif condition.value_type == "number":
-            # Try to convert cell value to number for numeric comparison
-            cell_num = self._convert_value(cell_value, "number")
-            if cell_num is None:
-                return False
-            cell_value = cell_num
+        cell = row[idx]
+        cell_str = str(cell).lower() if cell is not None else ""
+        op = cond.operator
 
-        # Evaluate based on operator
-        if condition.operator == Operator.EQ:
-            if condition.value_type == "number":
-                return cell_value == cond_value
-            return cell_str == cond_value
-        
-        elif condition.operator == Operator.NE:
-            if condition.value_type == "number":
-                return cell_value != cond_value
-            return cell_str != cond_value
-        
-        elif condition.operator == Operator.GT:
-            if condition.value_type == "number":
-                return cell_value > cond_value
-            return cell_str > cond_value
-        
-        elif condition.operator == Operator.LT:
-            if condition.value_type == "number":
-                return cell_value < cond_value
-            return cell_str < cond_value
-        
-        elif condition.operator == Operator.GE:
-            if condition.value_type == "number":
-                return cell_value >= cond_value
-            return cell_str >= cond_value
-        
-        elif condition.operator == Operator.LE:
-            if condition.value_type == "number":
-                return cell_value <= cond_value
-            return cell_str <= cond_value
-        
-        elif condition.operator == Operator.CONTAIN:
-            return cond_text in cell_str
-
-        elif condition.operator == Operator.NOT_CONTAIN:
-            return cond_text not in cell_str
-
-        elif condition.operator == Operator.MATCH:
+        if cond.is_number:
             try:
-                pattern_str = str(condition.value)
-                if pattern_str not in self._regex_cache:
-                    self._regex_cache[pattern_str] = re.compile(pattern_str, re.IGNORECASE)
-                return bool(self._regex_cache[pattern_str].search(cell_str))
-            except re.error:
+                cell_num = float(cell)
+            except (ValueError, TypeError):
+                # Non-numeric cell never satisfies a numeric condition.
                 return False
+            expected = cond.number_value
+            if op == Operator.EQ:
+                return cell_num == expected
+            if op == Operator.NE:
+                return cell_num != expected
+            if op == Operator.GT:
+                return cell_num > expected
+            if op == Operator.LT:
+                return cell_num < expected
+            if op == Operator.GE:
+                return cell_num >= expected
+            if op == Operator.LE:
+                return cell_num <= expected
+        else:
+            expected_text = cond.text_value
+            if op == Operator.EQ:
+                return cell_str == expected_text
+            if op == Operator.NE:
+                return cell_str != expected_text
+            if op == Operator.GT:
+                return cell_str > expected_text
+            if op == Operator.LT:
+                return cell_str < expected_text
+            if op == Operator.GE:
+                return cell_str >= expected_text
+            if op == Operator.LE:
+                return cell_str <= expected_text
 
-        elif condition.operator == Operator.STARTS_WITH:
-            return cell_str.startswith(cond_text)
-
-        elif condition.operator == Operator.ENDS_WITH:
-            return cell_str.endswith(cond_text)
+        # Text operators apply to the cell's string form regardless of value type.
+        needle = cond.text_value
+        if op == Operator.CONTAIN:
+            return needle in cell_str
+        if op == Operator.NOT_CONTAIN:
+            return needle not in cell_str
+        if op == Operator.MATCH:
+            return bool(cond.regex.search(cell_str)) if cond.regex else False
+        if op == Operator.STARTS_WITH:
+            return cell_str.startswith(needle)
+        if op == Operator.ENDS_WITH:
+            return cell_str.endswith(needle)
 
         return False
 
+    def _evaluate_condition(self, row: tuple, condition: FilterCondition) -> bool:
+        """Evaluate a single, uncompiled condition (convenience / compatibility)."""
+        return self._evaluate_compiled(
+            row, _CompiledCondition(condition, self._column_indexes)
+        )
+
     def evaluate(self, row: tuple, expression: FilterExpression) -> bool:
-        """Evaluate a complete filter expression against a row."""
-        if not expression.conditions:
+        """Evaluate a complete filter expression against a row.
+
+        Logic operators are applied left to right with no precedence, so
+        ``a || b && c`` means ``(a || b) && c``.
+        """
+        return self.evaluate_compiled(
+            row, self.compile(expression), expression.logic_operators
+        )
+
+    @classmethod
+    def evaluate_compiled(
+        cls,
+        row: tuple,
+        conditions: List[_CompiledCondition],
+        logic_operators: List[LogicOperator],
+    ) -> bool:
+        if not conditions:
             return True
 
-        # Evaluate first condition
-        result = self._evaluate_condition(row, expression.conditions[0])
+        result = cls._evaluate_compiled(row, conditions[0])
 
-        # Apply logic operators
-        for i, logic_op in enumerate(expression.logic_operators):
-            if i + 1 >= len(expression.conditions):
+        for i, logic_op in enumerate(logic_operators):
+            if i + 1 >= len(conditions):
                 break
 
-            next_result = self._evaluate_condition(row, expression.conditions[i + 1])
+            next_result = cls._evaluate_compiled(row, conditions[i + 1])
 
             if logic_op == LogicOperator.AND:
                 result = result and next_result
@@ -376,7 +414,11 @@ class AdvancedFilter:
         if not self._expression:
             return rows
 
-        return [row for row in rows if self.evaluator.evaluate(row, self._expression)]
+        # Compile once, then only per-row comparisons remain in the loop.
+        conditions = self.evaluator.compile(self._expression)
+        logic_operators = self._expression.logic_operators
+        evaluate = self.evaluator.evaluate_compiled
+        return [row for row in rows if evaluate(row, conditions, logic_operators)]
 
     def get_help(self) -> str:
         """Get help text for filter syntax."""

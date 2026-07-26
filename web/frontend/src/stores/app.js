@@ -2,7 +2,7 @@
  * Pinia store for the Volatility 3 Web UI.
  */
 import { defineStore } from "pinia"
-import { ref, computed, reactive } from "vue"
+import { ref, computed, reactive, markRaw } from "vue"
 import {
   loadImage as apiLoadImage,
   getImageStatus,
@@ -44,7 +44,6 @@ function makeEngineState() {
     profile: "",
     suggestedProfiles: [],
     available: true,
-    lastCmdDisplay: "",
   }
 }
 
@@ -80,7 +79,6 @@ export const useAppStore = defineStore("app", () => {
   const progress      = computed({ get: () => es.value.progress, set: v => { es.value.progress = v } })
   const profile       = computed({ get: () => es.value.profile, set: v => { es.value.profile = v } })
   const suggestedProfiles = computed(() => es.value.suggestedProfiles || [])
-  const lastCmdDisplay    = computed(() => es.value.lastCmdDisplay || "")
   const hasData = computed(() => es.value.columns.length > 0 && es.value.rows.length > 0)
   const visibleRows = computed(() => es.value.rows.length)
   const hasFilter = computed(() => Boolean(String(es.value.filterText || "").trim()))
@@ -207,8 +205,12 @@ export const useAppStore = defineStore("app", () => {
         engine: engineId,
       }, { signal: resultsAbortControllers[engineId].signal })
       if (requestId !== latestResultsRequestIds[engineId]) return
-      st.columns = data.columns || []
-      st.rows = data.rows || []
+      // markRaw: engineStates is reactive(), so without it every row array and
+      // every cell would get its own Proxy (1000 rows x 20 cols = 20k proxies per
+      // fetch). Replacing the whole array still triggers re-render; individual
+      // cells are never mutated in place.
+      st.columns = markRaw(data.columns || [])
+      st.rows = markRaw(data.rows || [])
       st.totalRows = data.total || 0
       st.totalPages = data.total_pages || 1
       st.currentPlugin = data.current_plugin || st.runningPlugin || st.currentPlugin
@@ -241,7 +243,7 @@ export const useAppStore = defineStore("app", () => {
           target.progress = -1
           if (d?.total != null) target.totalRows = d.total
           if (d?.plugin) target.currentPlugin = d.plugin
-          if (Array.isArray(d?.columns) && d.columns.length) target.columns = d.columns
+          if (Array.isArray(d?.columns) && d.columns.length) target.columns = markRaw(d.columns)
         }
         pushMessage("[" + msgEngine + "] 插件完成: " + d.plugin + " - " + d.total + " 行", "success")
         if (msgEngine === selectedEngine.value) {
@@ -558,10 +560,6 @@ export const useAppStore = defineStore("app", () => {
     runPluginWithPayload(plugin, engineId, params, { force: true })
   }
 
-  function rerunFromCmdString(cmdStr) {
-    pushMessage("命令重跑功能已在 Zero Web 版中移除: " + String(cmdStr || ""), "warning")
-  }
-
   return {
     availableEngines, selectedEngine, engineStates,
     switchEngine, fetchEngineList,
@@ -579,6 +577,5 @@ export const useAppStore = defineStore("app", () => {
     pluginArgsModal, openPluginWithArgs, runPluginWithParams, runPluginWithPayload,
     forceRerunCurrentPlugin, lastRunPayload,
     globalArgs, showArgsPanel, saveGlobalArgs,
-    lastCmdDisplay, rerunFromCmdString,
   }
 })

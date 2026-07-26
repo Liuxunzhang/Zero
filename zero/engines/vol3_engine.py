@@ -7,6 +7,7 @@ multiple Vol3Engine instances are fully independent.
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -19,8 +20,15 @@ from zero.utils.filter_expression import AdvancedFilter
 try:
     from zero import config as _zero_config
     _DEFAULT_QUERY_CACHE_MAX = int(getattr(_zero_config, "RESULTS_QUERY_CACHE_MAX", 64))
+    _DEFAULT_QUERY_CACHE_MAX_ROWS = int(
+        getattr(_zero_config, "RESULTS_QUERY_CACHE_MAX_ROWS", 2_000_000)
+    )
+    # 0 / None means "no limit".
+    _MAX_EXPORT_ROWS = int(getattr(_zero_config, "MAX_TABLE_ROWS", 0) or 0)
 except Exception:
     _DEFAULT_QUERY_CACHE_MAX = 64
+    _DEFAULT_QUERY_CACHE_MAX_ROWS = 2_000_000
+    _MAX_EXPORT_ROWS = 0
 
 # Internal requirement types to skip (infrastructure, not user params).
 _SKIP_REQ_TYPES = frozenset({
@@ -125,6 +133,7 @@ class Vol3Engine(EngineBase):
         # Filtered+sorted result sets (not per-page). True LRU via OrderedDict.
         self._fs_cache: "OrderedDict[Tuple[Any, ...], Dict[str, Any]]" = OrderedDict()
         self._results_query_cache_max_entries: int = _DEFAULT_QUERY_CACHE_MAX
+        self._results_query_cache_max_rows: int = _DEFAULT_QUERY_CACHE_MAX_ROWS
         self._os_family: str = "linux"
 
     # ------------------------------------------------------------------
@@ -182,19 +191,58 @@ class Vol3Engine(EngineBase):
     def resolve_plugin_name(self, plugin_name: str) -> str:
         return self._wrapper.resolve_plugin_name(plugin_name)
 
+    def _resolve_plugin_class(self, plugin_name: str) -> Tuple[Optional[str], Any]:
+        """Return (resolved_name, plugin_class); (name, None) when not installed."""
+        resolved = self._wrapper.resolve_plugin_name(plugin_name)
+        try:
+            from volatility3 import framework
+            return resolved, framework.list_plugins().get(resolved)
+        except Exception:
+            return resolved, None
+
     def get_plugin_metadata(self, plugin_name: str) -> Optional[Dict[str, Any]]:
         """Introspect vol3 plugin requirements and return PluginArgDef-compatible metadata."""
         try:
-            from volatility3 import framework
-            import volatility3.plugins
-            plugin_map = framework.list_plugins()
-            resolved = self._wrapper._resolve_plugin_name(plugin_name)
-            plugin_class = plugin_map.get(resolved)
+            resolved, plugin_class = self._resolve_plugin_class(plugin_name)
             if plugin_class is None:
                 return None
             return _build_vol3_plugin_metadata(resolved, plugin_class)
         except Exception:
             return None
+
+    def get_plugin_docs(self, plugin_name: str) -> Dict[str, Any]:
+        """Documentation for the plugin help panel, from the vol3 class itself.
+
+        Shape matches what PluginParamsModal renders: purpose / key_params / notes.
+        Returns {} when the plugin is unknown or carries no docstring.
+        """
+        try:
+            resolved, plugin_class = self._resolve_plugin_class(plugin_name)
+            if plugin_class is None:
+                return {}
+
+            purpose = " ".join((plugin_class.__doc__ or "").split()).strip()
+            key_params: Dict[str, str] = {}
+            try:
+                for req in plugin_class.get_requirements():
+                    if type(req).__name__ in _SKIP_REQ_TYPES:
+                        continue
+                    description = (getattr(req, "description", "") or "").strip()
+                    if description:
+                        key_params[req.name] = description
+            except Exception:
+                pass
+
+            if not purpose and not key_params:
+                return {}
+            doc: Dict[str, Any] = {"notes": f"Volatility 3 插件: {resolved}"}
+            if purpose:
+                doc["purpose"] = purpose
+            if key_params:
+                doc["key_params"] = key_params
+            return doc
+        except Exception:
+            return {}
 
     # ------------------------------------------------------------------
     # Plugin execution
@@ -282,6 +330,14 @@ class Vol3Engine(EngineBase):
 
         Cache key excludes page/page_size so pagination only slices.
         """
+        has_filter = bool(filter_text and filter_text.strip())
+        has_sort = bool(sort_column and sort_column in cols)
+
+        # Plain pagination: nothing to recompute, so neither copy nor cache the
+        # row list — callers only slice it.
+        if not has_filter and not has_sort:
+            return cols, rows, len(rows)
+
         fs_key = (
             results_version,
             filter_text or "",
@@ -294,8 +350,10 @@ class Vol3Engine(EngineBase):
                 self._fs_cache.move_to_end(fs_key)
                 return cached["columns"], cached["rows"], cached["total"]
 
-        work_rows = list(rows)
-        if filter_text and filter_text.strip():
+        work_rows = rows
+        # True once work_rows is a list we own and may sort in place.
+        owns_rows = False
+        if has_filter:
             af = AdvancedFilter(cols)
             if af.set_expression(filter_text):
                 work_rows = af.filter_rows(work_rows)
@@ -306,22 +364,43 @@ class Vol3Engine(EngineBase):
                     r for r in work_rows
                     if any(fl in str(c).lower() for c in r)
                 ]
+            owns_rows = True
 
-        if sort_column and sort_column in cols:
+        if has_sort:
             idx = cols.index(sort_column)
-            work_rows.sort(
-                key=lambda r: self._sort_key(r[idx] if idx < len(r) else ""),
-                reverse=sort_desc,
-            )
+            sort_key = self._sort_key
+
+            def key_fn(r):
+                return sort_key(r[idx] if idx < len(r) else "")
+
+            if owns_rows:
+                work_rows.sort(key=key_fn, reverse=sort_desc)
+            else:
+                # Never sort the engine's canonical row list in place.
+                work_rows = sorted(work_rows, key=key_fn, reverse=sort_desc)
 
         total = len(work_rows)
         entry = {"columns": cols, "rows": work_rows, "total": total}
         with self._lock:
             self._fs_cache[fs_key] = entry
             self._fs_cache.move_to_end(fs_key)
-            while len(self._fs_cache) > self._results_query_cache_max_entries:
-                self._fs_cache.popitem(last=False)
+            self._trim_results_query_cache()
         return cols, work_rows, total
+
+    def _trim_results_query_cache(self) -> None:
+        """Evict LRU-first until within both the entry and total-row budgets.
+
+        Caller must hold ``self._lock``. The entry cap alone is not enough: 64
+        cached filter results over a million-row plugin output would each pin a
+        full row list.
+        """
+        cache = self._fs_cache
+        while len(cache) > self._results_query_cache_max_entries and len(cache) > 1:
+            cache.popitem(last=False)
+        cached_rows = sum(entry["total"] for entry in cache.values())
+        while cached_rows > self._results_query_cache_max_rows and len(cache) > 1:
+            _key, evicted = cache.popitem(last=False)
+            cached_rows -= evicted["total"]
 
     def get_results(
         self,
@@ -386,7 +465,15 @@ class Vol3Engine(EngineBase):
             plugin_name = self._current_plugin or "export"
             columns = list(self._columns)
             rows = list(self._rows)
-        return ResultExporter.auto_export(columns, rows, plugin_name, format=fmt)
+        if 0 < _MAX_EXPORT_ROWS < len(rows):
+            logging.warning(
+                "Export of %s truncated to MAX_TABLE_ROWS=%d of %d rows",
+                plugin_name,
+                _MAX_EXPORT_ROWS,
+                len(rows),
+            )
+            rows = rows[:_MAX_EXPORT_ROWS]
+        return ResultExporter.auto_export(columns, rows, plugin_name, fmt=fmt)
 
     def get_current_result_context(self, max_rows: Optional[int] = None) -> Optional[Dict[str, Any]]:
         with self._lock:

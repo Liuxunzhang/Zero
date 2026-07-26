@@ -232,7 +232,7 @@
         <div class="ai-message-avatar">IR</div>
         <div class="ai-message-body">
           <div class="ai-message-role">取证分析</div>
-          <div class="ai-message-content ai-markdown" v-html="renderMarkdown(streamBuffer)" />
+          <div class="ai-message-content ai-markdown" v-html="streamHtml" />
           <div v-if="!streamBuffer" class="ai-thinking">
             <span class="ai-thinking-dot"></span>
             <span class="ai-thinking-dot"></span>
@@ -393,14 +393,57 @@ function sanitizeHtml(html) {
   return doc.body.innerHTML
 }
 
+// Parsing + sanitizing is the most expensive thing this component does, and the
+// message list re-renders on every store change. Memoize by content so settled
+// messages are converted once, with a cap so long sessions cannot grow forever.
+const MARKDOWN_CACHE_MAX = 200
+const markdownCache = new Map()
+
 function renderMarkdown(text) {
   if (!text) return ''
+  const hit = markdownCache.get(text)
+  if (hit !== undefined) return hit
+  let html
   try {
-    const rawHtml = marked.parse(text)
-    return sanitizeHtml(rawHtml)
+    html = sanitizeHtml(marked.parse(text))
   }
-  catch { return text }
+  catch { html = text }
+  if (markdownCache.size >= MARKDOWN_CACHE_MAX) {
+    markdownCache.delete(markdownCache.keys().next().value)
+  }
+  markdownCache.set(text, html)
+  return html
 }
+
+// Re-rendering the whole buffer on every streamed token makes long answers crawl.
+// Render at most once per interval instead; the settled message is pushed to
+// chatMessages when the stream ends, so nothing is ever lost.
+const STREAM_RENDER_INTERVAL_MS = 80
+const streamRenderBuffer = ref('')
+let streamRenderTimer = null
+
+function cancelStreamRender() {
+  if (streamRenderTimer) {
+    clearTimeout(streamRenderTimer)
+    streamRenderTimer = null
+  }
+}
+
+watch(streamBuffer, (text) => {
+  if (!text) {
+    // Reset at once so a new stream never flashes the previous answer.
+    cancelStreamRender()
+    streamRenderBuffer.value = ''
+    return
+  }
+  if (streamRenderTimer) return
+  streamRenderTimer = setTimeout(() => {
+    streamRenderTimer = null
+    streamRenderBuffer.value = streamBuffer.value
+  }, STREAM_RENDER_INTERVAL_MS)
+})
+
+const streamHtml = computed(() => renderMarkdown(streamRenderBuffer.value))
 
 function resolveApiName(cfg) {
   if (cfg.provider && cfg.provider !== 'config.py') return cfg.provider
@@ -461,8 +504,15 @@ const agentContextItems = computed(() => {
 /**
  * Extract filter rules from ```filter ... ``` blocks in AI response.
  */
+// Memoized like renderMarkdown: the template asks twice per assistant message
+// (once for v-if, once for v-for) on every re-render.
+const filtersCache = new Map()
+const EMPTY_FILTERS = []
+
 function extractFilters(text) {
-  if (!text) return []
+  if (!text) return EMPTY_FILTERS
+  const hit = filtersCache.get(text)
+  if (hit !== undefined) return hit
   const rules = []
   const regex = /```filter\s*\n([\s\S]*?)```/g
   let m
@@ -470,6 +520,10 @@ function extractFilters(text) {
     const rule = m[1].trim()
     if (rule) rules.push(rule)
   }
+  if (filtersCache.size >= MARKDOWN_CACHE_MAX) {
+    filtersCache.delete(filtersCache.keys().next().value)
+  }
+  filtersCache.set(text, rules)
   return rules
 }
 
@@ -868,6 +922,7 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.removeEventListener('pointerdown', handleDocumentClick)
+  cancelStreamRender()
 })
 
 watch(() => props.prefillText, (text) => {
