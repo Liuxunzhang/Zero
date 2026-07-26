@@ -119,7 +119,7 @@
 
         <div class="modal-footer">
           <button class="btn-cancel" @click="cancel">取消</button>
-          <button class="btn-run" @click="confirm" :disabled="!args.length && false">
+          <button class="btn-run" @click="confirm" :disabled="missingRequired" :title="missingRequired ? '必填参数未填写' : ''">
             运行 {{ pluginName }}
           </button>
         </div>
@@ -130,7 +130,8 @@
 
 <script setup>
 import AppIcon from './AppIcon.vue'
-import { ref, watch, reactive } from 'vue'
+import { useEscClose } from '../composables/useEscClose'
+import { computed, ref, watch, reactive } from 'vue'
 import { getPluginDocs } from '../api'
 import { useAppStore } from '../stores/app'
 
@@ -144,6 +145,16 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['confirm', 'cancel'])
+
+useEscClose(() => props.show, () => emit('cancel'))
+
+const missingRequired = computed(() =>
+  props.args.some((arg) => {
+    if (!arg.required) return false
+    const v = form[arg.name]
+    return v === undefined || v === null || String(v).trim() === ''
+  }),
+)
 const store = useAppStore()
 
 const form = reactive({})

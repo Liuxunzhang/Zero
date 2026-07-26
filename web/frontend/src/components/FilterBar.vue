@@ -70,17 +70,25 @@
         </button>
         <button
           class="filter-action-btn"
-          :disabled="!store.currentPlugin && !store.hasData"
-          @click="store.fetchResults()"
+          :disabled="(!store.currentPlugin && !store.hasData) || refreshing"
+          @click="refreshView"
         >
-          刷新视图
+          {{ refreshing ? '刷新中...' : '刷新视图' }}
+        </button>
+        <button
+          class="filter-action-btn"
+          :disabled="!store.imageLoaded || clearingCache"
+          title="清除当前插件的结果缓存（内存 + 磁盘）"
+          @click="clearCache"
+        >
+          清除缓存
         </button>
       </div>
 
       <div class="export-group" v-if="store.hasData">
-        <button class="export-btn" @click="showExport = !showExport">
+        <button class="export-btn" :disabled="exporting" @click="showExport = !showExport">
           <AppIcon name="download" :size="12" />
-          导出
+          {{ exporting ? '导出中...' : '导出' }}
         </button>
         <div v-if="showExport" class="export-dropdown">
           <button class="export-option" @click="doExport('csv')">CSV</button>
@@ -96,11 +104,15 @@
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '../stores/app'
 import AppIcon from './AppIcon.vue'
+import { confirmAction } from '../composables/confirm'
 
 const store = useAppStore()
 const pageSizeOptions = [50, 100, 200, 500, 1000]
 const localFilter = ref('')
 const showExport = ref(false)
+const refreshing = ref(false)
+const exporting = ref(false)
+const clearingCache = ref(false)
 const showSuggestions = ref(false)
 const activeSuggestion = ref(0)
 const inputRef = ref(null)
@@ -139,7 +151,7 @@ const suggestions = computed(() => buildSuggestions(localFilter.value))
 const filterHint = computed(() => {
   if (expressionState.value === 'incomplete') return '继续补全表达式 · Tab 选择建议'
   if (suggestions.value.length) return 'Tab 补全 · Enter 应用 · Esc 清空'
-  return 'Enter 应用 · Esc 清空'
+  return '按 / 聚焦 · Enter 应用 · Esc 清空'
 })
 
 watch(() => store.filterText, (v) => {
@@ -186,9 +198,47 @@ function updatePageSize(event) {
   store.setPageSize(Number(event.target.value))
 }
 
-function doExport(fmt) {
-  store.doExport(fmt)
+async function doExport(fmt) {
+  if (exporting.value) return
   showExport.value = false
+  exporting.value = true
+  try {
+    await store.doExport(fmt)
+  } finally {
+    exporting.value = false
+  }
+}
+
+async function refreshView() {
+  if (refreshing.value) return
+  refreshing.value = true
+  try {
+    await store.fetchResults()
+  } finally {
+    refreshing.value = false
+  }
+}
+
+async function clearCache() {
+  if (clearingCache.value) return
+  const scope = store.currentPlugin ? `插件「${store.currentPlugin}」` : '当前镜像全部插件'
+  const ok = await confirmAction({
+    title: '清除结果缓存',
+    message: `将删除 ${scope} 的内存与磁盘缓存，下次运行需要重新分析。`,
+    confirmText: '清除',
+  })
+  if (!ok) return
+  clearingCache.value = true
+  try {
+    await store.doClearCache(store.currentPlugin || null)
+  } finally {
+    clearingCache.value = false
+  }
+}
+
+function focusFilterInput() {
+  showSuggestions.value = false
+  inputRef.value?.focus()
 }
 
 function handleClickOutside(e) {
@@ -339,6 +389,12 @@ function moveSuggestion(delta) {
   activeSuggestion.value = (activeSuggestion.value + delta + total) % total
 }
 
-onMounted(() => document.addEventListener('click', handleClickOutside))
-onUnmounted(() => document.removeEventListener('click', handleClickOutside))
+onMounted(() => {
+  document.addEventListener('click', handleClickOutside)
+  window.addEventListener('zero:focus-filter', focusFilterInput)
+})
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
+  window.removeEventListener('zero:focus-filter', focusFilterInput)
+})
 </script>

@@ -16,7 +16,6 @@ import {
   createPluginSocket,
   listEngines as apiListEngines,
   getEngineSettings as apiGetEngineSettings,
-  updateEngineSettings as apiUpdateEngineSettings,
 } from "../api"
 
 const GLOBAL_ARGS_KEY = "zero-global-args"
@@ -78,12 +77,10 @@ export const useAppStore = defineStore("app", () => {
   const sortDesc      = computed(() => es.value.sortDesc)
   const progress      = computed({ get: () => es.value.progress, set: v => { es.value.progress = v } })
   const profile       = computed({ get: () => es.value.profile, set: v => { es.value.profile = v } })
-  const suggestedProfiles = computed(() => es.value.suggestedProfiles || [])
   const hasData = computed(() => es.value.columns.length > 0 && es.value.rows.length > 0)
   const visibleRows = computed(() => es.value.rows.length)
   const hasFilter = computed(() => Boolean(String(es.value.filterText || "").trim()))
   const hasSort = computed(() => Boolean(es.value.sortColumn))
-  const categoryCount = computed(() => Object.keys(es.value.categories || {}).length)
   const pluginCount = computed(() => Object.values(es.value.categories || {}).reduce((total, plugins) => {
     return total + (Array.isArray(plugins) ? plugins.length : 0)
   }, 0))
@@ -112,11 +109,6 @@ export const useAppStore = defineStore("app", () => {
   const resultsAbortControllers = reactive({})
   const latestResultsRequestIds = reactive({})
 
-  async function switchEngine(_engineId) {
-    selectedEngine.value = "vol3"
-    await fetchPlugins(engineStates.vol3.osFamily || "linux")
-  }
-
   async function fetchEngineList() {
     try {
       const data = await apiListEngines()
@@ -131,9 +123,13 @@ export const useAppStore = defineStore("app", () => {
     } catch (e) { console.warn("Could not fetch engine list:", e) }
   }
 
+  const imageLoadBusy = ref(false)
+
   async function loadImage(path) {
+    if (imageLoadBusy.value) return
     const engineId = selectedEngine.value
     const st = engineStates[engineId]
+    imageLoadBusy.value = true
     try {
       await apiLoadImage(path, engineId)
       st.imagePath = path
@@ -147,6 +143,8 @@ export const useAppStore = defineStore("app", () => {
       pushMessage("[" + engineId + "] 镜像已加载: " + path, "success")
     } catch (e) {
       pushMessage("[" + engineId + "] 加载失败: " + e.message, "error")
+    } finally {
+      imageLoadBusy.value = false
     }
   }
 
@@ -170,18 +168,6 @@ export const useAppStore = defineStore("app", () => {
       st.available = settings.available !== false
     } catch (e) {
       console.warn("Could not fetch engine settings:", e)
-    }
-  }
-
-  async function setEngineProfile(profileValue, engineId = selectedEngine.value) {
-    const st = engineStates[engineId]
-    try {
-      const data = await apiUpdateEngineSettings(engineId, { profile: profileValue })
-      st.profile = data?.status?.profile || String(profileValue || "")
-      st.suggestedProfiles = data?.status?.suggested_profiles || st.suggestedProfiles || []
-      pushMessage("[" + engineId + "] Profile 已设置: " + (st.profile || "(empty)"), "success")
-    } catch (e) {
-      pushMessage("[" + engineId + "] Profile 设置失败: " + e.message, "error")
     }
   }
 
@@ -562,18 +548,18 @@ export const useAppStore = defineStore("app", () => {
 
   return {
     availableEngines, selectedEngine, engineStates,
-    switchEngine, fetchEngineList,
+    fetchEngineList,
     imagePath, imageLoaded, osFamily,
     categories, currentPlugin, runningPlugin, pluginBusy,
     columns, rows, totalRows, page, pageSize, totalPages,
-    filterText, sortColumn, sortDesc, profile, suggestedProfiles,
-    messages, progress, hasData, hasFilter, hasSort, visibleRows, categoryCount, pluginCount,
+    filterText, sortColumn, sortDesc, profile,
+    messages, progress, hasData, hasFilter, hasSort, visibleRows, pluginCount,
     initBusy, backendReady, initError,
-    loadImage, fetchPlugins, fetchResults, runPlugin,
+    loadImage, imageLoadBusy, fetchPlugins, fetchResults, runPlugin,
     cancelRunningPlugin, doExport, doClearCache,
     toggleSort, resetSort, setFilter, goToPage, setPageSize,
     appendFilterCondition,
-    pushMessage, init, reloadAllPlugins, fetchEngineSettings, setEngineProfile,
+    pushMessage, init, reloadAllPlugins, fetchEngineSettings,
     pluginArgsModal, openPluginWithArgs, runPluginWithParams, runPluginWithPayload,
     forceRerunCurrentPlugin, lastRunPayload,
     globalArgs, showArgsPanel, saveGlobalArgs,

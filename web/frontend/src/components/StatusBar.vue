@@ -1,14 +1,47 @@
 <template>
   <div class="statusbar">
-    <div class="statusbar-messages">
+    <div
+      ref="messagesRef"
+      class="statusbar-messages statusbar-messages-clickable"
+      title="查看消息日志"
+      @click="showLog = !showLog"
+    >
+      <AppIcon :name="showLog ? 'chevron-down' : 'chevron-up'" :size="11" class="statusbar-log-caret" />
       <span
         v-if="lastMessage"
+        class="statusbar-last-message"
         :class="`msg-${lastMessage.severity}`"
       >
         <span style="opacity: 0.5">{{ lastMessage.ts }}</span>
         {{ lastMessage.text }}
       </span>
       <span v-else style="color: var(--text-muted)">就绪</span>
+      <span v-if="errorCount" class="statusbar-error-badge" title="错误消息数">
+        <AppIcon name="alert-triangle" :size="10" />
+        {{ errorCount }}
+      </span>
+
+      <!-- Message log popover -->
+      <div v-if="showLog" class="statusbar-log" @click.stop>
+        <div class="statusbar-log-head">
+          <span>消息日志（最近 {{ store.messages.length }} 条）</span>
+          <button class="statusbar-log-close" @click="showLog = false" title="关闭">
+            <AppIcon name="x" :size="12" />
+          </button>
+        </div>
+        <div class="statusbar-log-body">
+          <div
+            v-for="(msg, i) in reversedMessages"
+            :key="`${msg.ts}-${i}`"
+            class="statusbar-log-row"
+            :class="`msg-${msg.severity}`"
+          >
+            <span class="statusbar-log-ts">{{ msg.ts }}</span>
+            <span class="statusbar-log-text">{{ msg.text }}</span>
+          </div>
+          <div v-if="!store.messages.length" class="statusbar-log-empty">暂无消息</div>
+        </div>
+      </div>
     </div>
 
     <div v-if="store.imageLoaded" class="statusbar-context">
@@ -42,10 +75,11 @@
 
     <button
       v-if="store.pluginBusy"
-      class="page-btn"
-      @click="store.cancelRunningPlugin()"
+      class="page-btn page-btn-danger"
+      :disabled="cancelling"
+      @click="doCancel"
       title="取消执行"
-    >停止</button>
+    >{{ cancelling ? '停止中...' : '停止' }}</button>
 
     <button
       v-if="!store.pluginBusy && (store.currentPlugin || store.lastRunPayload?.plugin)"
@@ -86,16 +120,29 @@
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '../stores/app'
+import AppIcon from './AppIcon.vue'
+import { useEscClose } from '../composables/useEscClose'
 
 const store = useAppStore()
 const jumpPage = ref('')
+const showLog = ref(false)
+const cancelling = ref(false)
+const messagesRef = ref(null)
+
+useEscClose(() => showLog.value, () => { showLog.value = false })
 
 const lastMessage = computed(() => {
   const msgs = store.messages
   return msgs.length ? msgs[msgs.length - 1] : null
 })
+
+const reversedMessages = computed(() => [...store.messages].reverse())
+
+const errorCount = computed(
+  () => store.messages.filter((m) => m.severity === 'error').length,
+)
 
 const runningPluginName = computed(() => {
   const plugin = String(store.runningPlugin || store.currentPlugin || '').trim()
@@ -112,4 +159,23 @@ function goJumpPage() {
   store.goToPage(target)
   jumpPage.value = String(store.page || 1)
 }
+
+async function doCancel() {
+  if (cancelling.value) return
+  cancelling.value = true
+  try {
+    await store.cancelRunningPlugin()
+  } finally {
+    cancelling.value = false
+  }
+}
+
+function onDocClick(e) {
+  if (showLog.value && messagesRef.value && !messagesRef.value.contains(e.target)) {
+    showLog.value = false
+  }
+}
+
+onMounted(() => document.addEventListener('click', onDocClick))
+onUnmounted(() => document.removeEventListener('click', onDocClick))
 </script>

@@ -74,7 +74,9 @@ export function updateEngineSettings(engine = 'vol3', settings = {}) {
 /* ── REST helpers ──────────────────────────────────── */
 
 export function loadImage(path, engine = 'vol3') {
-  return api.post('/api/image/load', { path, engine })
+  // No timeout: opening a multi-GB memory image can legitimately exceed the
+  // 30s global default, and a client-side abort here just strands the user.
+  return api.post('/api/image/load', { path, engine }, { timeout: 0 })
 }
 
 export function getImageStatus(engine = 'vol3') {

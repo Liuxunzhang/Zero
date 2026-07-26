@@ -40,7 +40,7 @@
               <option value="mac">macOS</option>
               <option value="windows">Windows</option>
             </select>
-            <button class="add-btn" @click="loadRemote(1)" :disabled="remoteLoading">搜索</button>
+            <button class="solid-btn" @click="loadRemote(1)" :disabled="remoteLoading">搜索</button>
             <button class="form-cancel-btn" @click="loadRemote(1, true)" :disabled="remoteLoading" title="强制从 GitHub 刷新索引（消耗 API 配额）">
               刷新索引
             </button>
@@ -59,7 +59,7 @@
           <div v-else class="symbol-empty">{{ remoteLoading ? '加载中...' : '暂无结果' }}</div>
 
           <div class="symbol-actions">
-            <button class="add-btn" :disabled="!selectedPaths.length || downloading" @click="downloadSelected">
+            <button class="solid-btn" :disabled="!selectedPaths.length || downloading" @click="downloadSelected">
               <AppIcon name="download" :size="12" />
               {{ downloading ? '下载中...' : `下载选中项 (${selectedPaths.length})` }}
             </button>
@@ -144,7 +144,7 @@
             <div v-if="activeRecord" class="symbol-history-detail">
               <div class="symbol-history-actions">
                 <button
-                  class="add-btn"
+                  class="solid-btn"
                   @click="retryFailed"
                   :disabled="downloading || !activeRecord.failed.length"
                 >重试失败项 ({{ activeRecord.failed.length }})</button>
@@ -186,8 +186,14 @@
 <script setup>
 import AppIcon from './AppIcon.vue'
 import { ref, computed, onMounted } from 'vue'
+import { confirmAction } from '../composables/confirm'
+import { useEscClose } from '../composables/useEscClose'
 import { getRemoteSymbols, getLocalSymbols, downloadSymbols } from '../api'
 import { useAppStore } from '../stores/app'
+
+const emit = defineEmits(['close'])
+
+useEscClose(() => true, () => emit('close'))
 
 const store = useAppStore()
 const STORAGE_KEY = 'zero-symbol-download-history'
@@ -423,7 +429,13 @@ async function retryFailed() {
   }
 }
 
-function clearHistory() {
+async function clearHistory() {
+  const ok = await confirmAction({
+    title: '清空下载记录',
+    message: '将删除本机保存的全部符号表下载记录。',
+    confirmText: '清空',
+  })
+  if (!ok) return
   downloadHistory.value = []
   activeHistoryId.value = ''
   localStorage.removeItem(STORAGE_KEY)

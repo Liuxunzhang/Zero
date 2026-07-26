@@ -146,6 +146,7 @@
 </template>
 
 <script setup>
+import { useEscClose } from '../composables/useEscClose'
 import { reactive, watch } from 'vue'
 
 const props = defineProps({
@@ -155,6 +156,8 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['close', 'update:modelValue'])
+
+useEscClose(() => props.show, () => emit('close'))
 
 const EMPTY = () => ({
   dump_dir: '',

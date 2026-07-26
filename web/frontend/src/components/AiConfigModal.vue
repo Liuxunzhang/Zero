@@ -255,6 +255,8 @@
 
 <script setup>
 import AppIcon from './AppIcon.vue'
+import { confirmAction } from '../composables/confirm'
+import { useEscClose } from '../composables/useEscClose'
 import { ref, computed, onMounted } from 'vue'
 import {
   getAiProfiles, saveAiProfiles, setActiveProfile, getActiveProfile,
@@ -263,6 +265,8 @@ import {
 } from '../api'
 
 const emit = defineEmits(['close', 'config-changed'])
+
+useEscClose(() => true, () => emit('close'))
 
 const tab = ref('profiles')
 const profiles = ref([])
@@ -452,6 +456,12 @@ async function saveProfile() {
 
 async function removeProfile(idx) {
   const removed = profiles.value[idx]
+  const ok = await confirmAction({
+    title: '删除模型配置',
+    message: `将删除配置「${removed?.name || removed?.model || removed?.id}」。`,
+    confirmText: '删除',
+  })
+  if (!ok) return
   profiles.value.splice(idx, 1)
   try {
     await saveAiProfiles(profiles.value)
@@ -488,6 +498,12 @@ async function addPrompt() {
 }
 
 async function removePrompt(id) {
+  const ok = await confirmAction({
+    title: '删除提示词',
+    message: '将永久删除该自定义提示词。',
+    confirmText: '删除',
+  })
+  if (!ok) return
   try {
     await deleteAiPrompt(id)
     await loadData()

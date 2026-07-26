@@ -39,10 +39,11 @@
 
     <div class="sidebar-search">
       <input
+        ref="searchInputRef"
         v-model="pluginSearch"
         class="sidebar-search-input"
         type="text"
-        placeholder="搜索插件名..."
+        placeholder="搜索插件名... (Ctrl+K)"
         @keydown.esc.prevent="pluginSearch = ''"
       />
     </div>
@@ -101,19 +102,34 @@
 </template>
 
 <script setup>
-import { reactive, ref, watch, computed } from 'vue'
+import { reactive, ref, watch, computed, onMounted, onUnmounted, nextTick } from 'vue'
 import { useAppStore } from '../stores/app'
 import AppIcon from './AppIcon.vue'
 
 const store = useAppStore()
 
-const expanded = reactive({})
+const EXPANDED_KEY = 'zero-sidebar-expanded'
+
+function restoreExpanded() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(EXPANDED_KEY) || 'null')
+    if (saved && typeof saved === 'object') return saved
+  } catch {}
+  return {}
+}
+
+const expanded = reactive(restoreExpanded())
 const reloading = ref(false)
 const pluginSearch = ref('')
+const searchInputRef = ref(null)
+// Category state as it was before a search started, restored on clear.
+let expandedBeforeSearch = null
 
-// Sidebar collapse state, persisted in localStorage
+// Sidebar collapse state, persisted in localStorage.
+// First run (no saved value) defaults to expanded — a collapsed rail with no
+// visible plugin list is a bad first impression.
 const SIDEBAR_COLLAPSED_KEY = 'zero-sidebar-collapsed'
-const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== 'false')
+const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true')
 const sidebarHoverOpen = ref(false)
 const sidebarExpanded = computed(() => !sidebarCollapsed.value || sidebarHoverOpen.value)
 
@@ -141,7 +157,7 @@ const filteredCategories = computed(() => {
   return result
 })
 
-// Auto-expand first category on data change
+// Auto-expand first category when nothing is expanded yet (fresh profile).
 watch(() => store.categories, (cats) => {
   const keys = Object.keys(cats)
   if (keys.length && !Object.keys(expanded).length) {
@@ -149,13 +165,34 @@ watch(() => store.categories, (cats) => {
   }
 }, { immediate: true })
 
-watch(filteredCategories, (cats) => {
-  const keys = Object.keys(cats)
-  if (!keys.length) return
-  for (const key of keys) {
-    if (!(key in expanded)) expanded[key] = true
+// Persist expansion across reloads (skipped mid-search: that state is forced).
+watch(expanded, (val) => {
+  if (expandedBeforeSearch) return
+  try { localStorage.setItem(EXPANDED_KEY, JSON.stringify({ ...val })) } catch {}
+}, { deep: true })
+
+// While searching, force-expand every matching category so hits are visible;
+// snapshot beforehand and restore when the query is cleared.
+watch(normalizedSearch, (query, prev) => {
+  if (query && !prev) {
+    expandedBeforeSearch = { ...expanded }
   }
-}, { immediate: true })
+  if (query) {
+    for (const key of Object.keys(filteredCategories.value)) {
+      expanded[key] = true
+    }
+  } else if (prev && expandedBeforeSearch) {
+    for (const key of Object.keys(expanded)) delete expanded[key]
+    Object.assign(expanded, expandedBeforeSearch)
+    expandedBeforeSearch = null
+  }
+})
+
+// Categories matched by an ongoing search stay expanded as the query narrows.
+watch(filteredCategories, (cats) => {
+  if (!normalizedSearch.value) return
+  for (const key of Object.keys(cats)) expanded[key] = true
+})
 
 function toggle(category) {
   expanded[category] = !expanded[category]
@@ -194,6 +231,16 @@ function highlightPlugin(plugin) {
 
   return parts
 }
+
+async function focusPluginSearch() {
+  sidebarCollapsed.value = false
+  localStorage.setItem(SIDEBAR_COLLAPSED_KEY, 'false')
+  await nextTick() // the search input only exists once the tree re-renders
+  searchInputRef.value?.focus()
+}
+
+onMounted(() => window.addEventListener('zero:focus-plugin-search', focusPluginSearch))
+onUnmounted(() => window.removeEventListener('zero:focus-plugin-search', focusPluginSearch))
 
 async function reloadPlugins() {
   reloading.value = true

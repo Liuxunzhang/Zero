@@ -46,7 +46,7 @@
                 <div class="ai-dropdown-title">历史会话</div>
                 <div class="ai-dropdown-subtitle">{{ conversations.length }} 条记录</div>
               </div>
-              <button class="ai-dropdown-primary-btn" @click.stop="newConversation" title="新建对话">新建</button>
+              <button class="ai-dropdown-primary-btn" @click.stop="newConversation()" title="新建对话">新建</button>
             </div>
             <div v-if="historyLoading" class="ai-dropdown-empty">加载中...</div>
             <div v-else-if="!conversations.length" class="ai-dropdown-empty">暂无历史对话</div>
@@ -65,7 +65,7 @@
                       v-model="renameText"
                       @click.stop
                       @keydown.enter.prevent="confirmRename(conv)"
-                      @keydown.escape="cancelRename"
+                      @keydown.escape.prevent="cancelRename"
                       @blur="confirmRename(conv)"
                       autofocus
                     />
@@ -305,6 +305,7 @@
 import { ref, computed, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
 import { marked } from 'marked'
 import AppIcon from './AppIcon.vue'
+import { confirmAction } from '../composables/confirm'
 import {
   streamAiChat, getAiConfig, clearAiHistory, clearAiMemory, getAiMemory, getAiMemoryStats,
   getAiPrompts, setActivePrompt, saveAiSettings,
@@ -717,6 +718,14 @@ function abortStream() {
 }
 
 async function clearChat() {
+  if (chatMessages.value.length) {
+    const ok = await confirmAction({
+      title: '清空对话',
+      message: '将删除当前会话的全部消息（含服务端历史），无法恢复。',
+      confirmText: '清空',
+    })
+    if (!ok) return
+  }
   chatMessages.value = []
   errorText.value = ''
   streamBuffer.value = ''
@@ -727,6 +736,12 @@ async function clearChat() {
 }
 
 async function clearMemory() {
+  const ok = await confirmAction({
+    title: '清空压缩记忆',
+    message: '将删除 AI 的压缩记忆摘要，影响后续分析的上下文连续性。',
+    confirmText: '清空',
+  })
+  if (!ok) return
   try {
     await clearAiMemory()
     memoryText.value = ''
@@ -858,7 +873,15 @@ async function selectConversation(conv) {
   }
 }
 
-function newConversation() {
+async function newConversation(skipConfirm = false) {
+  if (!skipConfirm && chatMessages.value.length) {
+    const ok = await confirmAction({
+      title: '新建对话',
+      message: '当前对话尚未关闭，新建会清空这些消息（含服务端历史）。',
+      confirmText: '新建',
+    })
+    if (!ok) return
+  }
   chatMessages.value = []
   errorText.value = ''
   streamBuffer.value = ''
@@ -889,11 +912,19 @@ async function confirmRename(conv) {
 }
 
 async function deleteConv(conv) {
+  const ok = await confirmAction({
+    title: '删除会话',
+    message: `将永久删除会话「${conv.title || conv.id}」。`,
+    confirmText: '删除',
+  })
+  if (!ok) return
   try {
     await deleteConversation(conv.id)
     conversations.value = conversations.value.filter(c => c.id !== conv.id)
-    if (conversationId.value === conv.id) newConversation()
-  } catch { /* ignore */ }
+    if (conversationId.value === conv.id) newConversation(true)
+  } catch (e) {
+    store.pushMessage('删除会话失败: ' + (e?.message || e), 'error')
+  }
 }
 
 function formatDate(iso) {

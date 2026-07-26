@@ -15,11 +15,16 @@
               @keydown.enter="doLoadImage"
               @focus="showDropdown = true"
             />
-            <!-- Dropdown for dumps/ files -->
-            <div
-              v-show="showDropdown && dumpFiles.length"
-              class="image-dropdown"
+            <button
+              class="image-dropdown-toggle"
+              type="button"
+              title="选择 dumps/ 目录中的镜像"
+              @mousedown.prevent="showDropdown = !showDropdown"
             >
+              <AppIcon name="chevron-down" :size="12" />
+            </button>
+            <!-- Dropdown for dumps/ files -->
+            <div v-show="showDropdown" class="image-dropdown">
               <div class="image-dropdown-header">dumps/ 目录镜像文件</div>
               <button
                 v-for="file in dumpFiles"
@@ -37,9 +42,9 @@
           </div>
           <button
             class="topbar-load-btn"
-            :disabled="!localImagePath || store.pluginBusy"
+            :disabled="!localImagePath || store.pluginBusy || store.imageLoadBusy"
             @click="doLoadImage"
-          >加载</button>
+          >{{ store.imageLoadBusy ? '加载中...' : '加载' }}</button>
         </div>
         <div class="topbar-runtime-title">
           <span class="topbar-system-name">{{ systemDisplayName }}</span>
@@ -202,6 +207,8 @@
       @cancel="store.pluginArgsModal.show = false"
     />
 
+    <ConfirmDialog />
+
     <!-- Global Args Panel -->
     <ArgsPanel
       :show="store.showArgsPanel"
@@ -218,6 +225,8 @@ import { ref, computed, watch, onMounted, onBeforeUnmount, defineAsyncComponent 
 import { useAppStore } from './stores/app'
 import { listImages, getApiToken, setApiToken } from './api'
 import AppIcon from './components/AppIcon.vue'
+import ConfirmDialog from './components/ConfirmDialog.vue'
+import { useEscClose } from './composables/useEscClose'
 import AppSidebar from './components/AppSidebar.vue'
 import AiPanel from './components/AiPanel.vue'
 import DataTable from './components/DataTable.vue'
@@ -255,6 +264,27 @@ function clearApiToken() {
   setApiToken('')
   localApiToken.value = ''
   store.pushMessage('API Token 已清除', 'info')
+}
+
+useEscClose(() => showTokenMenu.value, () => { showTokenMenu.value = false })
+useEscClose(() => showDropdown.value, () => { showDropdown.value = false })
+
+function onGlobalKeydown(e) {
+  // Ctrl/Cmd+K works even while typing (standard command-palette behavior).
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+    e.preventDefault()
+    window.dispatchEvent(new CustomEvent('zero:focus-plugin-search'))
+    return
+  }
+  const t = e.target
+  const inField = t && (
+    t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable
+  )
+  if (inField) return
+  if (e.key === '/') {
+    e.preventDefault()
+    window.dispatchEvent(new CustomEvent('zero:focus-filter'))
+  }
 }
 
 function onDocClickToken(e) {
@@ -483,6 +513,7 @@ async function fetchDumpFiles() {
     dumpFiles.value = data.files || []
   } catch (e) {
     console.error('Failed to list dump files:', e)
+    store.pushMessage('获取 dumps/ 镜像列表失败: ' + (e?.message || e), 'warning')
   }
 }
 
@@ -522,6 +553,7 @@ onMounted(async () => {
 
   document.addEventListener('click', handleClickOutside)
   document.addEventListener('click', onDocClickToken)
+  document.addEventListener('keydown', onGlobalKeydown)
   window.addEventListener('zero:send-to-ai', handleSendToAiEvent)
 
   const savedWidth = Number(localStorage.getItem(AI_PANEL_WIDTH_KEY))
@@ -550,6 +582,7 @@ onBeforeUnmount(() => {
   prefersLightQuery.removeEventListener('change', onSystemThemeChange)
   document.removeEventListener('click', handleClickOutside)
   document.removeEventListener('click', onDocClickToken)
+  document.removeEventListener('keydown', onGlobalKeydown)
   window.removeEventListener('zero:send-to-ai', handleSendToAiEvent)
   stopAiResize()
   _stopFloatDrag()
@@ -616,6 +649,30 @@ onBeforeUnmount(() => {
 
 .image-select-wrapper {
   position: relative;
+  display: flex;
+  align-items: center;
+}
+
+/* Chevron inside the input's right edge — makes the dumps/ list discoverable. */
+.image-dropdown-toggle {
+  position: absolute;
+  right: 4px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color var(--transition-fast), background var(--transition-fast);
+}
+
+.image-dropdown-toggle:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
 }
 
 .image-dropdown {

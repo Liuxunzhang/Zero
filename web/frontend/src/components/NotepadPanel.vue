@@ -33,13 +33,17 @@
 <script setup>
 import AppIcon from './AppIcon.vue'
 import { computed, nextTick, ref, watch } from 'vue'
+import { confirmAction } from '../composables/confirm'
+import { useEscClose } from '../composables/useEscClose'
 
 const props = defineProps({
   show: Boolean,
   storageKey: { type: String, default: 'zero-notepad' },
 })
 
-defineEmits(['close'])
+const emit = defineEmits(['close'])
+
+useEscClose(() => props.show, () => emit('close'))
 
 const noteText = ref('')
 const textareaRef = ref(null)
@@ -74,7 +78,13 @@ function saveNote() {
   }
 }
 
-function clearNote() {
+async function clearNote() {
+  const ok = await confirmAction({
+    title: '清空记事本',
+    message: '将删除全部手写取证笔记，无法恢复。',
+    confirmText: '清空',
+  })
+  if (!ok) return
   noteText.value = ''
   saveNote()
 }
