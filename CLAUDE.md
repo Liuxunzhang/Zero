@@ -22,14 +22,16 @@ npm run dev             # Vite dev server with HMR (proxy to backend on 8000)
 npm run build           # Production build into dist/
 ```
 
-**Lint/format** (dev deps: `black`, `ruff`):
+**Lint/format** (dev deps: `uv pip install -e '.[dev]'`):
 ```bash
-black .                 # Format Python code
-ruff check .            # Lint Python code
+ruff check .            # Lint Python code — configured in pyproject.toml, currently clean
+black .                 # NOT applied to this codebase yet: it would reformat 26 of 34
+                        # files. Run it only as a deliberate, separate commit.
 ```
 
 ```bash
-make test               # pytest (tests/ — cache key, disk cache, get_results LRU)
+make test               # pytest (tests/ — cache keys, disk cache, filter expressions,
+                        # get_results LRU, worker subprocess I/O, symbol service)
 ```
 
 ## Architecture
@@ -57,7 +59,11 @@ VolatilityWrapper (zero/core/wrapper.py) — raw vol3 API calls, plugin process 
 - **Multi-engine abstraction** (`zero/engines/base.py`): `EngineBase` defines a uniform interface (load image, list plugins, run plugin, get results, export). Only `Vol3Engine` exists today, but the design supports adding other engines. The web layer never touches engine internals directly — all access goes through `EngineManager`.
 - **EngineManager singleton** (`zero/engines/manager.py`): Lazy-initialized on first `get_manager()` call. Holds one adapter instance per `engine_id` with fully independent state (image, plugin, results, cache). Engines are registered via `register_factory()`, allowing deferred construction.
 - **Plugin process isolation** (`zero/core/plugin_worker.py`): Plugins run in a **separate process** — `multiprocessing.Process` on Linux (`fork`), `subprocess.Popen` on macOS (`spawn`, to avoid fork-safety issues with vol3's native libraries). This enables hard cancellation and timeout enforcement. Communication via `multiprocessing.Queue` or JSON-over-stdout.
-- **Disk-backed result cache** (`zero/core/result_cache.py`): CSV under `saved_results/vol3/{image_id}/{plugin}/{kwargs_digest}.csv`. Cache key includes image identity (path+mtime+size) and normalized plugin kwargs (`zero/core/cache_key.py`). `clear_cache` clears memory **and** disk. In-memory filter/sort LRU (`RESULTS_QUERY_CACHE_MAX`, default 64) caches filtered sets; pagination only slices.
+- **Three-level result cache**:
+  1. In-memory result sets in `VolatilityWrapper._cache` — LRU bounded by `RESULTS_MEMORY_CACHE_MAX` (default 8). Evicted entries are reloaded from disk, so eviction costs I/O, never correctness.
+  2. Disk cache (`zero/core/result_cache.py`): CSV under `saved_results/vol3/{image_id}/{plugin}/{kwargs_digest}.csv`. Cache key includes image identity (path+mtime+size) and normalized plugin kwargs (`zero/core/cache_key.py`). `clear_cache` clears memory **and** disk.
+  3. Filter/sort LRU in `Vol3Engine._fs_cache`, bounded by both `RESULTS_QUERY_CACHE_MAX` (entries, default 64) and `RESULTS_QUERY_CACHE_MAX_ROWS` (total rows). Pagination with no filter/sort skips this cache entirely and slices the source list in place.
+- **Plugin worker I/O** (`zero/core/wrapper.py`): both worker transports feed a shared `_WorkerEventSink`. The subprocess reader polls stdout **and** stderr (an undrained stderr pipe would block the child and look like a stall) and drains buffered stdout lines after the child exits (they can still hold the `result` event).
 - **All config is centralized** in `zero/config.py` — timeouts, paths, AI settings, cache strategy, feature flags. No magic values scattered through the codebase.
 - **Services are module-level singletons**: `EngineService`, `AiService`, `SymbolService` in `web/backend/services/` — each is a thin wrapper initialized at import time, exposing methods that the API routes call.
 - **Advanced filter expression parser** (`zero/utils/filter_expression.py`): Custom tokenizer/evaluator supporting 11 operators (`-eq`, `-contain`, `-match`, `-startswith`, etc.) with `&&`/`||` logic. Evaluated server-side against cached results.

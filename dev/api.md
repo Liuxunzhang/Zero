@@ -76,6 +76,23 @@ windows
 
 返回 Volatility 3 插件参数元数据，用于前端判断是否需要弹出参数输入框。
 
+### GET `/api/plugin-docs/{plugin_name}?engine=vol3`
+
+返回插件说明，取自 Volatility 3 插件类的 docstring 与各 requirement 描述，
+供参数弹窗的帮助面板展示。插件不存在或没有 docstring 时 `doc` 为空对象。
+
+```json
+{
+  "plugin": "pslist",
+  "engine": "vol3",
+  "doc": {
+    "notes": "Volatility 3 插件: linux.pslist.PsList",
+    "purpose": "Lists the processes present in a particular linux memory image.",
+    "key_params": { "pid": "Filter on specific process IDs" }
+  }
+}
+```
+
 ### POST `/api/plugins/reload?engine=vol3`
 
 重新扫描插件目录。
@@ -213,7 +230,8 @@ Request:
 
 ### GET `/api/cache/stats?engine=vol3`
 
-返回缓存统计。
+返回缓存统计。`memory_entries` / `memory_entries_max` 为常驻内存结果集的当前条数与
+LRU 上限（`config.RESULTS_MEMORY_CACHE_MAX`）；被淘汰的结果下次访问从磁盘缓存复原。
 
 ### DELETE `/api/plugin/cancel?engine=vol3`
 
@@ -233,17 +251,27 @@ AI 接口位于 `/api/ai/*`，用于配置 OpenAI-compatible 模型、提示词�
 
 ## Symbols
 
+### GET `/api/symbols/repos`
+
+列出可切换的远程符号表仓库索引（默认：`Abyss-W4tcher/volatility3-symbols`、`Sunmedalia/volatility3-symbols`）。
+
 ### GET `/api/symbols/remote`
 
-浏览远程符号表仓库。
+浏览远程符号表仓库索引。
+
+索引会落盘到 `.zero/symbols/remote_index/`，默认 6 小时内不重复请求 GitHub；刷新失败时最长可继续使用 7 天内的陈旧缓存。
+
+未配置 token 时 GitHub REST 匿名配额约 **60 次/小时**；配置 `SYMBOL_GITHUB_TOKEN` 或环境变量 `GITHUB_TOKEN` / `ZERO_GITHUB_TOKEN` 后约 **5000 次/小时**。符号文件下载走 `raw.githubusercontent.com`，不占用列表 API 配额。
 
 Query:
 
 ```text
 query=
-os=
+os=            # linux | mac | windows | 空=全部
 page=1
 page_size=100
+repo=          # owner/name，默认首个配置仓库
+force_refresh= # true 时绕过软 TTL 强制拉 GitHub
 ```
 
 ### GET `/api/symbols/local`
@@ -252,14 +280,15 @@ page_size=100
 
 ### POST `/api/symbols/download`
 
-下载远程符号表到本地。
+从指定远程仓库下载符号表到本地。
 
 Request:
 
 ```json
 {
   "paths": [
-    "ubuntu-6.8.0-100-generic.json.xz"
-  ]
+    "Ubuntu/ubuntu-6.8.0-100-generic.json.xz"
+  ],
+  "repo": "Abyss-W4tcher/volatility3-symbols"
 }
 ```
