@@ -30,8 +30,15 @@ black .                 # NOT applied to this codebase yet: it would reformat 26
 ```
 
 ```bash
-make test               # pytest (tests/ — cache keys, disk cache, filter expressions,
-                        # get_results LRU, worker subprocess I/O, symbol service)
+make test               # backend pytest (tests/ — cache keys, disk cache, filter
+                        # expressions, get_results LRU + filtered export, worker
+                        # subprocess I/O, symbol service, FastAPI route/token tests)
+```
+
+**Frontend tests** (from `web/frontend/`, vitest + happy-dom):
+```bash
+npm run test            # composables (esc-close, confirm), stores (app, findings),
+                        # icon-registry completeness
 ```
 
 ## Architecture
