@@ -1,6 +1,5 @@
 """Tests for DiskResultCache load/save/delete."""
 
-from pathlib import Path
 
 from zero.core.result_cache import DiskResultCache
 
