@@ -964,7 +964,7 @@ watch(() => props.open, (val) => {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--bg-elevated) 94%, white 6%), var(--bg-secondary));
   box-shadow:
-    0 18px 40px rgba(0, 0, 0, 0.28),
+    var(--shadow-lg),
     0 0 0 1px color-mix(in srgb, var(--accent-glow, rgba(96, 165, 250, 0.12)) 70%, transparent);
   backdrop-filter: blur(16px);
   overflow: hidden;
@@ -1272,8 +1272,8 @@ watch(() => props.open, (val) => {
 }
 
 .ai-tool-card.ai-tool-done {
-  border-color: color-mix(in srgb, #22c55e 40%, var(--border, #1e3a5f));
-  background: color-mix(in srgb, #22c55e 6%, var(--bg-elevated));
+  border-color: color-mix(in srgb, var(--text-success) 40%, var(--border, #1e3a5f));
+  background: color-mix(in srgb, var(--text-success) 6%, var(--bg-elevated));
 }
 
 .ai-tool-card.ai-tool-error {
@@ -1380,8 +1380,8 @@ watch(() => props.open, (val) => {
 
 .ai-mode-switch-btn.active {
   background: var(--accent-dim, #3b82f6);
-  color: #ffffff;
-  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+  color: var(--load-btn-text);
+  box-shadow: 0 2px 8px var(--accent-glow);
 }
 
 @media (prefers-reduced-motion: reduce) {

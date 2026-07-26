@@ -369,15 +369,19 @@ let resizeStartX = 0
 let resizeStartWidth = 420
 let onWindowResize = null
 
-const themes = ['dark', 'light']
+const themes = ['dark', 'light', 'auto']
 const themeLabels = {
-  dark: '切换到白天主题',
-  light: '切换到黑夜主题',
+  dark: '当前：深色主题，点击切换到浅色',
+  light: '当前：浅色主题，点击切换到跟随系统',
+  auto: '当前：跟随系统，点击切换到深色',
 }
 const themeIcons = {
   dark: '夜',
   light: '昼',
+  auto: '自',
 }
+// Only meaningful while currentTheme === 'auto'.
+const prefersLightQuery = window.matchMedia('(prefers-color-scheme: light)')
 
 const themeLabel = computed(() => themeLabels[currentTheme.value])
 const themeIcon = computed(() => themeIcons[currentTheme.value])
@@ -402,10 +406,23 @@ const startupStatusText = computed(() => {
   return ''
 })
 
+function applyTheme() {
+  // The data-theme attribute always carries a *resolved* value; 'auto' lives
+  // only in state/localStorage (the index.html anti-flash script mirrors this).
+  const resolved = currentTheme.value === 'auto'
+    ? (prefersLightQuery.matches ? 'light' : 'dark')
+    : currentTheme.value
+  document.documentElement.setAttribute('data-theme', resolved)
+}
+
+function onSystemThemeChange() {
+  if (currentTheme.value === 'auto') applyTheme()
+}
+
 function toggleTheme() {
   const idx = themes.indexOf(currentTheme.value)
   currentTheme.value = themes[(idx + 1) % themes.length]
-  document.documentElement.setAttribute('data-theme', currentTheme.value)
+  applyTheme()
   localStorage.setItem('zero-theme', currentTheme.value)
 }
 
@@ -493,12 +510,14 @@ function handleClickOutside(e) {
 }
 
 onMounted(async () => {
-  // Restore saved theme
+  // Restore saved theme (the index.html inline script already applied a
+  // resolved value pre-mount; this syncs component state and re-applies).
   const saved = localStorage.getItem('zero-theme')
   if (saved && themes.includes(saved)) {
     currentTheme.value = saved
   }
-  document.documentElement.setAttribute('data-theme', currentTheme.value)
+  applyTheme()
+  prefersLightQuery.addEventListener('change', onSystemThemeChange)
 
   document.addEventListener('click', handleClickOutside)
   document.addEventListener('click', onDocClickToken)
@@ -527,6 +546,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  prefersLightQuery.removeEventListener('change', onSystemThemeChange)
   document.removeEventListener('click', handleClickOutside)
   document.removeEventListener('click', onDocClickToken)
   window.removeEventListener('zero:send-to-ai', handleSendToAiEvent)
@@ -607,7 +627,7 @@ onBeforeUnmount(() => {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-sm);
   z-index: 200;
   overflow: hidden;
 }

@@ -40,6 +40,17 @@
   --transition-normal: 250ms cubic-bezier(0.4, 0, 0.2, 1);
 
   --load-btn-text: #04121e;
+
+  /* Elevation shadows — deep blacks read well on dark surfaces. */
+  --shadow-sm: 0 8px 24px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 12px 28px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 18px 40px rgba(0, 0, 0, 0.28);
+  --shadow-xl: 0 24px 64px rgba(0, 0, 0, 0.6);
+  --shadow-side: 12px 0 28px rgba(0, 0, 0, 0.28);
+  /* Subtle surface lift (zebra rows etc.) — white haze on dark. */
+  --overlay-raise: rgba(255, 255, 255, 0.015);
+  /* Modal backdrop scrim. */
+  --overlay-backdrop: rgba(0, 0, 0, 0.65);
 }
 
 [data-theme="light"] {
@@ -68,6 +79,16 @@
   --border-subtle: #e0e7ef;
 
   --load-btn-text: #ffffff;
+
+  /* Light surfaces want soft, low-alpha slate shadows, not black halos. */
+  --shadow-sm: 0 4px 14px rgba(15, 23, 42, 0.12);
+  --shadow-md: 0 8px 20px rgba(15, 23, 42, 0.12);
+  --shadow-lg: 0 14px 32px rgba(15, 23, 42, 0.16);
+  --shadow-xl: 0 20px 50px rgba(15, 23, 42, 0.2);
+  --shadow-side: 12px 0 24px rgba(15, 23, 42, 0.1);
+  /* On light, "raise" means a faint slate tint (white would be invisible). */
+  --overlay-raise: rgba(15, 23, 42, 0.03);
+  --overlay-backdrop: rgba(15, 23, 42, 0.35);
 }
 
 /* ── Reset ──────────────────────────────────────────── */
@@ -251,7 +272,7 @@ body.ai-resizing-ai {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-md);
 }
 
 .topbar-token-title {
@@ -337,7 +358,7 @@ body.ai-resizing-ai {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-sm);
   padding: 4px;
 }
 
@@ -466,7 +487,7 @@ body.ai-resizing-ai {
 }
 
 .data-table tbody tr:nth-child(even) {
-  background: rgba(255, 255, 255, 0.015);
+  background: var(--overlay-raise);
 }
 
 .data-table tbody tr:hover {
@@ -500,7 +521,7 @@ body.ai-resizing-ai {
 
 .sidebar.hover-open {
   width: var(--sidebar-width);
-  box-shadow: 12px 0 28px rgba(0, 0, 0, 0.28);
+  box-shadow: var(--shadow-side);
   z-index: 800;
 }
 
@@ -724,7 +745,7 @@ body.ai-resizing-ai {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   background: var(--bg-elevated);
-  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+  box-shadow: var(--shadow-lg);
 }
 
 .filter-suggest-item {
@@ -1123,7 +1144,7 @@ body.ai-resizing-ai {
   background: var(--bg-elevated);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--shadow-sm);
   z-index: 100;
   min-width: 100px;
   overflow: hidden;
@@ -1196,7 +1217,12 @@ body.ai-resizing-ai {
 }
 
 .ai-toggle-btn.active {
-  background: linear-gradient(135deg, var(--accent-glow), rgba(216, 161, 90, 0.25));
+  /* Second stop follows the accent instead of a fixed amber that ignores theme. */
+  background: linear-gradient(
+    135deg,
+    var(--accent-glow),
+    color-mix(in srgb, var(--accent) 22%, transparent)
+  );
   border-color: var(--accent);
   color: var(--accent-bright);
   box-shadow: 0 0 12px var(--accent-glow);
@@ -1261,7 +1287,7 @@ body.ai-resizing-ai {
   min-width: 320px;
   min-height: 300px;
   border-radius: var(--radius);
-  box-shadow: 0 8px 40px rgba(0, 0, 0, 0.45);
+  box-shadow: var(--shadow-md);
   overflow: hidden;
   display: flex;
   flex-direction: column;
@@ -1960,7 +1986,7 @@ body.ai-float-dragging {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: rgba(0, 0, 0, 0.65);
+  background: var(--overlay-backdrop);
   backdrop-filter: blur(4px);
   animation: modal-fade-in 0.2s ease-out;
 }
@@ -1977,7 +2003,7 @@ body.ai-float-dragging {
   background: var(--bg-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
-  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  box-shadow: var(--shadow-xl);
   display: flex;
   flex-direction: column;
   overflow: hidden;
