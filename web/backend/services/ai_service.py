@@ -696,7 +696,7 @@ def _format_plugin_context(plugin_context: dict) -> str:
         "| " + " | ".join(columns) + " |",
         "| " + " | ".join(["---"] * len(columns)) + " |",
     ]
-    current_len = sum(len(l) for l in lines) + (len(lines) - 1 if lines else 0)
+    current_len = sum(len(line) for line in lines) + (len(lines) - 1 if lines else 0)
     shown_rows = 0
     for row in truncated:
         cells = [str(c).replace("|", "\\|").replace("\n", " ")[:180] for c in row]

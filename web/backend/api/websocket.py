@@ -4,7 +4,6 @@ import asyncio
 import functools
 import json
 import logging
-from typing import Optional
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -90,8 +89,11 @@ async def plugin_ws(websocket: WebSocket):
                 progress_queue: asyncio.Queue = asyncio.Queue()
                 loop = asyncio.get_running_loop()
 
-                def progress_cb(message: str):
-                    loop.call_soon_threadsafe(progress_queue.put_nowait, message)
+                # Bind the loop/queue for *this* run: if the client disconnects
+                # mid-plugin the executor thread outlives this iteration, and a
+                # late callback must not push into the next run's queue.
+                def progress_cb(message: str, _loop=loop, _queue=progress_queue):
+                    _loop.call_soon_threadsafe(_queue.put_nowait, message)
 
                 run_task = loop.run_in_executor(
                     None,

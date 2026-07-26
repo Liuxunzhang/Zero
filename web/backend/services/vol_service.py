@@ -57,6 +57,28 @@ class EngineService:
     ) -> bool:
         return self._manager.is_plugin_available(engine_id, plugin_name)
 
+    def get_plugin_metadata(
+        self, plugin_name: str, engine_id: str = "vol3"
+    ) -> Optional[Dict[str, Any]]:
+        """Parameter metadata for a plugin, or None if the engine cannot supply it."""
+        try:
+            engine = self._manager.get_engine(engine_id)
+        except Exception:
+            return None
+        getter = getattr(engine, "get_plugin_metadata", None)
+        return getter(plugin_name) if callable(getter) else None
+
+    def get_plugin_docs(
+        self, plugin_name: str, engine_id: str = "vol3"
+    ) -> Dict[str, Any]:
+        """Help-panel documentation for a plugin; {} when unavailable."""
+        try:
+            engine = self._manager.get_engine(engine_id)
+        except Exception:
+            return {}
+        getter = getattr(engine, "get_plugin_docs", None)
+        return (getter(plugin_name) or {}) if callable(getter) else {}
+
     # -- Plugin execution ---------------------------------------------------
 
     def run_plugin(

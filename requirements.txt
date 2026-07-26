@@ -1,3 +1,6 @@
+# Runtime dependencies used by `make install`.
+# Keep in sync with [project.dependencies] in pyproject.toml.
+# Requires Python >= 3.10 (see requires-python in pyproject.toml).
 volatility3>=2.5.0
 requests>=2.28.0
 yara-python>3.8.0

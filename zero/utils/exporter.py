@@ -4,7 +4,7 @@ import csv
 import json
 import logging
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 from datetime import datetime
 
 from zero import config
@@ -34,7 +34,9 @@ class ResultExporter:
         try:
             data = []
             for row in rows:
-                row_dict = {col: val for col, val in zip(columns, row)}
+                # strict=False: a ragged row from a plugin should still export,
+                # truncated to the columns it has, rather than raise.
+                row_dict = {col: val for col, val in zip(columns, row, strict=False)}
                 data.append(row_dict)
 
             with open(filepath, 'w', encoding='utf-8') as f:
@@ -62,23 +64,29 @@ class ResultExporter:
             return False
 
     @staticmethod
-    def auto_export(columns: List[str], rows: List[Tuple], plugin_name: str, format: str = "csv") -> str:
-        """Auto-generate filename and export"""
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{plugin_name}_{timestamp}.{format}"
-
-        export_dir = Path(getattr(config, "EXPORT_DIR", "~/zero_exports")).expanduser()
-        export_dir.mkdir(exist_ok=True)
-
-        filepath = export_dir / filename
-
-        if format == "csv":
-            success = ResultExporter.export_csv(columns, rows, str(filepath))
-        elif format == "json":
-            success = ResultExporter.export_json(columns, rows, str(filepath))
-        elif format == "txt":
-            success = ResultExporter.export_txt(columns, rows, str(filepath))
-        else:
+    def auto_export(
+        columns: List[str],
+        rows: List[Tuple],
+        plugin_name: str,
+        fmt: str = "csv",
+    ) -> Optional[str]:
+        """Auto-generate filename and export. Returns the path, or None on failure."""
+        writers = {
+            "csv": ResultExporter.export_csv,
+            "json": ResultExporter.export_json,
+            "txt": ResultExporter.export_txt,
+        }
+        writer = writers.get(fmt)
+        if writer is None:
+            logger.error("Unsupported export format: %s", fmt)
             return None
 
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        filename = f"{plugin_name}_{timestamp}.{fmt}"
+
+        export_dir = Path(getattr(config, "EXPORT_DIR", "~/zero_exports")).expanduser()
+        export_dir.mkdir(parents=True, exist_ok=True)
+
+        filepath = export_dir / filename
+        success = writer(columns, rows, str(filepath))
         return str(filepath) if success else None

@@ -358,7 +358,7 @@ async def _execute_agent_tool(
             "summary": (
                 f"插件 {plugin_name} 返回 {total} 行, "
                 f"{len(columns)} 列 ({', '.join(columns[:20])})"
-                + (f"（仅展示前 100 行）" if total > 100 else "")
+                + ("（仅展示前 100 行）" if total > 100 else "")
             ),
         }
 
@@ -418,7 +418,7 @@ async def _execute_agent_tool(
         for match in matches:
             pid = int(match["pid"])
 
-            def _dump_one() -> tuple:
+            def _dump_one(pid=pid) -> tuple:
                 return mgr.run_plugin(
                     engine_id,
                     "windows.memmap.Memmap",
@@ -533,7 +533,7 @@ async def _execute_agent_tool(
             for proc in process_matches:
                 pid = int(proc["pid"])
 
-                def _run_dlllist() -> tuple:
+                def _run_dlllist(pid=pid) -> tuple:
                     return mgr.run_plugin(engine_id, "windows.dlllist.DllList", pid=pid)
 
                 columns, rows = await loop.run_in_executor(None, _run_dlllist)
@@ -565,7 +565,7 @@ async def _execute_agent_tool(
             elif match.get("pid") is not None:
                 kwargs["pid"] = int(match["pid"])
 
-            def _dump_one() -> tuple:
+            def _dump_one(kwargs=kwargs) -> tuple:
                 return mgr.run_plugin(engine_id, "windows.pedump.PEDump", **kwargs)
 
             columns, rows = await loop.run_in_executor(None, _dump_one)

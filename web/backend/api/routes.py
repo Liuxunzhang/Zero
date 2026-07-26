@@ -212,19 +212,7 @@ async def list_plugins(os_family: str, engine: str = Query("vol3")):
 @router.get("/plugin-args/{plugin_name}")
 async def get_plugin_args(plugin_name: str, engine: str = Query("vol3")):
     """Return parameter metadata for a Volatility 3 plugin."""
-    svc = get_service()
-    try:
-        eng = svc._manager.get_engine(engine)
-    except Exception:
-        return {"plugin": plugin_name, "engine": engine, "args": [],
-                "requires_modal": False, "has_required_args": False, "arg_names": []}
-    if not hasattr(eng, "get_plugin_metadata"):
-        return {"plugin": plugin_name, "engine": engine, "args": [],
-                "requires_modal": False, "has_required_args": False, "arg_names": []}
-    meta = eng.get_plugin_metadata(plugin_name)
-    if meta is None:
-        return {"plugin": plugin_name, "engine": engine, "args": [],
-                "requires_modal": False, "has_required_args": False, "arg_names": []}
+    meta = get_service().get_plugin_metadata(plugin_name, engine_id=engine) or {}
     return {
         "plugin": plugin_name,
         "engine": engine,
@@ -237,8 +225,9 @@ async def get_plugin_args(plugin_name: str, engine: str = Query("vol3")):
 
 @router.get("/plugin-docs/{plugin_name}")
 async def get_plugin_docs(plugin_name: str, engine: str = Query("vol3")):
-    """Return optional plugin documentation."""
-    return {"plugin": plugin_name, "engine": engine, "doc": {}}
+    """Return plugin documentation derived from the engine's plugin class."""
+    doc = get_service().get_plugin_docs(plugin_name, engine_id=engine)
+    return {"plugin": plugin_name, "engine": engine, "doc": doc}
 
 
 @router.post("/plugins/reload")
