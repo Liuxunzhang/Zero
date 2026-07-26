@@ -210,8 +210,48 @@ export const useAppStore = defineStore("app", () => {
     }
   }
 
+  // Busy-recovery pollers, one per engine (see _startBusyRecovery).
+  const _recoveryTimers = {}
+
+  function _stopBusyRecovery(engineId) {
+    if (_recoveryTimers[engineId]) {
+      clearInterval(_recoveryTimers[engineId])
+      _recoveryTimers[engineId] = null
+    }
+  }
+
+  /**
+   * The socket died while a plugin was running. The backend keeps running the
+   * plugin and the engine retains its results, so poll status until the run
+   * finishes, then pull the results over REST.
+   */
+  function _startBusyRecovery(engineId) {
+    if (_recoveryTimers[engineId]) return
+    _recoveryTimers[engineId] = setInterval(async () => {
+      try {
+        const status = await getImageStatus(engineId)
+        if (!status.plugin_busy) {
+          _stopBusyRecovery(engineId)
+          const st = engineStates[engineId]
+          if (st) {
+            st.pluginBusy = false
+            st.progress = -1
+            st.runningPlugin = ""
+          }
+          pushMessage("[" + engineId + "] 连接中断期间插件已在后台完成，已加载结果", "success")
+          if (engineId === selectedEngine.value) fetchResults()
+        }
+      } catch {
+        // Backend still down — keep polling.
+      }
+    }, 3000)
+  }
+
   function _getSocket(engineId) {
-    if (_sockets[engineId] && _sockets[engineId].ready) return _sockets[engineId]
+    // The socket reconnects itself; reuse it in any non-closed state so we
+    // never stack up parallel reconnect loops.
+    const existing = _sockets[engineId]
+    if (existing && existing.state !== "closed") return existing
     _sockets[engineId] = createPluginSocket((msg) => {
       const msgEngine = msg.engine || engineId
       const target = engineStates[msgEngine]
@@ -248,6 +288,22 @@ export const useAppStore = defineStore("app", () => {
           else { target.pluginBusy = false; target.progress = -1 }
         }
       }
+    }, {
+      onStateChange: (() => {
+        let wasDisconnected = false
+        return (state, info) => {
+          if (state === "reconnecting") {
+            if (info?.attempt === 1) {
+              pushMessage("[" + engineId + "] 连接已断开，正在自动重连…", "warning")
+            }
+            wasDisconnected = true
+            if (engineStates[engineId]?.pluginBusy) _startBusyRecovery(engineId)
+          } else if (state === "open" && wasDisconnected) {
+            wasDisconnected = false
+            pushMessage("[" + engineId + "] 连接已恢复", "success")
+          }
+        }
+      })(),
     })
     return _sockets[engineId]
   }
@@ -266,6 +322,7 @@ export const useAppStore = defineStore("app", () => {
   async function cancelRunningPlugin() {
     const engineId = selectedEngine.value
     const st = engineStates[engineId]
+    _stopBusyRecovery(engineId)
     try {
       await apiCancel(engineId)
       st.pluginBusy = false
@@ -506,6 +563,7 @@ export const useAppStore = defineStore("app", () => {
       "[" + engineId + "] " + (force ? "强制重跑: " : "运行插件: ") + pluginName + "...",
       force ? "warning" : "info",
     )
+    _stopBusyRecovery(engineId)
     const socket = _getSocket(engineId)
     const payload = {
       plugin: pluginName,
@@ -514,9 +572,11 @@ export const useAppStore = defineStore("app", () => {
       ...cleanParams,
     }
     if (force) payload.force = true
-    const doSend = () => socket.send("run", payload)
-    if (socket.ready) doSend()
-    else socket.onOpen(doSend)
+    if (!socket.send("run", payload)) {
+      // Down right now: queue exactly one send for the next (re)connect.
+      pushMessage("[" + engineId + "] 连接未就绪，将在重连后开始运行", "warning")
+      socket.onOpenOnce(() => socket.send("run", payload))
+    }
   }
 
   function runPluginWithParams(params) {

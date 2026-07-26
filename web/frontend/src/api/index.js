@@ -139,37 +139,101 @@ export function downloadSymbols(paths, repo = '') {
 
 /* ── WebSocket helper ──────────────────────────────── */
 
-export function createPluginSocket(onMessage) {
-  const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
-  const token = getApiToken()
-  const qs = token ? `?token=${encodeURIComponent(token)}` : ''
-  const ws = new WebSocket(`${protocol}//${location.host}/ws/plugin${qs}`)
+// Reconnect backoff schedule; clamps at the last entry.
+const WS_BACKOFF_MS = [1000, 2000, 5000, 10000]
 
-  ws.onmessage = (event) => {
-    try {
-      const data = JSON.parse(event.data)
-      onMessage(data)
-    } catch (e) {
-      console.error('WS parse error:', e)
+/**
+ * Plugin WebSocket with automatic reconnect.
+ *
+ * States: connecting → open → reconnecting → … → closed (only via close()).
+ * Reconnecting never re-sends commands by itself: `send()` returns false when
+ * the socket is down, and one-shot `onOpenOnce` callbacks fire on the *next*
+ * open only — a queued "run" can never be replayed by a later reconnect.
+ *
+ * @param {Function} onMessage - parsed-JSON message handler
+ * @param {{ onStateChange?: (state: string, info?: object) => void }} opts
+ */
+export function createPluginSocket(onMessage, { onStateChange } = {}) {
+  let ws = null
+  let state = 'connecting'
+  let attempt = 0
+  let reconnectTimer = null
+  let closedByUs = false
+  const persistentOpenCbs = []
+  let onceOpenCbs = []
+
+  function setState(next, info) {
+    state = next
+    try { onStateChange?.(next, info) } catch (e) { console.error('WS state cb error:', e) }
+  }
+
+  function connect() {
+    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+    const token = getApiToken()
+    const qs = token ? `?token=${encodeURIComponent(token)}` : ''
+    ws = new WebSocket(`${protocol}//${location.host}/ws/plugin${qs}`)
+
+    ws.onopen = () => {
+      attempt = 0
+      setState('open')
+      for (const cb of persistentOpenCbs) cb()
+      const once = onceOpenCbs
+      onceOpenCbs = []
+      for (const cb of once) cb()
+    }
+
+    ws.onmessage = (event) => {
+      try {
+        onMessage(JSON.parse(event.data))
+      } catch (e) {
+        console.error('WS parse error:', e)
+      }
+    }
+
+    ws.onerror = (err) => console.error('WS error:', err)
+
+    ws.onclose = () => {
+      if (closedByUs) {
+        setState('closed')
+        return
+      }
+      const delay = WS_BACKOFF_MS[Math.min(attempt, WS_BACKOFF_MS.length - 1)]
+      attempt += 1
+      setState('reconnecting', { attempt, delay })
+      reconnectTimer = setTimeout(connect, delay)
     }
   }
 
-  ws.onerror = (err) => console.error('WS error:', err)
+  connect()
 
   return {
+    /** Send an action; returns false (visibly) when the socket is down. */
     send(action, payload = {}) {
-      if (ws.readyState === WebSocket.OPEN) {
+      if (ws?.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ action, ...payload }))
+        return true
       }
+      return false
     },
     close() {
-      ws.close()
+      closedByUs = true
+      clearTimeout(reconnectTimer)
+      ws?.close()
     },
     get ready() {
-      return ws.readyState === WebSocket.OPEN
+      return ws?.readyState === WebSocket.OPEN
     },
+    get state() {
+      return state
+    },
+    /** Fires on every (re)open — for resubscribe-style logic. */
     onOpen(cb) {
-      ws.addEventListener('open', cb)
+      persistentOpenCbs.push(cb)
+    },
+    /** Fires once, on the next open only — for queued one-shot sends. */
+    onOpenOnce(cb) {
+      if (ws?.readyState === WebSocket.OPEN) cb()
+      else onceOpenCbs.push(cb)
     },
   }
 }
