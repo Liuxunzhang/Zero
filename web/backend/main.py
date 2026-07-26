@@ -1,8 +1,10 @@
 """Zero Web — FastAPI application entry point."""
 
+import hmac
 import logging
 import os
 import sys
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 # Ensure project root is importable so `zero.*` works.
@@ -22,10 +24,44 @@ from web.backend.api.websocket import router as ws_router
 from web.backend.api.ai_routes import router as ai_router
 from web.backend.api.symbol_routes import router as symbol_router
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-)
+_LOG_FORMAT = "%(asctime)s %(name)s %(levelname)s %(message)s"
+
+
+def _configure_logging() -> None:
+    """Apply config.LOG_LEVEL / LOG_FILE.
+
+    Error messages already tell users to check LOG_FILE (see
+    ``VolatilityWrapper._diagnose_error``), so the file has to actually exist.
+    """
+    level_name = str(getattr(zero_config, "LOG_LEVEL", "INFO") or "INFO").upper()
+    level = getattr(logging, level_name, logging.INFO)
+    logging.basicConfig(level=level, format=_LOG_FORMAT)
+
+    log_file = str(getattr(zero_config, "LOG_FILE", "") or "").strip()
+    if not log_file:
+        return
+
+    log_path = Path(log_file).expanduser()
+    if not log_path.is_absolute():
+        log_path = Path(_project_root) / log_path
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            log_path,
+            maxBytes=int(getattr(zero_config, "LOG_MAX_BYTES", 5 * 1024 * 1024)),
+            backupCount=int(getattr(zero_config, "LOG_BACKUP_COUNT", 3)),
+            encoding="utf-8",
+        )
+    except OSError as e:
+        logging.warning("Could not open log file %s: %s (console logging only)", log_path, e)
+        return
+    handler.setFormatter(logging.Formatter(_LOG_FORMAT))
+    handler.setLevel(level)
+    logging.getLogger().addHandler(handler)
+    logging.info("Logging to %s at level %s", log_path, level_name)
+
+
+_configure_logging()
 
 app = FastAPI(title="Zero Web", version="0.1.0")
 
@@ -40,7 +76,13 @@ app.add_middleware(
 
 
 class _ApiTokenMiddleware(BaseHTTPMiddleware):
-    """Optional shared-token gate when config.API_TOKEN is non-empty."""
+    """Optional shared-token gate when config.API_TOKEN is non-empty.
+
+    The token must be ASCII: HTTP header values are latin-1 per RFC 9110, so a
+    non-ASCII token can never round-trip through X-API-Token / Authorization.
+    ``_warn_if_token_unusable`` surfaces that at startup instead of silently
+    rejecting every request.
+    """
 
     _PUBLIC_PREFIXES = ("/api/health",)
 
@@ -63,11 +105,23 @@ class _ApiTokenMiddleware(BaseHTTPMiddleware):
         if not provided:
             provided = request.query_params.get("token") or ""
 
-        if provided != token:
+        # Constant-time compare; encode first so non-ASCII tokens cannot raise.
+        if not hmac.compare_digest(provided.encode("utf-8"), token.encode("utf-8")):
             return JSONResponse({"detail": "Unauthorized"}, status_code=401)
         return await call_next(request)
 
 
+def _warn_if_token_unusable() -> None:
+    token = str(getattr(zero_config, "API_TOKEN", "") or "").strip()
+    if token and not token.isascii():
+        logging.warning(
+            "API_TOKEN contains non-ASCII characters; it cannot be sent via the "
+            "X-API-Token or Authorization headers (header values are latin-1). "
+            "Use an ASCII-only token."
+        )
+
+
+_warn_if_token_unusable()
 app.add_middleware(_ApiTokenMiddleware)
 
 app.include_router(api_router)

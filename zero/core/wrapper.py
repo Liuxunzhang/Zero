@@ -2,7 +2,6 @@
 
 import logging
 import threading
-import re
 import time
 import multiprocessing as mp
 import sys
@@ -10,6 +9,7 @@ import queue
 import subprocess
 import json
 import selectors
+from collections import OrderedDict, deque
 from typing import List, Dict, Tuple, Optional, Any
 from pathlib import Path
 
@@ -33,109 +33,84 @@ except ImportError:
     logging.warning("Volatility3 not available")
 
 
+class _WorkerEventSink:
+    """Collects events emitted by a plugin worker process.
+
+    Both worker transports (multiprocessing.Queue and JSON-over-stdout) produce
+    the same event vocabulary, so progress throttling / result capture / error
+    capture live here instead of being duplicated per transport.
+    """
+
+    def __init__(self, progress_callback=None, throttle_seconds: float = 0.5) -> None:
+        self._progress_callback = progress_callback
+        self._throttle_seconds = throttle_seconds
+        self.result: Optional[Tuple[List[str], List[Tuple]]] = None
+        self.error_text: Optional[str] = None
+        # Raw stderr puts the real exception last; structured worker errors put
+        # the actionable hint first. Truncation direction follows this flag.
+        self.error_from_stderr = False
+        # Set before the post-exit drain so trailing progress is never swallowed.
+        self.final = False
+        self._last_progress: Optional[str] = None
+        self._last_emit_at = 0.0
+
+    def handle(self, event_type: str, payload: Any) -> None:
+        if event_type == "progress":
+            self._on_progress(str(payload))
+        elif event_type == "result":
+            self.result = payload
+        elif event_type == "error":
+            self._on_error(payload)
+        elif event_type == "log":
+            logging.info("%s", payload)
+
+    def _on_progress(self, message: str) -> None:
+        if self._progress_callback is None or message == self._last_progress:
+            return
+        now = time.monotonic()
+        should_emit = (
+            self.final
+            or (now - self._last_emit_at) >= self._throttle_seconds
+            or "100" in message
+            or "starting" in message.lower()
+            or "loaded saved" in message.lower()
+        )
+        if not should_emit:
+            return
+        self._progress_callback(message)
+        self._last_progress = message
+        self._last_emit_at = now
+
+    def _on_error(self, payload: Any) -> None:
+        if isinstance(payload, dict):
+            self.error_text = str(payload.get("message", ""))
+            if payload.get("traceback"):
+                logging.error("Plugin Error Traceback:\n%s", payload["traceback"])
+        else:
+            self.error_text = str(payload)
+
+
 class VolatilityWrapper:
     """Wrapper class for Volatility3 operations using framework API"""
 
-    _FALLBACK_WINDOWS_PLUGINS = (
-        "windows.amcache.Amcache",
-        "windows.bigpools.BigPools",
-        "windows.callbacks.Callbacks",
-        "windows.cmdline.CmdLine",
-        "windows.cmdscan.CmdScan",
-        "windows.consoles.Consoles",
-        "windows.crashinfo.Crashinfo",
-        "windows.debugregisters.DebugRegisters",
-        "windows.deskscan.DeskScan",
-        "windows.desktops.Desktops",
-        "windows.devicetree.DeviceTree",
-        "windows.dlllist.DllList",
-        "windows.driverirp.DriverIrp",
-        "windows.drivermodule.DriverModule",
-        "windows.driverscan.DriverScan",
-        "windows.dumpfiles.DumpFiles",
-        "windows.envars.Envars",
-        "windows.etwpatch.EtwPatch",
-        "windows.filescan.FileScan",
-        "windows.getservicesids.GetServiceSIDs",
-        "windows.getsids.GetSIDs",
-        "windows.handles.Handles",
-        "windows.hollowprocesses.HollowProcesses",
-        "windows.iat.IAT",
-        "windows.info.Info",
-        "windows.joblinks.JobLinks",
-        "windows.kpcrs.KPCRs",
-        "windows.ldrmodules.LdrModules",
-        "windows.malfind.Malfind",
-        "windows.malware.drivermodule.DriverModule",
-        "windows.malware.hollowprocesses.HollowProcesses",
-        "windows.malware.ldrmodules.LdrModules",
-        "windows.malware.malfind.Malfind",
-        "windows.malware.pebmasquerade.PebMasquerade",
-        "windows.malware.processghosting.ProcessGhosting",
-        "windows.malware.psxview.PsXView",
-        "windows.malware.skeleton_key_check.Skeleton_Key_Check",
-        "windows.malware.suspicious_threads.SuspiciousThreads",
-        "windows.malware.svcdiff.SvcDiff",
-        "windows.malware.unhooked_system_calls.UnhookedSystemCalls",
-        "windows.mbrscan.MBRScan",
-        "windows.memmap.Memmap",
-        "windows.modscan.ModScan",
-        "windows.modules.Modules",
-        "windows.mutantscan.MutantScan",
-        "windows.netscan.NetScan",
-        "windows.netstat.NetStat",
-        "windows.orphan_kernel_threads.Threads",
-        "windows.pe_symbols.PESymbols",
-        "windows.pedump.PEDump",
-        "windows.poolscanner.PoolScanner",
-        "windows.privileges.Privs",
-        "windows.processghosting.ProcessGhosting",
-        "windows.pslist.PsList",
-        "windows.psscan.PsScan",
-        "windows.pstree.PsTree",
-        "windows.psxview.PsXView",
-        "windows.registry.amcache.Amcache",
-        "windows.registry.certificates.Certificates",
-        "windows.registry.getcellroutine.GetCellRoutine",
-        "windows.registry.hivelist.HiveList",
-        "windows.registry.hivescan.HiveScan",
-        "windows.registry.printkey.PrintKey",
-        "windows.registry.scheduled_tasks.ScheduledTasks",
-        "windows.registry.userassist.UserAssist",
-        "windows.scheduled_tasks.ScheduledTasks",
-        "windows.sessions.Sessions",
-        "windows.shimcachemem.ShimcacheMem",
-        "windows.skeleton_key_check.Skeleton_Key_Check",
-        "windows.ssdt.SSDT",
-        "windows.statistics.Statistics",
-        "windows.strings.Strings",
-        "windows.suspended_threads.SuspendedThreads",
-        "windows.suspicious_threads.SuspiciousThreads",
-        "windows.svcdiff.SvcDiff",
-        "windows.svclist.SvcList",
-        "windows.svcscan.SvcScan",
-        "windows.symlinkscan.SymlinkScan",
-        "windows.thrdscan.ThrdScan",
-        "windows.threads.Threads",
-        "windows.timers.Timers",
-        "windows.truecrypt.Passphrase",
-        "windows.unhooked_system_calls.unhooked_system_calls",
-        "windows.unloadedmodules.UnloadedModules",
-        "windows.vadinfo.VadInfo",
-        "windows.vadregexscan.VadRegExScan",
-        "windows.vadwalk.VadWalk",
-        "windows.verinfo.VerInfo",
-        "windows.virtmap.VirtMap",
-        "windows.windows.Windows",
-        "windows.windowstations.WindowStations",
-    )
+    # Bound on how much worker stderr is retained for error diagnosis.
+    _STDERR_CAPTURE_LIMIT = 16 * 1024
+    # Bound on the raw error text embedded in the user-facing exception message.
+    _ERROR_DETAIL_LIMIT = 500
 
     def __init__(self, image_path: Optional[str] = None):
         self.image_path = image_path
         self.plugin_list = []
         self._display_to_full_plugin_name: Dict[str, str] = {}
         self._current_plugin_family = "linux"
-        self._cache = {}  # Cache for plugin results: {plugin_name: (columns, rows)}
+        # LRU of full result sets: {cache_key: (columns, rows)}. Bounded because a
+        # session that runs many plugins on one image would otherwise keep every
+        # result set resident until restart. Evicted entries are reloaded from the
+        # disk cache on next access, so eviction costs I/O, never correctness.
+        self._cache: "OrderedDict[str, Tuple[List[str], List[Tuple]]]" = OrderedDict()
+        self._memory_cache_max = max(
+            1, int(getattr(config, "RESULTS_MEMORY_CACHE_MAX", 8))
+        )
         self._cache_stats: Dict[str, int] = {
             "memory_hits": 0,
             "disk_hits": 0,
@@ -300,9 +275,6 @@ class VolatilityWrapper:
         plugin_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Run a Volatility plugin in a child process and report via queue."""
-        import io
-        import os as _os
-
         plugin_kwargs = plugin_kwargs or {}
 
         try:
@@ -312,7 +284,6 @@ class VolatilityWrapper:
             from volatility3.framework import contexts, automagic, plugins as framework_plugins
             from volatility3.framework.automagic import stacker
             from volatility3.framework.configuration import requirements
-            from volatility3.framework import interfaces
             from volatility3.framework import constants as vol_constants
 
             framework.require_interface_version(2, 0, 0)
@@ -447,6 +418,23 @@ class VolatilityWrapper:
     def _set_running_state(self, running: bool) -> None:
         with self._state_lock:
             self._plugin_running = running
+
+    def _cache_get(self, cache_key: str) -> Optional[Tuple[List[str], List[Tuple]]]:
+        """Fetch a result set and mark it most-recently-used."""
+        with self._state_lock:
+            entry = self._cache.get(cache_key)
+            if entry is not None:
+                self._cache.move_to_end(cache_key)
+            return entry
+
+    def _cache_put(self, cache_key: str, value: Tuple[List[str], List[Tuple]]) -> None:
+        """Store a result set, evicting least-recently-used entries past the cap."""
+        with self._state_lock:
+            self._cache[cache_key] = value
+            self._cache.move_to_end(cache_key)
+            while len(self._cache) > self._memory_cache_max:
+                evicted, _ = self._cache.popitem(last=False)
+                logging.debug("Evicted in-memory result cache entry: %s", evicted)
 
     def _increment_cache_stat(self, key: str, value: int = 1) -> None:
         with self._state_lock:
@@ -682,24 +670,14 @@ class VolatilityWrapper:
 
             self.image_path = str(img_path.absolute())
             # Clear cache when loading new image
-            self._cache.clear()
+            with self._state_lock:
+                self._cache.clear()
             self._increment_cache_stat("clear_operations")
             logging.info(f"Successfully loaded image: {self.image_path}")
             return True
         except Exception as e:
             logging.error(f"Failed to load image: {e}", exc_info=True)
             return False
-
-    def get_available_plugins(self) -> List[Dict[str, str]]:
-        """Get list of available Volatility3 plugins"""
-        result = []
-        for plugin_name in self.plugin_list:
-            # plugin_name is a string like "linux.pslist.PsList"
-            result.append({
-                "name": self._to_display_plugin_name(plugin_name),
-                "description": "Volatility3 plugin"
-            })
-        return result
 
     def _to_display_plugin_name(self, plugin_name: str) -> str:
         """Convert full plugin name to UI display name."""
@@ -777,12 +755,14 @@ class VolatilityWrapper:
         cache_key = make_cache_key(self.image_path, resolved_plugin_name, kwargs)
 
         # Check cache first (key includes image identity + kwargs digest).
-        if use_cache and cache_key in self._cache:
-            logging.info("Returning cached results for %s", cache_key)
-            self._increment_cache_stat("memory_hits")
-            if progress_callback:
-                progress_callback("Using cached results")
-            return self._cache[cache_key]
+        if use_cache:
+            memory_cached = self._cache_get(cache_key)
+            if memory_cached is not None:
+                logging.info("Returning cached results for %s", cache_key)
+                self._increment_cache_stat("memory_hits")
+                if progress_callback:
+                    progress_callback("Using cached results")
+                return memory_cached
 
         # Check persistent disk cache
         if use_cache:
@@ -790,7 +770,7 @@ class VolatilityWrapper:
                 self.image_path, resolved_plugin_name, kwargs=kwargs
             )
             if disk_cached is not None:
-                self._cache[cache_key] = disk_cached
+                self._cache_put(cache_key, disk_cached)
                 logging.info("Loaded persistent cached results for %s", cache_key)
                 self._increment_cache_stat("disk_hits")
                 if progress_callback:
@@ -829,7 +809,7 @@ class VolatilityWrapper:
                     plugin_kwargs=kwargs,
                 )
 
-            self._cache[cache_key] = (columns, data_rows)
+            self._cache_put(cache_key, (columns, data_rows))
             if self._disk_cache.save(
                 self.image_path,
                 resolved_plugin_name,
@@ -859,12 +839,9 @@ class VolatilityWrapper:
         self._worker_process = process
         process.start()
 
-        last_progress = None
-        last_progress_emit_at = 0.0
+        sink = _WorkerEventSink(progress_callback, self.progress_log_throttle_seconds)
         started_at = time.monotonic()
         last_activity_at = started_at
-        result_payload: Optional[Tuple[List[str], List[Tuple]]] = None
-        error_text: Optional[str] = None
 
         while process.is_alive():
             now = time.monotonic()
@@ -878,80 +855,53 @@ class VolatilityWrapper:
 
             try:
                 event_type, payload = out_queue.get(timeout=0.1)
-                last_activity_at = time.monotonic()
-
-                if event_type == "progress":
-                    progress_msg = str(payload)
-                    now = time.monotonic()
-                    should_emit = (
-                        progress_callback is not None
-                        and progress_msg != last_progress
-                        and (
-                            (now - last_progress_emit_at) >= self.progress_log_throttle_seconds
-                            or "100" in progress_msg
-                            or "starting" in progress_msg.lower()
-                            or "loaded saved" in progress_msg.lower()
-                        )
-                    )
-                    if should_emit:
-                        progress_callback(progress_msg)
-                        last_progress = progress_msg
-                        last_progress_emit_at = now
-                elif event_type == "result":
-                    result_payload = payload
-                elif event_type == "error":
-                    if isinstance(payload, dict):
-                        error_text = str(payload.get("message", ""))
-                        if "traceback" in payload:
-                            logging.error(f"Plugin Error Traceback:\n{payload['traceback']}")
-                    else:
-                        error_text = str(payload)
-                elif event_type == "log":
-                    logging.info(str(payload))
             except queue.Empty:
-                pass
+                continue
+            last_activity_at = time.monotonic()
+            sink.handle(event_type, payload)
 
+        # Drain events queued between the last read and process exit.
+        sink.final = True
         while True:
             try:
                 event_type, payload = out_queue.get_nowait()
-                if event_type == "result":
-                    result_payload = payload
-                elif event_type == "error":
-                    if isinstance(payload, dict):
-                        error_text = str(payload.get("message", ""))
-                        if "traceback" in payload:
-                            logging.error(f"Plugin Error Traceback:\n{payload['traceback']}")
-                    else:
-                        error_text = str(payload)
-                elif event_type == "progress" and progress_callback:
-                    progress_msg = str(payload)
-                    if progress_msg != last_progress:
-                        progress_callback(progress_msg)
-                        last_progress = progress_msg
-                elif event_type == "log":
-                    logging.info(str(payload))
             except queue.Empty:
                 break
+            sink.handle(event_type, payload)
 
-        if result_payload is not None:
-            return result_payload
+        return self._finish_worker_run(sink, resolved_plugin_name)
 
-        if error_text:
-            hint = self._diagnose_error(error_text, resolved_plugin_name)
-            raise ValueError(f"Plugin execution failed: {error_text[:500]} | 建议: {hint}")
+    def _finish_worker_run(
+        self,
+        sink: _WorkerEventSink,
+        resolved_plugin_name: str,
+    ) -> Tuple[List[str], List[Tuple]]:
+        """Turn a finished worker's collected events into a result or an error."""
+        if sink.result is not None:
+            return sink.result
+
+        if sink.error_text:
+            hint = self._diagnose_error(sink.error_text, resolved_plugin_name)
+            detail = sink.error_text
+            if len(detail) > self._ERROR_DETAIL_LIMIT:
+                if sink.error_from_stderr:
+                    detail = "..." + detail[-self._ERROR_DETAIL_LIMIT:]
+                else:
+                    detail = detail[: self._ERROR_DETAIL_LIMIT]
+            raise ValueError(f"Plugin execution failed: {detail} | 建议: {hint}")
 
         if self._cancel_requested.is_set():
             raise RuntimeError("Plugin execution cancelled")
 
         raise ValueError("插件执行失败，未返回结果")
 
-    def _run_plugin_via_subprocess(
+    def _build_worker_command(
         self,
         resolved_plugin_name: str,
-        progress_callback=None,
         plugin_kwargs: Optional[Dict[str, Any]] = None,
-    ) -> Tuple[List[str], List[Tuple]]:
-        command = [
+    ) -> List[str]:
+        """Argv for the standalone plugin worker process."""
+        return [
             sys.executable,
             "-m",
             "zero.core.plugin_worker",
@@ -964,8 +914,15 @@ class VolatilityWrapper:
             "--kwargs",
             json.dumps(plugin_kwargs or {}, ensure_ascii=False),
         ]
+
+    def _run_plugin_via_subprocess(
+        self,
+        resolved_plugin_name: str,
+        progress_callback=None,
+        plugin_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> Tuple[List[str], List[Tuple]]:
         process = subprocess.Popen(
-            command,
+            self._build_worker_command(resolved_plugin_name, plugin_kwargs),
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -977,90 +934,96 @@ class VolatilityWrapper:
 
         assert process.stdout is not None
         assert process.stderr is not None
-        selector = selectors.DefaultSelector()
-        selector.register(process.stdout, selectors.EVENT_READ)
 
-        last_progress = None
-        last_progress_emit_at = 0.0
+        sink = _WorkerEventSink(progress_callback, self.progress_log_throttle_seconds)
+        # stderr must be consumed *while* the worker runs: vol3 logs warnings there
+        # and a full pipe (64 KiB on macOS) would block the child forever, which the
+        # stall timer would then misreport as "插件疑似卡死".
+        # Keep the *tail*: Python tracebacks put the real exception last, while
+        # vol3 tends to flood the head with repetitive warnings.
+        stderr_lines: "deque[str]" = deque()
+        stderr_len = 0
+
+        def read_stderr_line() -> bool:
+            nonlocal stderr_len
+            line = process.stderr.readline()
+            if not line:
+                return False
+            stderr_lines.append(line)
+            stderr_len += len(line)
+            while stderr_len > self._STDERR_CAPTURE_LIMIT and len(stderr_lines) > 1:
+                stderr_len -= len(stderr_lines.popleft())
+            return True
+
+        def read_stdout_line() -> bool:
+            line = process.stdout.readline()
+            if not line:
+                return False
+            self._dispatch_worker_line(line, sink)
+            return True
+
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ, read_stdout_line)
+        selector.register(process.stderr, selectors.EVENT_READ, read_stderr_line)
+
         started_at = time.monotonic()
         last_activity_at = started_at
-        result_payload: Optional[Tuple[List[str], List[Tuple]]] = None
-        error_text: Optional[str] = None
 
-        while True:
-            now = time.monotonic()
-            if now - started_at > self.plugin_timeout_seconds:
-                self._terminate_worker_process(force=True)
-                raise ValueError(f"插件执行超时（>{self.plugin_timeout_seconds}s），已自动中断。")
+        try:
+            while True:
+                now = time.monotonic()
+                if now - started_at > self.plugin_timeout_seconds:
+                    self._terminate_worker_process(force=True)
+                    raise ValueError(
+                        f"插件执行超时（>{self.plugin_timeout_seconds}s），已自动中断。"
+                    )
 
-            if now - last_activity_at > self.stall_timeout_seconds:
-                self._terminate_worker_process(force=True)
-                raise ValueError(f"插件疑似卡死（{self.stall_timeout_seconds}s 无进度），已自动中断。")
+                if now - last_activity_at > self.stall_timeout_seconds:
+                    self._terminate_worker_process(force=True)
+                    raise ValueError(
+                        f"插件疑似卡死（{self.stall_timeout_seconds}s 无进度），已自动中断。"
+                    )
 
-            ready = selector.select(timeout=0.1)
-            if ready:
-                line = process.stdout.readline()
-                if line:
-                    last_activity_at = time.monotonic()
-                    try:
-                        message = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
+                for key, _events in selector.select(timeout=0.1):
+                    if key.data():
+                        last_activity_at = time.monotonic()
 
-                    event_type = message.get("type")
-                    payload = message.get("payload")
+                if process.poll() is not None:
+                    break
 
-                    if event_type == "progress":
-                        progress_msg = str(payload)
-                        now = time.monotonic()
-                        should_emit = (
-                            progress_callback is not None
-                            and progress_msg != last_progress
-                            and (
-                                (now - last_progress_emit_at) >= self.progress_log_throttle_seconds
-                                or "100" in progress_msg
-                                or "starting" in progress_msg.lower()
-                                or "loaded saved" in progress_msg.lower()
-                            )
-                        )
-                        if should_emit:
-                            progress_callback(progress_msg)
-                            last_progress = progress_msg
-                            last_progress_emit_at = now
-                    elif event_type == "result":
-                        result_payload = (
-                            list(payload.get("columns", [])),
-                            [tuple(row) for row in payload.get("rows", [])],
-                        )
-                    elif event_type == "error":
-                        if isinstance(payload, dict):
-                            error_text = str(payload.get("message", ""))
-                            if "traceback" in payload:
-                                logging.error(f"Plugin Error Traceback:\n{payload['traceback']}")
-                        else:
-                            error_text = str(payload)
+            # readline() pulls whole pipe blocks into Python's buffer, so lines can
+            # still be pending after the child exits — including the "result" line.
+            sink.final = True
+            for line in process.stdout:
+                self._dispatch_worker_line(line, sink)
+            while read_stderr_line():
+                pass
+        finally:
+            selector.close()
 
-            if process.poll() is not None:
-                break
-
-        stderr_text = process.stderr.read().strip()
-        selector.close()
+        stderr_text = "".join(stderr_lines).strip()
         if stderr_text:
             logging.error(stderr_text)
-            if not error_text:
-                error_text = stderr_text
+            if not sink.error_text and sink.result is None:
+                sink.error_text = stderr_text
+                sink.error_from_stderr = True
 
-        if result_payload is not None:
-            return result_payload
+        return self._finish_worker_run(sink, resolved_plugin_name)
 
-        if error_text:
-            hint = self._diagnose_error(error_text, resolved_plugin_name)
-            raise ValueError(f"Plugin execution failed: {error_text[:500]} | 建议: {hint}")
-
-        if self._cancel_requested.is_set():
-            raise RuntimeError("Plugin execution cancelled")
-
-        raise ValueError("插件执行失败，未返回结果")
+    def _dispatch_worker_line(self, line: str, sink: "_WorkerEventSink") -> None:
+        """Parse one JSON event line from a subprocess worker and feed the sink."""
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError:
+            return
+        event_type = message.get("type")
+        payload = message.get("payload")
+        if event_type == "result" and isinstance(payload, dict):
+            payload = (
+                list(payload.get("columns", [])),
+                [tuple(row) for row in payload.get("rows", [])],
+            )
+        sink.handle(event_type, payload)
 
     def clear_cache(self, plugin_name: Optional[str] = None):
         """Clear cached results from memory and disk.
@@ -1073,15 +1036,16 @@ class VolatilityWrapper:
         """
         if plugin_name:
             resolved_plugin_name = self._resolve_plugin_name(plugin_name)
-            if self.image_path:
-                prefix = plugin_key_prefix(self.image_path, resolved_plugin_name)
-                stale = [k for k in self._cache if k.startswith(prefix)]
-            else:
-                # No image: drop any entry whose plugin segment matches.
-                marker = f":{resolved_plugin_name}:"
-                stale = [k for k in self._cache if marker in k]
-            for key in stale:
-                self._cache.pop(key, None)
+            with self._state_lock:
+                if self.image_path:
+                    prefix = plugin_key_prefix(self.image_path, resolved_plugin_name)
+                    stale = [k for k in self._cache if k.startswith(prefix)]
+                else:
+                    # No image: drop any entry whose plugin segment matches.
+                    marker = f":{resolved_plugin_name}:"
+                    stale = [k for k in self._cache if marker in k]
+                for key in stale:
+                    self._cache.pop(key, None)
             disk_removed = 0
             if self.image_path:
                 disk_removed = self._disk_cache.delete(
@@ -1095,8 +1059,9 @@ class VolatilityWrapper:
                 disk_removed,
             )
         else:
-            mem_count = len(self._cache)
-            self._cache.clear()
+            with self._state_lock:
+                mem_count = len(self._cache)
+                self._cache.clear()
             disk_removed = 0
             if self.image_path:
                 disk_removed = self._disk_cache.clear_image(self.image_path)
@@ -1113,6 +1078,7 @@ class VolatilityWrapper:
         """Return cache hit/miss counters and current cache footprint."""
         with self._state_lock:
             stats = dict(self._cache_stats)
+            memory_entries = len(self._cache)
         disk_files = 0
         try:
             disk_files = self._disk_cache.count_files(self.image_path)
@@ -1120,7 +1086,8 @@ class VolatilityWrapper:
             disk_files = 0
         return {
             **stats,
-            "memory_entries": len(self._cache),
+            "memory_entries": memory_entries,
+            "memory_entries_max": self._memory_cache_max,
             "disk_entries": disk_files,
             "disk_cache_enabled": self.enable_disk_cache,
             "disk_cache_format": self.disk_cache_format,
@@ -1148,9 +1115,11 @@ class VolatilityWrapper:
             family = "linux"
         self._current_plugin_family = family
 
+        # Only installed plugins are listed. A previous hardcoded Windows fallback
+        # list was removed: names it added that vol3 does not actually provide are
+        # rejected by is_plugin_available, so clicking them only ever produced
+        # "Plugin not available".
         source_plugins = [p for p in self.plugin_list if p.startswith(f"{family}.")]
-        if family == "windows":
-            source_plugins = sorted(set(source_plugins + list(self._FALLBACK_WINDOWS_PLUGINS)))
 
         # Build display-name mapping.
         for plugin_name in source_plugins:
@@ -1199,45 +1168,6 @@ class VolatilityWrapper:
 
         # Remove categories that became empty after stealing.
         return {cat: plugins for cat, plugins in base.items() if plugins}
-
-    def _categorize_from_config(
-        self, cfg: Dict, family: str, source_plugins: List[str]
-    ) -> Dict[str, List[str]]:
-        """Categorize plugins using the JSON config file."""
-        family_cfg: Dict[str, List[str]] = cfg.get(family, {})
-        exclude_cfg: Dict[str, List[str]] = (
-            cfg.get("exclude_keywords", {}).get(family, {})
-        )
-
-        # Ordered categories dict preserving config order + 未分类.
-        categories: Dict[str, List[str]] = {cat: [] for cat in family_cfg}
-        categories["未分类"] = []
-
-        for plugin_name in source_plugins:
-            simple_name = self._to_display_plugin_name(plugin_name)
-            name_lower = plugin_name.lower()
-
-            matched = False
-            for cat_name, keywords in family_cfg.items():
-                # Check exclude keywords for this category.
-                excludes = exclude_cfg.get(cat_name, [])
-                if excludes and any(ex in name_lower for ex in excludes):
-                    continue
-
-                if any(kw.lower() in name_lower for kw in keywords):
-                    categories[cat_name].append(simple_name)
-                    matched = True
-                    break
-
-            if not matched:
-                categories["未分类"].append(simple_name)
-
-        # Sort each category and remove empty ones.
-        return {
-            cat: sorted(plugins)
-            for cat, plugins in categories.items()
-            if plugins
-        }
 
     def _categorize_hardcoded(
         self, family: str, source_plugins: List[str]
