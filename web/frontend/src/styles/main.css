@@ -2450,11 +2450,28 @@ body.ai-float-dragging {
   border-top: 1px solid var(--border-subtle);
 }
 
+.symbol-panel-full {
+  grid-column: 1 / -1;
+  min-height: 420px;
+}
+
+.symbol-script-tab {
+  display: block;
+}
+
 .symbol-panel-subtitle {
   margin-top: 2px;
   font-size: 11px;
   color: var(--text-muted);
   word-break: break-all;
+}
+
+.symbol-repo-select {
+  flex: 1;
+  min-width: 0;
+  max-width: 100%;
+  font-family: var(--font-mono);
+  font-size: 12px;
 }
 
 .symbol-script-help {

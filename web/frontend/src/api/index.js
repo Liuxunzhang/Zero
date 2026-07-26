@@ -119,6 +119,10 @@ export function cancelPlugin(engine = 'vol3') {
 
 /* ── Symbol helpers ─────────────────────────────────── */
 
+export function getSymbolRepos() {
+  return api.get('/api/symbols/repos')
+}
+
 export function getRemoteSymbols(params = {}) {
   return api.get('/api/symbols/remote', { params })
 }
@@ -127,8 +131,8 @@ export function getLocalSymbols() {
   return api.get('/api/symbols/local')
 }
 
-export function downloadSymbols(paths) {
-  return api.post('/api/symbols/download', { paths })
+export function downloadSymbols(paths, repo = '') {
+  return api.post('/api/symbols/download', { paths, repo })
 }
 
 /* ── WebSocket helper ──────────────────────────────── */
