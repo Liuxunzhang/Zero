@@ -181,8 +181,8 @@ class EngineManager:
             return {}
         return self.get_engine(engine_id).get_cache_stats()
 
-    def export_results(self, engine_id: str, fmt: str = "csv") -> Optional[str]:
-        return self.get_engine(engine_id).export_results(fmt)
+    def export_results(self, engine_id: str, fmt: str = "csv", **kwargs: Any) -> Optional[str]:
+        return self.get_engine(engine_id).export_results(fmt, **kwargs)
 
     def get_current_result_context(
         self, engine_id: str, max_rows: Optional[int] = None

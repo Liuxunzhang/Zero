@@ -1263,6 +1263,34 @@ body.ai-resizing-ai {
   border-color: var(--accent-dim);
 }
 
+.export-scope-head {
+  display: grid;
+  grid-template-columns: 44px 1fr 1fr;
+  gap: 4px;
+  padding: 6px 8px 4px;
+  font-size: 10px;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+.export-scope-head span {
+  text-align: center;
+}
+
+.export-scope-row {
+  display: grid;
+  grid-template-columns: 44px 1fr 1fr;
+  gap: 4px;
+  align-items: center;
+  padding: 2px 8px;
+}
+
+.export-scope-fmt {
+  font-size: 11px;
+  font-family: var(--font-mono);
+  color: var(--text-secondary);
+}
+
 .export-dropdown {
   position: absolute;
   right: 0;

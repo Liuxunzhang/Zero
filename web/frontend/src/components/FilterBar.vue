@@ -91,9 +91,24 @@
           {{ exporting ? '导出中...' : '导出' }}
         </button>
         <div v-if="showExport" class="export-dropdown">
-          <button class="export-option" @click="doExport('csv')">CSV</button>
-          <button class="export-option" @click="doExport('json')">JSON</button>
-          <button class="export-option" @click="doExport('txt')">TXT</button>
+          <!-- With an active filter/sort, offer both the current view and the full set. -->
+          <template v-if="store.hasFilter || store.hasSort">
+            <div class="export-scope-head">
+              <span></span>
+              <span>筛选结果</span>
+              <span>全部</span>
+            </div>
+            <div v-for="fmt in exportFormats" :key="fmt" class="export-scope-row">
+              <span class="export-scope-fmt">{{ fmt.toUpperCase() }}</span>
+              <button class="export-option" @click="doExport(fmt, 'filtered')" title="导出当前过滤/排序后的视图">筛选</button>
+              <button class="export-option" @click="doExport(fmt, 'all')" title="导出全部结果">全部</button>
+            </div>
+          </template>
+          <template v-else>
+            <button v-for="fmt in exportFormats" :key="fmt" class="export-option" @click="doExport(fmt, 'all')">
+              {{ fmt.toUpperCase() }}
+            </button>
+          </template>
         </div>
       </div>
     </div>
@@ -108,6 +123,7 @@ import { confirmAction } from '../composables/confirm'
 
 const store = useAppStore()
 const pageSizeOptions = [50, 100, 200, 500, 1000]
+const exportFormats = ['csv', 'json', 'txt']
 const localFilter = ref('')
 const showExport = ref(false)
 const refreshing = ref(false)
@@ -198,12 +214,12 @@ function updatePageSize(event) {
   store.setPageSize(Number(event.target.value))
 }
 
-async function doExport(fmt) {
+async function doExport(fmt, scope = 'all') {
   if (exporting.value) return
   showExport.value = false
   exporting.value = true
   try {
-    await store.doExport(fmt)
+    await store.doExport(fmt, scope)
   } finally {
     exporting.value = false
   }

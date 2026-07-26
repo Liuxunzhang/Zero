@@ -134,8 +134,21 @@ class EngineService:
 
     # -- Export -------------------------------------------------------------
 
-    def export_results(self, fmt: str = "csv", engine_id: str = "vol3") -> Optional[str]:
-        return self._manager.export_results(engine_id, fmt)
+    def export_results(
+        self,
+        fmt: str = "csv",
+        engine_id: str = "vol3",
+        filter_text: Optional[str] = None,
+        sort_column: Optional[str] = None,
+        sort_desc: bool = False,
+    ) -> Optional[str]:
+        return self._manager.export_results(
+            engine_id,
+            fmt,
+            filter_text=filter_text,
+            sort_column=sort_column,
+            sort_desc=sort_desc,
+        )
 
     # -- Cache --------------------------------------------------------------
 

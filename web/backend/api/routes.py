@@ -48,6 +48,11 @@ _ALLOWED_EXPORT_FORMATS = {"csv", "json", "txt"}
 class ExportRequest(BaseModel):
     format: str = "csv"
     engine: str = "vol3"
+    # Optional view params (same names as GET /api/results): when present the
+    # export contains the filtered/sorted view instead of the full result set.
+    filter: Optional[str] = None
+    sort: Optional[str] = None
+    desc: bool = False
 
 
 class CacheClearRequest(BaseModel):
@@ -283,7 +288,13 @@ async def export_results(req: ExportRequest):
             f"Allowed: {', '.join(sorted(_ALLOWED_EXPORT_FORMATS))}",
         )
     try:
-        filepath = get_service().export_results(req.format, engine_id=req.engine)
+        filepath = get_service().export_results(
+            req.format,
+            engine_id=req.engine,
+            filter_text=req.filter,
+            sort_column=req.sort,
+            sort_desc=req.desc,
+        )
     except ValueError as e:
         raise HTTPException(400, str(e))
     if not filepath:

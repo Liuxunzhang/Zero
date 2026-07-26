@@ -103,3 +103,81 @@ def test_row_budget_evicts_before_entry_cap():
     filters = {k[1] for k in eng._fs_cache}
     assert "p" not in filters       # the 100-row entry was evicted first
     assert "p2" in filters
+
+
+# ── export_results with view params ─────────────────────────────────
+
+
+def _export_engine(rows, tmp_path, monkeypatch, columns=None):
+    """Bare engine + EXPORT_DIR redirected to tmp_path."""
+    from zero import config
+
+    monkeypatch.setattr(config, "EXPORT_DIR", str(tmp_path))
+    return _bare_engine(rows, columns=columns)
+
+
+def _read_csv(path):
+    import csv
+
+    with open(path, newline="", encoding="utf-8") as f:
+        return list(csv.reader(f))
+
+
+def test_export_full_set_no_suffix(tmp_path, monkeypatch):
+    rows = [(str(i), f"proc{i}") for i in range(10)]
+    eng = _export_engine(rows, tmp_path, monkeypatch)
+
+    path = eng.export_results("csv")
+
+    assert path and "_filtered" not in path
+    data = _read_csv(path)
+    assert data[0] == ["PID", "NAME"]
+    assert len(data) - 1 == 10
+
+
+def test_export_filtered_view(tmp_path, monkeypatch):
+    rows = [("1", "sshd"), ("2", "bash"), ("3", "sshd-session")]
+    eng = _export_engine(rows, tmp_path, monkeypatch)
+
+    path = eng.export_results("csv", filter_text="sshd")
+
+    assert path and "_filtered" in path
+    data = _read_csv(path)
+    assert len(data) - 1 == 2
+    assert all("sshd" in r[1] for r in data[1:])
+
+
+def test_export_sorted_view_order_and_suffix(tmp_path, monkeypatch):
+    rows = [("10", "x"), ("9", "y"), ("100", "z")]
+    eng = _export_engine(rows, tmp_path, monkeypatch)
+
+    path = eng.export_results("csv", sort_column="PID", sort_desc=True)
+
+    assert path and "_filtered" in path
+    data = _read_csv(path)
+    assert [r[0] for r in data[1:]] == ["100", "10", "9"]
+
+
+def test_export_filter_no_match_header_only(tmp_path, monkeypatch):
+    rows = [("1", "sshd")]
+    eng = _export_engine(rows, tmp_path, monkeypatch)
+
+    path = eng.export_results("csv", filter_text="nomatch")
+
+    data = _read_csv(path)
+    assert data == [["PID", "NAME"]]
+
+
+def test_export_truncation_applies_after_filter(tmp_path, monkeypatch):
+    from zero.engines import vol3_engine
+
+    rows = [(str(i), "keep" if i % 2 == 0 else "drop") for i in range(100)]
+    eng = _export_engine(rows, tmp_path, monkeypatch)
+    monkeypatch.setattr(vol3_engine, "_MAX_EXPORT_ROWS", 10)
+
+    path = eng.export_results("csv", filter_text="keep")
+
+    data = _read_csv(path)
+    # 50 rows matched, capped at 10 post-filter.
+    assert len(data) - 1 == 10
+    assert all(r[1] == "keep" for r in data[1:])

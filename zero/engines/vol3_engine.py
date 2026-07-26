@@ -458,13 +458,32 @@ class Vol3Engine(EngineBase):
     # Export / AI context
     # ------------------------------------------------------------------
 
-    def export_results(self, fmt: str = "csv") -> Optional[str]:
+    def export_results(
+        self,
+        fmt: str = "csv",
+        filter_text: Optional[str] = None,
+        sort_column: Optional[str] = None,
+        sort_desc: bool = False,
+    ) -> Optional[str]:
         with self._lock:
             if not self._columns or not self._rows:
                 return None
             plugin_name = self._current_plugin or "export"
             columns = list(self._columns)
-            rows = list(self._rows)
+            rows = self._rows
+            results_version = self._results_version
+
+        # Export what the user is looking at, not the raw result set. Reuses
+        # the filter/sort LRU, so a view the user already browsed is a cache hit.
+        is_view = bool(filter_text and filter_text.strip()) or bool(
+            sort_column and sort_column in columns
+        )
+        if is_view:
+            columns, rows, _total = self._get_filtered_sorted(
+                columns, rows, results_version, filter_text, sort_column, sort_desc
+            )
+            plugin_name = f"{plugin_name}_filtered"
+        rows = list(rows)
         if 0 < _MAX_EXPORT_ROWS < len(rows):
             logging.warning(
                 "Export of %s truncated to MAX_TABLE_ROWS=%d of %d rows",

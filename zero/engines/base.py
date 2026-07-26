@@ -155,8 +155,17 @@ class EngineBase(abc.ABC):
     # Export (optional — default raises NotImplementedError)
     # ------------------------------------------------------------------
 
-    def export_results(self, fmt: str = "csv") -> Optional[str]:
-        """Export the latest results to a file.  Returns the file path."""
+    def export_results(
+        self,
+        fmt: str = "csv",
+        filter_text: Optional[str] = None,
+        sort_column: Optional[str] = None,
+        sort_desc: bool = False,
+    ) -> Optional[str]:
+        """Export the latest results (optionally the filtered/sorted view).
+
+        Returns the written file path.
+        """
         raise NotImplementedError(f"{self.engine_id()} does not support export")
 
     def get_current_result_context(self, max_rows: Optional[int] = None) -> Optional[Dict[str, Any]]:

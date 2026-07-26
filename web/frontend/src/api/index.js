@@ -107,8 +107,10 @@ export function getResults(params = {}, options = {}) {
   return api.get('/api/results', { params, signal: options.signal })
 }
 
-export function exportResults(format = 'csv', engine = 'vol3') {
-  return api.post('/api/export', { format, engine })
+export function exportResults(format = 'csv', engine = 'vol3', view = null) {
+  // view: { filter, sort, desc } — when present the backend exports the
+  // filtered/sorted view instead of the full result set.
+  return api.post('/api/export', { format, engine, ...(view || {}) })
 }
 
 export function clearCache(plugin = null, engine = 'vol3') {

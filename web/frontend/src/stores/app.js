@@ -332,11 +332,19 @@ export const useAppStore = defineStore("app", () => {
     } catch (e) { pushMessage("取消失败: " + e.message, "error") }
   }
 
-  async function doExport(format = "csv") {
+  async function doExport(format = "csv", scope = "all") {
     const engineId = selectedEngine.value
+    const st = engineStates[engineId]
+    const view = scope === "filtered"
+      ? {
+          filter: st.filterText || undefined,
+          sort: st.sortColumn || undefined,
+          desc: st.sortDesc || undefined,
+        }
+      : null
     try {
-      const data = await apiExport(format, engineId)
-      pushMessage("已导出: " + data.path, "success")
+      const data = await apiExport(format, engineId, view)
+      pushMessage("已导出" + (view ? "（当前筛选视图）" : "") + ": " + data.path, "success")
     } catch (e) { pushMessage("导出失败: " + e.message, "error") }
   }
 
