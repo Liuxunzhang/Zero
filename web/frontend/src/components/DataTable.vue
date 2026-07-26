@@ -78,6 +78,11 @@
             @dblclick="copyCellValue(cell)"
             @contextmenu.prevent.stop="openCellMenu($event, store.columns[ci], cell, vr.index, ci)"
           >
+            <span
+              v-if="ci === 0 && isFindingRow(vr.index)"
+              class="row-finding-mark"
+              title="已标记为发现"
+            ><AppIcon name="star" :size="10" /></span>
             {{ cell }}
           </td>
         </tr>
@@ -101,6 +106,9 @@
         <span class="column-context-value" :title="menu.valueText">{{ menu.valueText }}</span>
       </div>
       <button class="column-context-item" @click="copySelectedData">复制选中数据</button>
+      <button class="column-context-item" @click="markRowAsFinding">
+        {{ rowIsFinding ? '已标记为发现' : '标记为发现' }}
+      </button>
       <button class="column-context-item" @click="sendSelectedDataToAi">发送到 AI 窗口</button>
       <div class="column-context-divider"></div>
       <button
@@ -122,8 +130,10 @@ import { reactive, ref, computed, onMounted, onUnmounted, nextTick, watch } from
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useAppStore } from '../stores/app'
 import AppIcon from './AppIcon.vue'
+import { useFindingsStore } from '../stores/findings'
 
 const store = useAppStore()
+const findings = useFindingsStore()
 const containerRef = ref(null)
 
 const ROW_HEIGHT = 28
@@ -314,6 +324,28 @@ function handleEmptyAction() {
   }
 }
 
+function isFindingRow(rowIndex) {
+  const row = store.rows[rowIndex]
+  return row ? findings.has(store.currentPlugin || 'unknown', row) : false
+}
+
+const rowIsFinding = computed(() =>
+  selectedCell.row >= 0 ? isFindingRow(selectedCell.row) : false,
+)
+
+function markRowAsFinding() {
+  const row = store.rows[selectedCell.row]
+  if (!row) { closeMenu(); return }
+  const added = findings.add({
+    plugin: store.currentPlugin || 'unknown',
+    columns: store.columns,
+    row,
+    filterText: store.filterText,
+  })
+  store.pushMessage(added ? '已标记为发现，可在顶栏「发现」面板查看' : '该行已在发现列表中', added ? 'success' : 'info')
+  closeMenu()
+}
+
 function sendSelectedDataToAi() {
   const col = menu.column || 'unknown'
   const value = String(menu.value ?? '')
@@ -359,6 +391,13 @@ watch(() => store.pluginBusy, (busy) => {
 </script>
 
 <style scoped>
+.row-finding-mark {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-right: 4px;
+  color: var(--text-warning);
+}
+
 /* ── Plugin loading overlay ──────────────────────────── */
 .plugin-loading {
   display: flex;

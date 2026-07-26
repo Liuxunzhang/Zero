@@ -72,6 +72,15 @@
         </button>
         <button
           class="ai-toggle-btn"
+          :class="{ active: showFindings }"
+          @click="showFindings = true"
+          title="取证发现（右键表格行标记）"
+        >
+          <AppIcon class="ai-toggle-icon" name="star" />
+          <span class="ai-toggle-text">发现</span>
+        </button>
+        <button
+          class="ai-toggle-btn"
           :class="{ active: showAiPanel }"
           @click="showAiPanel = !showAiPanel"
           title="取证分析助手"
@@ -197,6 +206,11 @@
       @close="showNotepad = false"
     />
 
+    <FindingsPanel
+      :show="showFindings"
+      @close="showFindings = false"
+    />
+
     <PluginParamsModal
       :show="store.pluginArgsModal.show"
       :plugin-name="store.pluginArgsModal.pluginName"
@@ -233,6 +247,8 @@ import DataTable from './components/DataTable.vue'
 import FilterBar from './components/FilterBar.vue'
 import StatusBar from './components/StatusBar.vue'
 import NotepadPanel from './components/NotepadPanel.vue'
+import FindingsPanel from './components/FindingsPanel.vue'
+import { useFindingsStore } from './stores/findings'
 import PluginParamsModal from './components/PluginParamsModal.vue'
 import ArgsPanel from './components/ArgsPanel.vue'
 
@@ -242,13 +258,18 @@ const AiConfigModal = defineAsyncComponent(() => import('./components/AiConfigMo
 const SymbolManagerModal = defineAsyncComponent(() => import('./components/SymbolManagerModal.vue'))
 
 const store = useAppStore()
+const findingsStore = useFindingsStore()
 const localImagePath = ref('')
+
+// Findings are stored per image; follow whatever image is active.
+watch(() => store.imagePath, (p) => findingsStore.setImage(p || ''), { immediate: true })
 const currentTheme = ref('dark')
 const showDropdown = ref(false)
 const showAiPanel = ref(false)
 const showAiConfig = ref(false)
 const showSymbolManager = ref(false)
 const showNotepad = ref(false)
+const showFindings = ref(false)
 const showTokenMenu = ref(false)
 const localApiToken = ref(getApiToken())
 const tokenWrapRef = ref(null)

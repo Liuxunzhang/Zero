@@ -134,6 +134,12 @@ export const useAppStore = defineStore("app", () => {
       await apiLoadImage(path, engineId)
       st.imagePath = path
       st.imageLoaded = true
+      // Canonicalize to the backend's resolved absolute path so consumers
+      // keyed by image path (findings) are stable across reloads.
+      try {
+        const status = await getImageStatus(engineId)
+        if (status?.path) st.imagePath = status.path
+      } catch { /* keep the typed path */ }
       st.columns = []
       st.rows = []
       st.currentPlugin = ""
