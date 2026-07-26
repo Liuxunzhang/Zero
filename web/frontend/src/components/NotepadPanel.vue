@@ -4,7 +4,7 @@
       <div class="notepad-panel">
         <div class="notepad-header">
           <div class="notepad-title">
-            <span class="notepad-icon">记</span>
+            <span class="notepad-icon"><AppIcon name="notebook" :size="13" /></span>
             <span>取证记事本</span>
           </div>
           <button class="notepad-close-btn" @click="$emit('close')">关闭</button>
@@ -31,6 +31,7 @@
 </template>
 
 <script setup>
+import AppIcon from './AppIcon.vue'
 import { computed, nextTick, ref, watch } from 'vue'
 
 const props = defineProps({

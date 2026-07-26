@@ -1,7 +1,7 @@
 <template>
   <div class="filter-bar">
     <div class="filter-input-wrapper">
-      <span class="filter-icon">F</span>
+      <span class="filter-icon"><AppIcon name="search" :size="13" /></span>
       <input
         ref="inputRef"
         v-model="localFilter"
@@ -79,6 +79,7 @@
 
       <div class="export-group" v-if="store.hasData">
         <button class="export-btn" @click="showExport = !showExport">
+          <AppIcon name="download" :size="12" />
           导出
         </button>
         <div v-if="showExport" class="export-dropdown">
@@ -94,6 +95,7 @@
 <script setup>
 import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '../stores/app'
+import AppIcon from './AppIcon.vue'
 
 const store = useAppStore()
 const pageSizeOptions = [50, 100, 200, 500, 1000]

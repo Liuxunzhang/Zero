@@ -53,7 +53,7 @@
           @click="store.showArgsPanel = !store.showArgsPanel"
           title="参数配置"
         >
-          <span class="ai-toggle-icon">CFG</span>
+          <AppIcon class="ai-toggle-icon" name="settings" />
           <span class="ai-toggle-text">参数</span>
         </button>
         <button
@@ -62,7 +62,7 @@
           @click="showNotepad = true"
           title="取证记事本"
         >
-          <span class="ai-toggle-icon">记</span>
+          <AppIcon class="ai-toggle-icon" name="notebook" />
           <span class="ai-toggle-text">记事</span>
         </button>
         <button
@@ -71,7 +71,7 @@
           @click="showAiPanel = !showAiPanel"
           title="取证分析助手"
         >
-          <span class="ai-toggle-icon">IR</span>
+          <AppIcon class="ai-toggle-icon" name="bot" />
           <span class="ai-toggle-text">助手</span>
         </button>
         <button
@@ -80,7 +80,7 @@
           @click="showSymbolManager = true"
           title="符号表管理"
         >
-          <span class="ai-toggle-icon">SYM</span>
+          <AppIcon class="ai-toggle-icon" name="package" />
           <span class="ai-toggle-text">符号</span>
         </button>
         <div class="topbar-token-wrap" ref="tokenWrapRef">
@@ -90,7 +90,7 @@
             title="API Token（后端开启鉴权时使用）"
             @click="showTokenMenu = !showTokenMenu"
           >
-            <span class="ai-toggle-icon">KEY</span>
+            <AppIcon class="ai-toggle-icon" name="key" />
             <span class="ai-toggle-text">Token</span>
           </button>
           <div v-if="showTokenMenu" class="topbar-token-popover" @click.stop>
@@ -111,7 +111,7 @@
           </div>
         </div>
         <button class="theme-toggle" @click="toggleTheme" :title="themeLabel">
-          {{ themeIcon }}
+          <AppIcon :name="themeIcon" :size="15" />
         </button>
       </div>
 
@@ -217,6 +217,7 @@
 import { ref, computed, watch, onMounted, onBeforeUnmount, defineAsyncComponent } from 'vue'
 import { useAppStore } from './stores/app'
 import { listImages, getApiToken, setApiToken } from './api'
+import AppIcon from './components/AppIcon.vue'
 import AppSidebar from './components/AppSidebar.vue'
 import AiPanel from './components/AiPanel.vue'
 import DataTable from './components/DataTable.vue'
@@ -376,9 +377,9 @@ const themeLabels = {
   auto: '当前：跟随系统，点击切换到深色',
 }
 const themeIcons = {
-  dark: '夜',
-  light: '昼',
-  auto: '自',
+  dark: 'moon',
+  light: 'sun',
+  auto: 'monitor',
 }
 // Only meaningful while currentTheme === 'auto'.
 const prefersLightQuery = window.matchMedia('(prefers-color-scheme: light)')

@@ -52,7 +52,7 @@
           >
             {{ col }}
             <span v-if="store.sortColumn === col" class="sort-arrow">
-              {{ store.sortDesc ? '▼' : '▲' }}
+              <AppIcon :name="store.sortDesc ? 'chevron-down' : 'chevron-up'" :size="10" />
             </span>
           </th>
         </tr>
@@ -121,6 +121,7 @@
 import { reactive, ref, computed, onMounted, onUnmounted, nextTick, watch } from 'vue'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useAppStore } from '../stores/app'
+import AppIcon from './AppIcon.vue'
 
 const store = useAppStore()
 const containerRef = ref(null)

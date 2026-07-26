@@ -54,7 +54,7 @@
         class="tree-category"
       >
         <div class="tree-category-header" @click="toggle(category)">
-          <span class="chevron" :class="{ expanded: expanded[category] }">›</span>
+          <span class="chevron" :class="{ expanded: expanded[category] }"><AppIcon name="chevron-right" :size="12" /></span>
           <span>{{ category }}</span>
           <span class="tree-category-count">
             {{ normalizedSearch ? `${group.plugins.length}/${group.total}` : group.total }}
@@ -88,14 +88,14 @@
     <!-- Footer always visible — collapse button stays at bottom -->
     <div class="sidebar-footer" :class="{ 'sidebar-footer-collapsed': !sidebarExpanded }">
       <button v-if="sidebarExpanded" class="reload-btn" @click="reloadPlugins" :disabled="reloading">
-        <span :class="{ 'spin': reloading }">⟳</span>
+        <AppIcon name="refresh" :size="13" :class="{ spin: reloading }" />
         {{ reloading ? '扫描中...' : '刷新插件' }}
       </button>
       <button
         class="sidebar-collapse-btn"
         @click="toggleSidebar"
         :title="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
-      >{{ sidebarCollapsed ? '展开' : '收起' }}</button>
+      ><AppIcon name="panel-left" :size="14" /></button>
     </div>
   </div>
 </template>
@@ -103,6 +103,7 @@
 <script setup>
 import { reactive, ref, watch, computed } from 'vue'
 import { useAppStore } from '../stores/app'
+import AppIcon from './AppIcon.vue'
 
 const store = useAppStore()
 

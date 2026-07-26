@@ -23,7 +23,7 @@
           <!-- Left: parameter form -->
           <div class="modal-body">
             <p v-if="!args.length" class="no-args">
-              <span class="no-args-icon">OK</span>
+              <span class="no-args-icon"><AppIcon name="check-circle" :size="15" /></span>
               此插件无需额外参数，直接运行即可。
             </p>
 
@@ -129,6 +129,7 @@
 </template>
 
 <script setup>
+import AppIcon from './AppIcon.vue'
 import { ref, watch, reactive } from 'vue'
 import { getPluginDocs } from '../api'
 import { useAppStore } from '../stores/app'
@@ -364,7 +365,7 @@ function cancel() {
 
 .no-args-icon {
   color: var(--text-success);
-  font-size: 1.1rem;
+  display: flex;
 }
 
 .field-row {

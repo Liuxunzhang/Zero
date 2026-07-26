@@ -91,6 +91,12 @@
   --overlay-backdrop: rgba(15, 23, 42, 0.35);
 }
 
+/* ── Icons ──────────────────────────────────────────── */
+.app-icon {
+  display: block;
+  flex-shrink: 0;
+}
+
 /* ── Reset ──────────────────────────────────────────── */
 *, *::before, *::after {
   box-sizing: border-box;
@@ -455,7 +461,8 @@ body.ai-resizing-ai {
 
 .data-table th .sort-arrow {
   margin-left: 4px;
-  font-size: 10px;
+  display: inline-flex;
+  vertical-align: middle;
   opacity: 0.7;
 }
 
@@ -637,10 +644,11 @@ body.ai-resizing-ai {
 }
 
 .tree-category-header .chevron {
-  font-size: 10px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   transition: transform var(--transition-fast);
   width: 14px;
-  text-align: center;
 }
 
 .tree-category-header .chevron.expanded {
@@ -1229,8 +1237,8 @@ body.ai-resizing-ai {
 }
 
 .ai-toggle-icon {
-  font-size: 13px;
-  line-height: 1;
+  width: 14px;
+  height: 14px;
 }
 
 .ai-toggle-text {
@@ -1339,6 +1347,10 @@ body.ai-float-dragging {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  /* At the docked min width the title block + 7 action buttons don't fit on
+     one line; wrapping beats pushing the last buttons off-screen. */
+  flex-wrap: wrap;
+  row-gap: 6px;
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
@@ -1352,6 +1364,8 @@ body.ai-float-dragging {
   font-weight: 600;
   font-size: 13px;
   color: var(--text-primary);
+  min-width: 0;
+  flex-wrap: wrap;
 }
 
 .ai-panel-icon {
@@ -1412,6 +1426,8 @@ body.ai-float-dragging {
 .ai-panel-actions {
   display: flex;
   gap: 4px;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .ai-header-btn {

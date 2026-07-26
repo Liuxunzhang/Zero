@@ -63,8 +63,8 @@
             <div class="profile-card-header">
               <span class="profile-card-dot" :class="{ active: activeProfileId === p.id }"></span>
               <span class="profile-card-name">{{ p.name }}</span>
-              <button class="profile-card-edit" @click.stop="startEditProfile(p)" title="编辑">编辑</button>
-              <button class="profile-card-delete" @click.stop="removeProfile(idx)" title="删除">删</button>
+              <button class="profile-card-edit" @click.stop="startEditProfile(p)" title="编辑"><AppIcon name="pencil" :size="12" /></button>
+              <button class="profile-card-delete" @click.stop="removeProfile(idx)" title="删除"><AppIcon name="trash" :size="12" /></button>
             </div>
             <div class="profile-card-info">
               <span class="profile-card-tag">{{ p.model }}</span>
@@ -129,7 +129,7 @@
                 class="profile-card-delete"
                 @click.stop="removePrompt(p.id)"
                 title="删除"
-              >删</button>
+              ><AppIcon name="trash" :size="12" /></button>
             </div>
             <div class="prompt-card-preview" @click="selectPrompt(p.id)">
               {{ p.content.slice(0, 120) }}...
@@ -254,6 +254,7 @@
 </template>
 
 <script setup>
+import AppIcon from './AppIcon.vue'
 import { ref, computed, onMounted } from 'vue'
 import {
   getAiProfiles, saveAiProfiles, setActiveProfile, getActiveProfile,

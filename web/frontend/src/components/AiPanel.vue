@@ -29,7 +29,7 @@
       </div>
       <div class="ai-panel-actions" ref="actionsEl">
         <button class="ai-header-btn" @click="$emit('open-config')" title="取证助手设置">
-          设置
+          <AppIcon name="settings" />
         </button>
         <div class="ai-header-dropdown">
           <button
@@ -38,7 +38,7 @@
             @click.stop="toggleHistory"
             title="历史对话"
           >
-            历史
+            <AppIcon name="history" />
           </button>
           <div v-if="showHistory" class="ai-header-dropdown-menu ai-header-dropdown-menu-history">
             <div class="ai-dropdown-head">
@@ -76,14 +76,14 @@
                   </template>
                 </div>
                 <div class="ai-history-item-actions" @click.stop>
-                  <button class="ai-history-action-btn" @click="startRename(conv)" title="重命名">改</button>
-                  <button class="ai-history-action-btn ai-history-delete-btn" @click="deleteConv(conv)" title="删除">删</button>
+                  <button class="ai-history-action-btn" @click="startRename(conv)" title="重命名"><AppIcon name="pencil" :size="12" /></button>
+                  <button class="ai-history-action-btn ai-history-delete-btn" @click="deleteConv(conv)" title="删除"><AppIcon name="trash" :size="12" /></button>
                 </div>
               </div>
             </div>
           </div>
         </div>
-        <button class="ai-header-btn" @click="clearChat" title="清空对话 / 新建" :disabled="streaming">清空</button>
+        <button class="ai-header-btn" @click="clearChat" title="清空对话 / 新建" :disabled="streaming"><AppIcon name="trash" /></button>
         <div class="ai-header-dropdown">
           <button
             class="ai-header-btn ai-header-dropdown-trigger"
@@ -91,7 +91,7 @@
             @click.stop="toggleMemoryPanel"
             title="压缩记忆"
           >
-            记忆
+            <AppIcon name="brain" />
           </button>
           <div v-if="showMemoryPanel" class="ai-header-dropdown-menu ai-header-dropdown-menu-memory">
             <div class="ai-dropdown-head">
@@ -115,9 +115,9 @@
           class="ai-header-btn"
           @click.stop="$emit('toggle-pin')"
           :title="floating ? '固定到侧边栏' : '悬浮窗口'"
-        >{{ floating ? '固定' : '浮动' }}</button>
+        ><AppIcon :name="floating ? 'pin' : 'float'" /></button>
         <button class="ai-header-btn" @click="$emit('close')" title="关闭面板">
-          关闭
+          <AppIcon name="x" />
         </button>
       </div>
     </div>
@@ -217,7 +217,7 @@
           <!-- Agent tool call / result cards -->
           <div v-if="msg.role === 'tool'" class="ai-tool-card" :class="{ 'ai-tool-error': msg.toolError, 'ai-tool-running': msg.toolRunning, 'ai-tool-done': !msg.toolRunning && !msg.toolError }">
             <div class="ai-tool-header">
-              <span class="ai-tool-icon">{{ msg.toolRunning ? '🔧' : msg.toolError ? '❌' : '✅' }}</span>
+              <span class="ai-tool-icon"><AppIcon :name="msg.toolRunning ? 'wrench' : msg.toolError ? 'x-circle' : 'check-circle'" :size="13" /></span>
               <code class="ai-tool-name">{{ msg.toolName }}</code>
             </div>
             <div v-if="msg.toolArgs && Object.keys(msg.toolArgs).length" class="ai-tool-args">{{ formatToolArgs(msg.toolArgs) }}</div>
@@ -304,6 +304,7 @@
 <script setup>
 import { ref, computed, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
 import { marked } from 'marked'
+import AppIcon from './AppIcon.vue'
 import {
   streamAiChat, getAiConfig, clearAiHistory, clearAiMemory, getAiMemory, getAiMemoryStats,
   getAiPrompts, setActivePrompt, saveAiSettings,
@@ -1289,8 +1290,22 @@ watch(() => props.open, (val) => {
 }
 
 .ai-tool-icon {
-  font-size: 13px;
+  display: flex;
   flex-shrink: 0;
+  color: var(--text-muted);
+}
+
+/* The old emoji carried its own colors; the SVG takes the card state's. */
+.ai-tool-card.ai-tool-running .ai-tool-icon {
+  color: var(--accent, #3b82f6);
+}
+
+.ai-tool-card.ai-tool-done .ai-tool-icon {
+  color: var(--text-success, #22c55e);
+}
+
+.ai-tool-card.ai-tool-error .ai-tool-icon {
+  color: var(--text-error, #f87171);
 }
 
 .ai-tool-name {

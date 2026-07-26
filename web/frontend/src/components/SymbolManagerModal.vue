@@ -60,6 +60,7 @@
 
           <div class="symbol-actions">
             <button class="add-btn" :disabled="!selectedPaths.length || downloading" @click="downloadSelected">
+              <AppIcon name="download" :size="12" />
               {{ downloading ? '下载中...' : `下载选中项 (${selectedPaths.length})` }}
             </button>
             <button class="form-cancel-btn" @click="selectedPaths = []" :disabled="!selectedPaths.length">清空选择</button>
@@ -147,7 +148,7 @@
                   @click="retryFailed"
                   :disabled="downloading || !activeRecord.failed.length"
                 >重试失败项 ({{ activeRecord.failed.length }})</button>
-                <button class="form-cancel-btn" @click="clearHistory">清空记录</button>
+                <button class="form-cancel-btn" @click="clearHistory"><AppIcon name="trash" :size="12" /> 清空记录</button>
               </div>
 
               <div class="symbol-history-group">
@@ -183,6 +184,7 @@
 </template>
 
 <script setup>
+import AppIcon from './AppIcon.vue'
 import { ref, computed, onMounted } from 'vue'
 import { getRemoteSymbols, getLocalSymbols, downloadSymbols } from '../api'
 import { useAppStore } from '../stores/app'
