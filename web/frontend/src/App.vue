@@ -214,19 +214,22 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, defineAsyncComponent } from 'vue'
 import { useAppStore } from './stores/app'
 import { listImages, getApiToken, setApiToken } from './api'
 import AppSidebar from './components/AppSidebar.vue'
 import AiPanel from './components/AiPanel.vue'
-import AiConfigModal from './components/AiConfigModal.vue'
-import SymbolManagerModal from './components/SymbolManagerModal.vue'
 import DataTable from './components/DataTable.vue'
 import FilterBar from './components/FilterBar.vue'
 import StatusBar from './components/StatusBar.vue'
 import NotepadPanel from './components/NotepadPanel.vue'
 import PluginParamsModal from './components/PluginParamsModal.vue'
 import ArgsPanel from './components/ArgsPanel.vue'
+
+// Only mounted behind an explicit user action (v-if below), so loading their
+// code on demand keeps them out of the initial bundle.
+const AiConfigModal = defineAsyncComponent(() => import('./components/AiConfigModal.vue'))
+const SymbolManagerModal = defineAsyncComponent(() => import('./components/SymbolManagerModal.vue'))
 
 const store = useAppStore()
 const localImagePath = ref('')

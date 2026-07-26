@@ -482,15 +482,6 @@ body.ai-resizing-ai {
   font-size: 14px;
 }
 
-.table-loading {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  padding: 40px;
-  color: var(--text-secondary);
-}
-
 /* ── Sidebar ────────────────────────────────────────── */
 .sidebar {
   width: var(--sidebar-width);
@@ -544,15 +535,6 @@ body.ai-resizing-ai {
   font-size: 16px;
   color: var(--text-primary);
   letter-spacing: -0.3px;
-}
-
-.sidebar-logo-badge {
-  font-size: 10px;
-  color: var(--text-muted);
-  background: var(--bg-elevated);
-  padding: 2px 6px;
-  border-radius: 4px;
-  margin-left: auto;
 }
 
 /* OS switch */
@@ -1185,20 +1167,6 @@ body.ai-resizing-ai {
 }
 
 /* ── Utility ────────────────────────────────────────── */
-.truncate {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.fade-enter-active, .fade-leave-active {
-  transition: opacity var(--transition-normal);
-}
-
-.fade-enter-from, .fade-leave-to {
-  opacity: 0;
-}
-
 /* ╔══════════════════════════════════════════════════════╗
    ║  AI Panel                                            ║
    ╚══════════════════════════════════════════════════════╝ */
@@ -2442,12 +2410,6 @@ body.ai-float-dragging {
   font-size: 13px;
   font-weight: 600;
   color: var(--text-primary);
-}
-
-.symbol-panel-title-secondary {
-  margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px solid var(--border-subtle);
 }
 
 .symbol-panel-full {
