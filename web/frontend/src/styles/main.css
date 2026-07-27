@@ -924,6 +924,8 @@ body.ai-resizing-ai {
 }
 
 .statusbar-last-message {
+  flex: 1;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -943,6 +945,33 @@ body.ai-resizing-ai {
   color: var(--text-error);
   font-size: 10px;
   flex-shrink: 0;
+}
+
+.statusbar-log-expand {
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 0 7px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  font-family: var(--font-sans);
+  font-size: 10px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    color var(--transition-fast),
+    background var(--transition-fast),
+    border-color var(--transition-fast);
+}
+
+.statusbar-log-expand:hover {
+  color: var(--text-primary);
+  background: var(--bg-hover);
+  border-color: var(--accent-dim);
 }
 
 .statusbar-log {

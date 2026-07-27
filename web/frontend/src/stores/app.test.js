@@ -98,4 +98,13 @@ describe('app store pagination & filter logic', () => {
     expect(s.messages.length).toBe(50)
     expect(s.messages[s.messages.length - 1].text).toBe('m59')
   })
+
+  it('clearMessages removes the current log history', () => {
+    const s = useAppStore()
+    s.pushMessage('one')
+    s.pushMessage('two', 'warning')
+    expect(s.messages.length).toBe(2)
+    s.clearMessages()
+    expect(s.messages).toEqual([])
+  })
 })

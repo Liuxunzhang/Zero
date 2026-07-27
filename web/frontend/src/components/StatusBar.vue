@@ -20,6 +20,14 @@
         <AppIcon name="alert-triangle" :size="10" />
         {{ errorCount }}
       </span>
+      <button
+        class="statusbar-log-expand"
+        title="打开完整日志"
+        @click.stop="openFullLog"
+      >
+        <AppIcon name="file-text" :size="11" />
+        <span>展开日志</span>
+      </button>
 
       <!-- Message log popover -->
       <div v-if="showLog" class="statusbar-log" @click.stop>
@@ -126,6 +134,7 @@ import AppIcon from './AppIcon.vue'
 import { useEscClose } from '../composables/useEscClose'
 
 const store = useAppStore()
+const emit = defineEmits(['open-log'])
 const jumpPage = ref('')
 const showLog = ref(false)
 const cancelling = ref(false)
@@ -158,6 +167,11 @@ function goJumpPage() {
   const target = Number(jumpPage.value)
   store.goToPage(target)
   jumpPage.value = String(store.page || 1)
+}
+
+function openFullLog() {
+  showLog.value = false
+  emit('open-log')
 }
 
 async function doCancel() {

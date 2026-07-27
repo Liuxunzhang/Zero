@@ -98,6 +98,10 @@ export const useAppStore = defineStore("app", () => {
       messages.value.splice(0, messages.value.length - maxMessages)
   }
 
+  function clearMessages() {
+    messages.value = []
+  }
+
   function pushAutoSymbolMessage(result, engineId) {
     if (!result || result.enabled === false) return
     const release = result.kernel?.release || "未知版本"
@@ -673,7 +677,7 @@ export const useAppStore = defineStore("app", () => {
     cancelRunningPlugin, doExport, doClearCache,
     toggleSort, resetSort, setFilter, goToPage, setPageSize,
     appendFilterCondition,
-    pushMessage, init, reloadAllPlugins, fetchEngineSettings,
+    pushMessage, clearMessages, init, reloadAllPlugins, fetchEngineSettings,
     pluginArgsModal, openPluginWithArgs, runPluginWithParams, runPluginWithPayload,
     forceRerunCurrentPlugin, lastRunPayload,
     globalArgs, showArgsPanel, saveGlobalArgs,

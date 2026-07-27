@@ -97,6 +97,18 @@
           <AppIcon class="ai-toggle-icon" name="package" />
           <span class="ai-toggle-text">符号</span>
         </button>
+        <button
+          class="ai-toggle-btn topbar-log-btn"
+          :class="{ active: showLogPanel }"
+          @click="showLogPanel = true"
+          title="查看消息日志"
+        >
+          <AppIcon class="ai-toggle-icon" name="file-text" />
+          <span class="ai-toggle-text">日志</span>
+          <span v-if="logErrorCount" class="topbar-log-error-badge">
+            {{ logErrorCount > 99 ? '99+' : logErrorCount }}
+          </span>
+        </button>
         <div class="topbar-token-wrap" ref="tokenWrapRef">
           <button
             class="ai-toggle-btn"
@@ -164,7 +176,7 @@
         </template>
       </div>
 
-      <StatusBar />
+      <StatusBar @open-log="showLogPanel = true" />
     </div>
 
     <!-- AI Panel floating window -->
@@ -199,6 +211,12 @@
     <SymbolManagerModal
       v-if="showSymbolManager"
       @close="showSymbolManager = false"
+    />
+
+    <LogPanel
+      v-if="showLogPanel"
+      :show="showLogPanel"
+      @close="showLogPanel = false"
     />
 
     <NotepadPanel
@@ -256,6 +274,7 @@ import ArgsPanel from './components/ArgsPanel.vue'
 // code on demand keeps them out of the initial bundle.
 const AiConfigModal = defineAsyncComponent(() => import('./components/AiConfigModal.vue'))
 const SymbolManagerModal = defineAsyncComponent(() => import('./components/SymbolManagerModal.vue'))
+const LogPanel = defineAsyncComponent(() => import('./components/LogPanel.vue'))
 
 const store = useAppStore()
 const findingsStore = useFindingsStore()
@@ -268,6 +287,7 @@ const showDropdown = ref(false)
 const showAiPanel = ref(false)
 const showAiConfig = ref(false)
 const showSymbolManager = ref(false)
+const showLogPanel = ref(false)
 const showNotepad = ref(false)
 const showFindings = ref(false)
 const showTokenMenu = ref(false)
@@ -437,6 +457,9 @@ const prefersLightQuery = window.matchMedia('(prefers-color-scheme: light)')
 
 const themeLabel = computed(() => themeLabels[currentTheme.value])
 const themeIcon = computed(() => themeIcons[currentTheme.value])
+const logErrorCount = computed(
+  () => store.messages.filter((message) => message.severity === 'error').length,
+)
 const activeEngine = computed(() => {
   return store.availableEngines.find(engine => engine.engine_id === store.selectedEngine)
 })
@@ -626,6 +649,29 @@ onBeforeUnmount(() => {
   color: var(--text-secondary);
   font-size: 12px;
   flex-shrink: 0;
+}
+
+.topbar-log-btn {
+  position: relative;
+}
+
+.topbar-log-error-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+  border: 1px solid var(--bg-secondary);
+  border-radius: 999px;
+  color: white;
+  background: var(--text-error);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  line-height: 1;
 }
 
 .startup-banner.error {
