@@ -1,6 +1,7 @@
 """AI analysis SSE streaming routes + profile / prompt management."""
 
 import asyncio
+import difflib
 import json
 import logging
 import re
@@ -13,7 +14,12 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from web.backend.services.ai_service import get_ai_service, AGENT_ALLOWED_PLUGINS, AGENT_PLUGIN_DESCRIPTIONS, AGENT_HEAVY_PLUGINS
+from web.backend.services.ai_service import (
+    AGENT_DENIED_PLUGINS,
+    AGENT_HEAVY_PLUGINS,
+    AGENT_PLUGIN_DESCRIPTIONS,
+    get_ai_service,
+)
 from web.backend.services.tool_markup import strip_dsml_tool_markup
 from web.backend.services.vol_service import get_service
 from web.backend.services import conversation_store as conv_store
@@ -23,7 +29,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/ai")
 _PROJECT_ROOT = Path(__file__).resolve().parents[3]
 _AI_DUMP_ROOT = _PROJECT_ROOT / "dumps" / "ai_agent"
-_AGENT_PLUGIN_ARG_ALLOWLIST = {
+_AGENT_PLUGIN_FALLBACK_ARG_ALLOWLIST = {
     "pid",
     "offset",
     "base",
@@ -34,8 +40,29 @@ _AGENT_PLUGIN_ARG_ALLOWLIST = {
     "kernel_module",
     "regex",
 }
+_AGENT_PLUGIN_ARG_DENYLIST = {
+    "dump",
+    "dump_dir",
+    "output",
+    "output_dir",
+    "yara_file",
+    "yara_compiled_file",
+    "strings_file",
+}
 _AGENT_PLUGIN_ARG_ALIASES = {
     "ignore_case": "ignore-case",
+    "kernel-module": "kernel_module",
+}
+_AGENT_PLUGIN_ALIASES = {
+    # Linux Volatility does not provide NetScan/NetStat.  These are the
+    # equivalent installed socket plugins commonly requested by models trained
+    # on Windows-oriented Volatility examples.
+    ("linux", "netscan"): ("linux.sockscan.Sockscan", {}),
+    ("linux", "netstat"): ("linux.sockstat.Sockstat", {}),
+    # A Linux process thread listing is exposed by PsList --threads.
+    ("linux", "threads"): ("linux.pslist.PsList", {"threads": True}),
+    # Historical/community plugin name used by older prompts.
+    ("linux", "procmaps"): ("linux.proc.Maps", {}),
 }
 
 
@@ -100,37 +127,231 @@ def _parse_int_value(value: Any) -> Optional[int]:
         return None
 
 
-def _coerce_plugin_arg(key: str, value: Any) -> Any:
-    if key in {"pid", "offset", "base"}:
+def _normalize_plugin_token(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").lower())
+
+
+def _flatten_plugin_catalog(categories: dict, os_family: str) -> list[str]:
+    plugins: list[str] = []
+    seen: set[str] = set()
+    for category_plugins in (categories or {}).values():
+        for plugin in category_plugins or []:
+            full_name = str(plugin)
+            if not full_name.startswith(("linux.", "windows.", "mac.")):
+                full_name = f"{os_family}.{full_name}"
+            if full_name not in seen:
+                plugins.append(full_name)
+                seen.add(full_name)
+    return plugins
+
+
+def _resolve_agent_plugin_name(
+    requested_name: str,
+    installed_plugins: list[str],
+    os_family: str,
+) -> tuple[str, dict[str, Any], str]:
+    """Resolve model-generated aliases against the actual installed catalogue."""
+    requested_name = str(requested_name or "").strip()
+    if not requested_name:
+        raise ValueError("plugin_name is required")
+
+    if requested_name.startswith(("linux.", "windows.", "mac.")):
+        requested_full = requested_name
+    else:
+        requested_full = f"{os_family}.{requested_name}"
+
+    by_lower = {name.lower(): name for name in installed_plugins}
+    exact = by_lower.get(requested_full.lower())
+    if exact:
+        return exact, {}, "exact"
+
+    normalized_requested = _normalize_plugin_token(requested_full)
+    normalized_matches = [
+        name
+        for name in installed_plugins
+        if _normalize_plugin_token(name) == normalized_requested
+    ]
+    if len(normalized_matches) == 1:
+        return normalized_matches[0], {}, "normalized"
+
+    short_requested = requested_full.split(".", 1)[1]
+    requested_parts = short_requested.split(".")
+    requested_module = ".".join(requested_parts[:-1]) if len(requested_parts) > 1 else short_requested
+    requested_module_tail = requested_module.rsplit(".", 1)[-1]
+
+    alias = _AGENT_PLUGIN_ALIASES.get(
+        (os_family, _normalize_plugin_token(requested_module_tail))
+    )
+    if alias:
+        alias_name, alias_args = alias
+        alias_match = next(
+            (
+                name
+                for name in installed_plugins
+                if _normalize_plugin_token(name) == _normalize_plugin_token(alias_name)
+            ),
+            None,
+        )
+        if alias_match:
+            return alias_match, dict(alias_args), "alias"
+
+    # Class naming changed across Volatility releases (for example
+    # CheckModules -> Check_modules and TtyCheck -> tty_check).  If the module
+    # path is unambiguous, trust the installed class name.
+    module_matches: list[tuple[int, str]] = []
+    for installed_name in installed_plugins:
+        installed_short = installed_name.split(".", 1)[1]
+        installed_parts = installed_short.split(".")
+        installed_module = (
+            ".".join(installed_parts[:-1])
+            if len(installed_parts) > 1
+            else installed_short
+        )
+        installed_tail = installed_module.rsplit(".", 1)[-1]
+        if _normalize_plugin_token(installed_module) == _normalize_plugin_token(requested_module):
+            module_matches.append((0, installed_name))
+        elif _normalize_plugin_token(installed_tail) == _normalize_plugin_token(requested_module_tail):
+            module_matches.append((installed_module.count(".") + 1, installed_name))
+
+    if module_matches:
+        module_matches.sort(key=lambda item: (item[0], len(item[1]), item[1]))
+        return module_matches[0][1], {}, "module"
+
+    short_names = [name.split(".", 1)[1] for name in installed_plugins]
+    suggestions = difflib.get_close_matches(
+        short_requested,
+        short_names,
+        n=5,
+        cutoff=0.25,
+    )
+    suffix = f"；相近的已安装插件: {', '.join(suggestions)}" if suggestions else ""
+    raise ValueError(
+        f"插件 '{requested_name}' 未安装或不属于当前 {os_family} 镜像{suffix}。"
+        "请先调用 list_plugins，并使用其返回的精确名称。"
+    )
+
+
+def _coerce_plugin_arg(key: str, value: Any, arg_type: str = "") -> Any:
+    if arg_type == "int" or key in {
+        "pid",
+        "offset",
+        "base",
+        "address",
+        "inode",
+        "netns",
+        "maxsize",
+        "max_size",
+        "dump-size",
+    }:
         parsed = _parse_int_value(value)
         if parsed is None:
             raise ValueError(f"{key} must be an integer or hex string")
         return parsed
-    if key in {"ignore-case", "physical", "kernel_module"}:
+    if arg_type == "bool" or key in {
+        "ignore-case",
+        "physical",
+        "kernel_module",
+    }:
         if isinstance(value, bool):
             return value
         return str(value).strip().lower() in {"1", "true", "yes", "on"}
-    if key in {"key", "name", "regex"}:
+    if isinstance(value, (list, tuple)):
+        return list(value)
+    if arg_type == "string" or key in {"key", "name", "regex"}:
         return str(value)
     return value
 
 
-def _extract_agent_plugin_args(tool_args: dict[str, Any]) -> dict[str, Any]:
+def _extract_agent_plugin_args(
+    tool_args: dict[str, Any],
+    plugin_metadata: Optional[dict[str, Any]] = None,
+    injected_args: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
     raw_args = tool_args.get("args")
     merged: dict[str, Any] = {}
     if isinstance(raw_args, dict):
         merged.update(raw_args)
-    for key in _AGENT_PLUGIN_ARG_ALLOWLIST | set(_AGENT_PLUGIN_ARG_ALIASES):
-        if key in tool_args:
-            merged[key] = tool_args[key]
+    for key, value in tool_args.items():
+        if key not in {"plugin_name", "args"}:
+            merged[key] = value
+    if injected_args:
+        merged.update(injected_args)
+
+    definitions = {
+        str(arg.get("name")): arg
+        for arg in (plugin_metadata or {}).get("args", [])
+        if arg.get("name")
+    }
+    normalized_names = {
+        _normalize_plugin_token(name): name
+        for name in definitions
+    }
+    allowed_names = (
+        set(definitions)
+        if definitions
+        else set(_AGENT_PLUGIN_FALLBACK_ARG_ALLOWLIST)
+    )
 
     kwargs: dict[str, Any] = {}
     for raw_key, raw_value in merged.items():
         key = _AGENT_PLUGIN_ARG_ALIASES.get(str(raw_key), str(raw_key))
-        if key not in _AGENT_PLUGIN_ARG_ALLOWLIST or raw_value in (None, ""):
+        key = normalized_names.get(_normalize_plugin_token(key), key)
+        if key == "pid" and "pid" not in definitions and "pids" in definitions:
+            key = "pids"
+        elif key == "pids" and "pids" not in definitions and "pid" in definitions:
+            key = "pid"
+        if key in _AGENT_PLUGIN_ARG_DENYLIST:
+            if raw_value not in (None, "", False, 0, "false", "0"):
+                raise ValueError(
+                    f"参数 '{key}' 会读取或写入服务器文件，run_plugin 不允许使用；"
+                    "请改用专用 dump 工具。"
+                )
             continue
-        kwargs[key] = _coerce_plugin_arg(key, raw_value)
+        if key not in allowed_names or raw_value in (None, ""):
+            continue
+        arg_type = str(definitions.get(key, {}).get("arg_type") or "")
+        kwargs[key] = _coerce_plugin_arg(key, raw_value, arg_type)
+
+    missing = [
+        name
+        for name, definition in definitions.items()
+        if definition.get("required") and name not in kwargs
+    ]
+    if missing:
+        raise ValueError(f"插件缺少必填参数: {', '.join(missing)}")
     return kwargs
+
+
+def _agent_plugin_block_reason(
+    plugin_name: str,
+    plugin_metadata: Optional[dict[str, Any]] = None,
+) -> str:
+    denied_names = {
+        _normalize_plugin_token(name)
+        for name in AGENT_DENIED_PLUGINS
+    }
+    if _normalize_plugin_token(plugin_name) in denied_names:
+        return "该插件会提取文件，必须通过专用 dump 工具执行"
+    required_file_args = [
+        str(arg.get("name"))
+        for arg in (plugin_metadata or {}).get("args", [])
+        if arg.get("required") and str(arg.get("name")) in _AGENT_PLUGIN_ARG_DENYLIST
+    ]
+    if required_file_args:
+        return f"必填参数涉及服务器文件: {', '.join(required_file_args)}"
+    return ""
+
+
+def _safe_plugin_arg_details(plugin_metadata: Optional[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "name": str(arg.get("name")),
+            "type": str(arg.get("arg_type") or "string"),
+            "required": bool(arg.get("required")),
+        }
+        for arg in (plugin_metadata or {}).get("args", [])
+        if arg.get("name") and str(arg.get("name")) not in _AGENT_PLUGIN_ARG_DENYLIST
+    ]
 
 
 def _extract_process_matches(
@@ -287,23 +508,57 @@ async def _execute_agent_tool(
             None,
             lambda: mgr.list_plugins(engine_id, os_family),
         )
+        engine = mgr.get_engine(engine_id)
+        metadata_getter = getattr(engine, "get_plugin_metadata", None)
+        executable_categories: dict[str, list[str]] = {}
+        plugin_details: list[dict[str, Any]] = []
+        blocked_plugins: list[dict[str, str]] = []
         flat: list[str] = []
         for cat, plugins in (categories or {}).items():
             plugin_strs = []
             for p in plugins:
                 full_p = p if p.startswith(f"{os_family}.") else f"{os_family}.{p}"
+                metadata = metadata_getter(full_p) if callable(metadata_getter) else {}
+                metadata = metadata or {}
+                block_reason = _agent_plugin_block_reason(full_p, metadata)
+                if block_reason:
+                    blocked_plugins.append({"plugin_name": p, "reason": block_reason})
+                    continue
+
+                executable_categories.setdefault(cat, []).append(p)
                 desc = AGENT_PLUGIN_DESCRIPTIONS.get(full_p, "")
+                safe_args = _safe_plugin_arg_details(metadata)
+                required_args = [
+                    arg["name"] for arg in safe_args if arg["required"]
+                ]
+                plugin_details.append({
+                    "plugin_name": p,
+                    "full_name": full_p,
+                    "description": desc,
+                    "arguments": safe_args,
+                })
+                required_suffix = (
+                    f"; 必填参数: {', '.join(required_args)}"
+                    if required_args
+                    else ""
+                )
                 if desc:
-                    plugin_strs.append(f"{p} ({desc})")
+                    plugin_strs.append(f"{p} ({desc}{required_suffix})")
                 else:
-                    plugin_strs.append(p)
-            flat.append(f"[{cat}] {', '.join(plugin_strs)}")
-        total = sum(len(v) for v in (categories or {}).values())
+                    plugin_strs.append(f"{p}{required_suffix}")
+            if plugin_strs:
+                flat.append(f"[{cat}] {', '.join(plugin_strs)}")
+        total = len(plugin_details)
         return {
             "os_family": os_family,
-            "categories": categories,
+            "categories": executable_categories,
+            "plugins": plugin_details,
+            "blocked_plugins": blocked_plugins,
             "summary": (
-                f"可用 {os_family} 插件共 {total} 个：\n" + "\n".join(flat)
+                f"AI 可执行的已安装 {os_family} 插件共 {total} 个。"
+                "调用 run_plugin 时必须原样使用下列 plugin_name，"
+                "不要改变大小写、下划线或类名：\n"
+                + "\n".join(flat)
             ),
         }
 
@@ -313,25 +568,38 @@ async def _execute_agent_tool(
         if not plugin_name:
             raise ValueError("plugin_name is required")
 
-        # Resolve short names against the current image OS first.  The generic
-        # resolver prefers its last catalogue family and can otherwise turn
-        # "pslist.PsList" into linux.pslist.PsList after the UI has switched to
-        # Windows.
         engine = mgr.get_engine(engine_id)
-        test_name = plugin_name
-        if not test_name.startswith(("linux.", "windows.", "mac.")):
-            test_name = f"{os_family}.{test_name}"
-        resolved_name = engine.resolve_plugin_name(test_name)
+        categories = await loop.run_in_executor(
+            None,
+            lambda: mgr.list_plugins(engine_id, os_family),
+        )
+        installed_plugins = _flatten_plugin_catalog(categories, os_family)
+        plugin_name, injected_args, resolution = _resolve_agent_plugin_name(
+            plugin_name,
+            installed_plugins,
+            os_family,
+        )
+        if resolution != "exact":
+            logger.info(
+                "Resolved AI agent plugin name %s -> %s (%s)",
+                tool_args.get("plugin_name"),
+                plugin_name,
+                resolution,
+            )
+        metadata_getter = getattr(engine, "get_plugin_metadata", None)
+        plugin_metadata = metadata_getter(plugin_name) if callable(metadata_getter) else {}
+        plugin_metadata = plugin_metadata or {}
+        block_reason = _agent_plugin_block_reason(plugin_name, plugin_metadata)
+        if block_reason:
+            raise ValueError(f"插件 '{plugin_name}' 不允许由 AI Agent 直接执行：{block_reason}。")
 
-        # Enforce read-only analysis plugin allowlist.
-        if resolved_name not in AGENT_ALLOWED_PLUGINS:
-            raise ValueError(f"Plugin '{resolved_name}' is not allowed for AI Agent execution.")
-
-        plugin_name = resolved_name
-
-        # Build kwargs from a small allowlist.  Dumping is intentionally kept
-        # behind dedicated tools so normal analysis calls stay read-only.
-        kwargs = _extract_agent_plugin_args(tool_args)
+        # Validate kwargs against this installed plugin's real metadata.
+        # File-reading/writing arguments stay behind dedicated tools.
+        kwargs = _extract_agent_plugin_args(
+            tool_args,
+            plugin_metadata,
+            injected_args,
+        )
         pid = kwargs.get("pid")
 
         # Reject heavy memory-scanner plugins called without a pid —
@@ -350,14 +618,23 @@ async def _execute_agent_tool(
         columns, rows = await loop.run_in_executor(None, _run)
         total = len(rows)
         preview = [list(r) for r in rows[:100]]
+        requested_plugin = str(tool_args.get("plugin_name") or "")
+        resolution_note = (
+            f"已将 {requested_plugin} 解析为已安装插件 {plugin_name}。"
+            if resolution != "exact"
+            else ""
+        )
         return {
             "plugin": plugin_name,
+            "requested_plugin": requested_plugin,
+            "resolution": resolution,
             "columns": columns,
             "rows": preview,
             "total": total,
             "truncated": total > 100,
             "summary": (
-                f"插件 {plugin_name} 返回 {total} 行, "
+                resolution_note
+                + f"插件 {plugin_name} 返回 {total} 行, "
                 f"{len(columns)} 列 ({', '.join(columns[:20])})"
                 + ("（仅展示前 100 行）" if total > 100 else "")
             ),

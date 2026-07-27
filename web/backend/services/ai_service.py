@@ -64,40 +64,16 @@ _MODEL_TOKEN_LIMITS = {
 # Maximum tool-calling rounds per user message to prevent infinite loops.
 _MAX_TOOL_ROUNDS = 5
 
-# Plugins the AI agent is allowed to execute.  Plugins that write files
-# (dumpfiles, procdump, etc.) are intentionally excluded to prevent the
-# agent from filling the disk unsupervised.
-AGENT_ALLOWED_PLUGINS: set[str] = {
-    # Linux — read-only analysis plugins
-    "linux.pslist.PsList", "linux.psscan.PsScan", "linux.pstree.PsTree",
-    "linux.netstat.NetStat", "linux.netscan.NetScan", "linux.lsof.Lsof",
-    "linux.lsmod.Lsmod", "linux.check_afinfo.Check_afinfo",
-    "linux.check_creds.Check_creds", "linux.check_modules.Check_modules",
-    "linux.check_syscall.Check_syscall", "linux.elfs.Elfs",
-    "linux.malfind.Malfind", "linux.proc_maps.Maps",
-    "linux.tty_check.tty_check", "linux.bash.Bash",
-    "linux.sockstat.Sockstat", "linux.keyboard_notifiers.KeyboardNotifiers",
-    "linux.hidden_modules.Check_hidden_modules",
-    "linux.capabilities.Caps", "linux.library_list.LibraryList",
-    "linux.cgroup.Cgroup", "linux.envars.Envars",
-    # Windows — read-only analysis plugins
-    "windows.pslist.PsList", "windows.psscan.PsScan", "windows.pstree.PsTree",
-    "windows.netscan.NetScan", "windows.netstat.NetStat",
-    "windows.cmdline.CmdLine", "windows.dlllist.DllList",
-    "windows.handles.Handles", "windows.modules.Modules",
-    "windows.modscan.ModScan", "windows.driverscan.DriverScan",
-    "windows.filescan.FileScan", "windows.mutantscan.MutantScan",
-    "windows.hivelist.HiveList", "windows.printkey.PrintKey",
-    "windows.malfind.Malfind", "windows.vadinfo.VadInfo",
-    "windows.svcscan.SvcScan", "windows.callbacks.Callbacks",
-    "windows.symlinkscan.SymlinkScan", "windows.sessions.Sessions",
-    "windows.envars.Envars", "windows.getsids.GetSIDs",
-    "windows.privileges.Privs", "windows.registry.hivelist.HiveList",
-    "windows.registry.printkey.PrintKey",
-    "windows.mftscan.MFTScan", "windows.shellbags.ShellBags",
-    "windows.ldrmodules.LdrModules", "windows.statistics.Statistics",
-    "windows.info.Info", "windows.bigpools.BigPools",
-    "windows.ssdt.SSDT", "windows.devicetree.DeviceTree",
+# The executable catalogue is discovered from the installed Volatility build at
+# runtime.  Only file-writing plugins are denied here; maintaining a static
+# allowlist caused valid plugins to be rejected whenever Volatility renamed or
+# added a plugin.
+AGENT_DENIED_PLUGINS: set[str] = {
+    "linux.module_extract.ModuleExtract",
+    "linux.pagecache.RecoverFs",
+    "windows.dumpfiles.DumpFiles",
+    "windows.memmap.Memmap",
+    "windows.pedump.PEDump",
 }
 
 AGENT_PLUGIN_DESCRIPTIONS: dict[str, str] = {
@@ -105,8 +81,8 @@ AGENT_PLUGIN_DESCRIPTIONS: dict[str, str] = {
     "linux.pslist.PsList": "进程列表 (PSList) - 列出活跃进程",
     "linux.psscan.PsScan": "进程扫描 (PSScan) - 扫描内存中的进程结构，可发现已隐藏/退出的进程",
     "linux.pstree.PsTree": "进程树 (PSTree) - 以树状结构展示进程的父子关系",
-    "linux.netstat.NetStat": "网络状态 (NetStat) - 列出活跃的 TCP/UDP 网络连接和监听端口",
-    "linux.netscan.NetScan": "网络扫描 (NetScan) - 扫描内存中的网络连接结构",
+    "linux.sockscan.Sockscan": "套接字扫描 (Sockscan) - 扫描内存中的网络套接字结构",
+    "linux.sockstat.Sockstat": "套接字状态 (Sockstat) - 列出进程套接字和连接状态",
     "linux.lsof.Lsof": "打开文件 (Lsof) - 列出进程打开的文件描述符、管道、套接字等",
     "linux.lsmod.Lsmod": "内核模块 (LSMod) - 列出已加载 of Linux 内核模块",
     "linux.check_afinfo.Check_afinfo": "检查网络协议操作 (Check_afinfo) - 检查网络地址族操作结构体是否被劫持 (Rootkit 检测)",
@@ -115,16 +91,21 @@ AGENT_PLUGIN_DESCRIPTIONS: dict[str, str] = {
     "linux.check_syscall.Check_syscall": "检查系统调用表 (Check_syscall) - 检测系统调用表 (syscall table) 是否被劫持或 Hook",
     "linux.elfs.Elfs": "进程 ELF 映像 (Elfs) - 列出进程内存空间中的 ELF 模块和库文件",
     "linux.malfind.Malfind": "恶意代码检测 (Malfind) - 扫描进程内存中具有可执行权限且未映射到文件的异常内存区域 (注入代码/Shellcode 检测)",
-    "linux.proc_maps.Maps": "进程内存映射 (Maps) - 打印进程的内存映射区间（包括权限、偏移、文件路径）",
+    "linux.proc.Maps": "进程内存映射 (Maps) - 打印进程的内存映射区间（包括权限、偏移、文件路径）",
     "linux.tty_check.tty_check": "检查 TTY 设备 (tty_check) - 检查 TTY 设备的接收/发送函数是否被劫持或 Hook",
     "linux.bash.Bash": "Bash 历史命令 (Bash) - 从内存中提取已打开 Bash 终端的历史命令和输入缓冲区",
-    "linux.sockstat.Sockstat": "套接字统计 (Sockstat) - 列出内存中的套接字状态",
-    "linux.keyboard_notifiers.KeyboardNotifiers": "键盘通知链 (KeyboardNotifiers) - 检测内核键盘通知链是否被劫持，用于发现键盘记录 Rootkit",
-    "linux.hidden_modules.Check_hidden_modules": "检测隐藏内核模块 (Check_hidden_modules) - 检测通过解链隐藏的内核模块",
-    "linux.capabilities.Caps": "进程特权集 (Caps) - 列出每个进程拥有的 POSIX Capabilities (特权校验)",
+    "linux.keyboard_notifiers.Keyboard_notifiers": "键盘通知链 - 检测内核键盘通知链是否被劫持",
+    "linux.hidden_modules.Hidden_modules": "检测隐藏内核模块 - 检测通过解链隐藏的内核模块",
+    "linux.capabilities.Capabilities": "进程特权集 - 列出进程 POSIX Capabilities",
     "linux.library_list.LibraryList": "进程加载库 (LibraryList) - 列出进程加载的动态链接库 (.so)",
-    "linux.cgroup.Cgroup": "CGroup 限制 (Cgroup) - 查看进程所属的 cgroup 信息",
     "linux.envars.Envars": "进程环境变量 (Envars) - 提取进程启动时的环境变量",
+    "linux.kthreads.Kthreads": "内核线程 - 列出 Linux 内核线程",
+    "linux.pscallstack.PsCallStack": "进程调用栈 - 查看指定进程的调用栈",
+    "linux.ptrace.Ptrace": "Ptrace 检查 - 检查进程跟踪关系",
+    "linux.check_idt.Check_idt": "IDT 检查 - 检测中断描述符表 Hook",
+    "linux.ebpf.EBPF": "eBPF 程序 - 列出内核中的 eBPF 程序",
+    "linux.netfilter.Netfilter": "Netfilter 检查 - 检测网络过滤 Hook",
+    "linux.modxview.Modxview": "模块交叉视图 - 对比多种模块枚举来源",
     # Windows
     "windows.pslist.PsList": "进程列表 (PSList) - 列出活跃进程",
     "windows.psscan.PsScan": "进程扫描 (PSScan) - 扫描内存中的进程结构 (_EPROCESS)，可发现已隐藏/退出的进程",
@@ -167,10 +148,14 @@ AGENT_PLUGIN_DESCRIPTIONS: dict[str, str] = {
 # and then pass the pid.
 AGENT_HEAVY_PLUGINS: set[str] = {
     "linux.malfind.Malfind",
+    "linux.malware.malfind.Malfind",
     "windows.malfind.Malfind",
+    "windows.malware.malfind.Malfind",
     "windows.vadinfo.VadInfo",
-    "linux.proc_maps.Maps",
+    "linux.proc.Maps",
     "linux.vmaregexscan.VmaRegExScan",
+    "linux.vmayarascan.VmaYaraScan",
+    "windows.vadregexscan.VadRegExScan",
     "windows.vadyarascan.VadYaraScan",
 }
 
@@ -181,10 +166,10 @@ _AGENT_TOOLS: list[dict] = [
             "name": "run_plugin",
             "description": (
                 "运行一个 Volatility 3 插件获取内存取证数据。"
-                "参数 plugin_name 使用不带 OS 前缀的短名称，如 'pslist.PsList'、'netscan.NetScan'。"
+                "插件名称会随 Volatility 版本和操作系统变化；必须先调用 list_plugins，"
+                "再从其结果复制精确的 plugin_name，不要自行修改大小写、下划线或类名。"
                 "可选参数 pid 用于指定进程 ID。"
-                "运行前你应该先用 list_plugins 确认该插件存在。"
-                "重要：malfind、vadinfo、proc_maps、vmayarascan 等内存扫描类插件必须传 pid 参数，"
+                "重要：malfind、vadinfo、proc.Maps、VmaRegExScan 等内存扫描类插件必须传 pid 参数，"
                 "否则会全量扫描所有进程导致超时卡死。"
                 "正确流程：先跑 pslist/psscan 找可疑 PID → 再用 malfind/vadinfo pid=可疑PID 深入分析。"
             ),
@@ -1249,7 +1234,8 @@ class AiService:
                     "当用户要求 dump 某个进程名或 PID 的进程内存时，优先调用 dump_process。"
                     "当用户要求 pedump、dump PE、dump exe 或 dump DLL 时，优先调用 dump_pe。"
                     "除非用户要求教学解释，否则不要输出通用安全科普或与证据无关的长篇背景。"
-                    f"调用工具时 plugin_name 使用不带 {os_family}. 前缀的短名称。"
+                    "插件命名以 list_plugins 对当前运行环境返回的 plugin_name 为准；"
+                    "调用 run_plugin 时必须原样复制该名称，不要凭记忆生成名称。"
                 ),
             },
         ]
