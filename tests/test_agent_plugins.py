@@ -16,6 +16,7 @@ INSTALLED_LINUX_PLUGINS = [
     "linux.capabilities.Capabilities",
     "linux.hidden_modules.Hidden_modules",
     "linux.proc.Maps",
+    "linux.vmaregexscan.VmaRegExScan",
     "linux.module_extract.ModuleExtract",
 ]
 
@@ -164,3 +165,134 @@ def test_execute_agent_plugin_uses_dynamic_catalog_and_safe_metadata(monkeypatch
             "reason": "该插件会提取文件，必须通过专用 dump 工具执行",
         }
     ]
+
+
+def test_heavy_plugin_discovers_pids_then_accepts_batch_retry(monkeypatch):
+    categories = {
+        "进程相关": ["pslist.PsList"],
+        "内存扫描": ["vmaregexscan.VmaRegExScan"],
+    }
+    metadata = {
+        "linux.pslist.PsList": {
+            "args": [
+                {"name": "pid", "arg_type": "string", "required": False},
+            ],
+        },
+        "linux.vmaregexscan.VmaRegExScan": {
+            "args": [
+                {"name": "pid", "arg_type": "string", "required": False},
+                {"name": "pattern", "arg_type": "string", "required": True},
+                {"name": "maxsize", "arg_type": "int", "required": False},
+            ],
+        },
+    }
+    calls = []
+
+    class FakeEngine:
+        def get_plugin_metadata(self, plugin_name):
+            return metadata.get(plugin_name, {"args": []})
+
+    class FakeManager:
+        def list_plugins(self, _engine_id, _os_family):
+            return categories
+
+        def get_engine(self, _engine_id):
+            return FakeEngine()
+
+        def run_plugin(self, _engine_id, plugin_name, **kwargs):
+            calls.append((plugin_name, kwargs))
+            if plugin_name == "linux.pslist.PsList":
+                return (
+                    ["PID", "PPID", "COMM"],
+                    [(1, 0, "init"), (343, 1, "psimon"), (3747, 1, "sshd")],
+                )
+            return ["PID", "Start", "End"], [(343, "0x1000", "0x2000")]
+
+    class FakeService:
+        _manager = FakeManager()
+
+    monkeypatch.setattr(ai_routes, "get_service", lambda: FakeService())
+
+    async def run_checks():
+        discovery = await ai_routes._execute_agent_tool(
+            "run_plugin",
+            {
+                "plugin_name": "vmaregexscan.VmaRegExScan",
+                "args": {
+                    "pattern": r"/root/zero|zero\\.log",
+                    "ignore-case": True,
+                },
+            },
+            "vol3",
+            os_family="linux",
+        )
+        retry = await ai_routes._execute_agent_tool(
+            "run_plugin",
+            {
+                "plugin_name": "vmaregexscan.VmaRegExScan",
+                "pids": [343, 3747],
+                "args": {
+                    "pattern": r"/root/zero|zero\\.log",
+                    "ignore-case": True,
+                },
+            },
+            "vol3",
+            os_family="linux",
+        )
+        return discovery, retry
+
+    discovery, retry = asyncio.run(run_checks())
+
+    assert discovery["status"] == "pid_required"
+    assert discovery["pid_candidates"] == [
+        {"pid": 1, "name": "init", "ppid": 0},
+        {"pid": 343, "name": "psimon", "ppid": 1},
+        {"pid": 3747, "name": "sshd", "ppid": 1},
+    ]
+    assert retry["plugin"] == "linux.vmaregexscan.VmaRegExScan"
+    assert calls == [
+        ("linux.pslist.PsList", {}),
+        (
+            "linux.vmaregexscan.VmaRegExScan",
+            {
+                "pid": [343, 3747],
+                "pattern": r"(?i)/root/zero|zero\\.log",
+            },
+        ),
+    ]
+
+
+def test_dump_process_supports_linux_pid(monkeypatch, tmp_path):
+    calls = []
+
+    class FakeManager:
+        def run_plugin(self, _engine_id, plugin_name, **kwargs):
+            calls.append((plugin_name, kwargs))
+            output = kwargs.get("dump_dir")
+            if output:
+                from pathlib import Path
+                Path(output, f"pid.{kwargs['pid']}.elf").write_bytes(b"ELF")
+            return ["PID"], [(kwargs.get("pid"),)]
+
+    class FakeService:
+        _manager = FakeManager()
+
+    monkeypatch.setattr(ai_routes, "get_service", lambda: FakeService())
+    monkeypatch.setattr(ai_routes, "_AI_DUMP_ROOT", tmp_path)
+
+    result = asyncio.run(
+        ai_routes._execute_agent_tool(
+            "dump_process",
+            {"pid": 343},
+            "vol3",
+            os_family="linux",
+        )
+    )
+
+    assert result["dump_plugin"] == "linux.pslist.PsList"
+    assert result["matches"] == [{"pid": 343, "name": "343"}]
+    assert len(result["files"]) == 1
+    assert calls[0][0] == "linux.pslist.PsList"
+    assert calls[0][1]["pid"] == 343
+    assert calls[0][1]["dump"] is True
+    assert calls[0][1]["use_cache"] is False

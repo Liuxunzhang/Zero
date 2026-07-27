@@ -232,6 +232,16 @@ def _resolve_agent_plugin_name(
 
 
 def _coerce_plugin_arg(key: str, value: Any, arg_type: str = "") -> Any:
+    if key in {"pid", "pids"} and isinstance(value, (list, tuple, set)):
+        parsed_values = []
+        for item in value:
+            parsed = _parse_int_value(item)
+            if parsed is None:
+                raise ValueError(f"{key} must contain only integer or hex PID values")
+            parsed_values.append(parsed)
+        if not parsed_values:
+            raise ValueError(f"{key} must contain at least one PID")
+        return parsed_values
     if arg_type == "int" or key in {
         "pid",
         "offset",
@@ -354,6 +364,33 @@ def _safe_plugin_arg_details(plugin_metadata: Optional[dict[str, Any]]) -> list[
     ]
 
 
+def _apply_agent_argument_compatibility(
+    plugin_name: str,
+    kwargs: dict[str, Any],
+    tool_args: dict[str, Any],
+) -> None:
+    """Translate common model options that differ from Volatility's metadata."""
+    raw_args = tool_args.get("args")
+    combined = dict(raw_args) if isinstance(raw_args, dict) else {}
+    combined.update({
+        key: value
+        for key, value in tool_args.items()
+        if key not in {"plugin_name", "args"}
+    })
+    ignore_case = combined.get("ignore-case", combined.get("ignore_case"))
+    regex_scanners = {
+        "linux.vmaregexscan.VmaRegExScan",
+        "windows.vadregexscan.VadRegExScan",
+    }
+    if (
+        plugin_name in regex_scanners
+        and str(ignore_case).strip().lower() in {"1", "true", "yes", "on"}
+        and kwargs.get("pattern")
+        and not str(kwargs["pattern"]).startswith("(?i)")
+    ):
+        kwargs["pattern"] = f"(?i){kwargs['pattern']}"
+
+
 def _extract_process_matches(
     columns: list[str],
     rows: list,
@@ -361,7 +398,10 @@ def _extract_process_matches(
     max_matches: int,
 ) -> list[dict[str, Any]]:
     pid_idx = _column_index(columns, {"pid", "processid"})
-    name_idx = _column_index(columns, {"imagefilename", "image", "name", "process"})
+    name_idx = _column_index(
+        columns,
+        {"imagefilename", "image", "name", "process", "comm"},
+    )
     ppid_idx = _column_index(columns, {"ppid", "parentpid"})
     if pid_idx is None or name_idx is None:
         return []
@@ -388,6 +428,43 @@ def _extract_process_matches(
             if len(matches) >= max_matches:
                 break
     return matches
+
+
+def _agent_pid_candidates(
+    columns: list[str],
+    rows: list,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    pid_idx = _column_index(columns, {"pid", "processid"})
+    if pid_idx is None:
+        return []
+    name_idx = _column_index(
+        columns,
+        {"imagefilename", "image", "name", "process", "comm"},
+    )
+    ppid_idx = _column_index(columns, {"ppid", "parentpid"})
+    candidates: list[dict[str, Any]] = []
+    seen: set[int] = set()
+
+    for row in rows or []:
+        values = list(row)
+        if pid_idx >= len(values):
+            continue
+        pid = _parse_int_value(values[pid_idx])
+        if pid is None or pid in seen:
+            continue
+        candidate: dict[str, Any] = {"pid": pid}
+        if name_idx is not None and name_idx < len(values):
+            candidate["name"] = str(values[name_idx] or "")
+        if ppid_idx is not None and ppid_idx < len(values):
+            ppid = _parse_int_value(values[ppid_idx])
+            if ppid is not None:
+                candidate["ppid"] = ppid
+        candidates.append(candidate)
+        seen.add(pid)
+        if len(candidates) >= limit:
+            break
+    return candidates
 
 
 def _extract_module_matches(
@@ -528,6 +605,13 @@ async def _execute_agent_tool(
                 executable_categories.setdefault(cat, []).append(p)
                 desc = AGENT_PLUGIN_DESCRIPTIONS.get(full_p, "")
                 safe_args = _safe_plugin_arg_details(metadata)
+                if _normalize_plugin_token(full_p) in {
+                    _normalize_plugin_token(name)
+                    for name in AGENT_HEAVY_PLUGINS
+                }:
+                    for arg in safe_args:
+                        if arg["name"] in {"pid", "pids"}:
+                            arg["required"] = True
                 required_args = [
                     arg["name"] for arg in safe_args if arg["required"]
                 ]
@@ -600,17 +684,79 @@ async def _execute_agent_tool(
             plugin_metadata,
             injected_args,
         )
+        _apply_agent_argument_compatibility(plugin_name, kwargs, tool_args)
         pid = kwargs.get("pid")
 
-        # Reject heavy memory-scanner plugins called without a pid —
-        # they will stall scanning every process and hit the timeout.
+        # Heavy scanners need a PID filter.  Instead of returning a dead-end
+        # error, automatically enumerate processes and give the agent concrete
+        # candidates so it can select and immediately retry by itself.
         short = plugin_name.split(".", 1)[1] if "." in plugin_name else plugin_name
-        if plugin_name in AGENT_HEAVY_PLUGINS and pid is None:
-            raise ValueError(
-                f"插件 {short} 是全量内存扫描类插件，不带 pid 参数会扫描所有进程导致超时。"
-                f"请先通过 pslist/psscan 获取进程列表，分析出可疑 PID 后，"
-                f"再调用 run_plugin(plugin_name=\"{short}\", pid=<可疑PID>)。"
+        heavy_names = {
+            _normalize_plugin_token(name)
+            for name in AGENT_HEAVY_PLUGINS
+        }
+        if _normalize_plugin_token(plugin_name) in heavy_names and pid is None:
+            discovery_error = ""
+            discovery_plugin = ""
+            discovery_columns: list[str] = []
+            discovery_rows: list = []
+            pid_candidates: list[dict[str, Any]] = []
+            for process_plugin in ("pslist.PsList", "psscan.PsScan"):
+                try:
+                    discovery_plugin, _, _ = _resolve_agent_plugin_name(
+                        process_plugin,
+                        installed_plugins,
+                        os_family,
+                    )
+
+                    def _discover(name=discovery_plugin) -> tuple:
+                        return mgr.run_plugin(engine_id, name)
+
+                    discovery_columns, discovery_rows = await loop.run_in_executor(
+                        None,
+                        _discover,
+                    )
+                    pid_candidates = _agent_pid_candidates(
+                        discovery_columns,
+                        discovery_rows,
+                    )
+                    if pid_candidates:
+                        break
+                except Exception as exc:
+                    discovery_error = str(exc)
+
+            if not pid_candidates:
+                raise ValueError(
+                    f"插件 {short} 需要 pid，且自动枚举进程未获得候选 PID。"
+                    + (f"枚举错误: {discovery_error}" if discovery_error else "")
+                )
+
+            candidate_text = ", ".join(
+                (
+                    f"{item['pid']}({item.get('name') or '?'})"
+                    if item.get("name")
+                    else str(item["pid"])
+                )
+                for item in pid_candidates[:50]
             )
+            return {
+                "status": "pid_required",
+                "plugin": plugin_name,
+                "requested_plugin": str(tool_args.get("plugin_name") or ""),
+                "discovery_plugin": discovery_plugin,
+                "pid_candidates": pid_candidates,
+                "candidate_count": len(pid_candidates),
+                "retry_arguments": {
+                    "plugin_name": short,
+                    "args": kwargs,
+                },
+                "summary": (
+                    f"插件 {short} 必须按 PID 扫描。系统已自动通过 "
+                    f"{discovery_plugin} 枚举 {len(pid_candidates)} 个候选进程："
+                    f"{candidate_text}。AI 必须自行选择相关 PID，并立即使用 "
+                    "pid=<PID> 或 pids=[...] 重试原插件，不要停止或询问用户。"
+                ),
+            }
 
         def _run() -> tuple:
             return mgr.run_plugin(engine_id, plugin_name, **kwargs)
@@ -628,6 +774,7 @@ async def _execute_agent_tool(
             "plugin": plugin_name,
             "requested_plugin": requested_plugin,
             "resolution": resolution,
+            "arguments": kwargs,
             "columns": columns,
             "rows": preview,
             "total": total,
@@ -642,8 +789,8 @@ async def _execute_agent_tool(
 
     # ── dump_process ──────────────────────────────────────────────
     if tool_name == "dump_process":
-        if os_family != "windows":
-            raise ValueError("dump_process currently supports Windows memory images only.")
+        if os_family not in {"linux", "windows"}:
+            raise ValueError(f"dump_process does not support {os_family} memory images.")
 
         raw_name = str(tool_args.get("process_name") or "").strip()
         raw_pid = tool_args.get("pid")
@@ -668,38 +815,47 @@ async def _execute_agent_tool(
         matches: list[dict[str, Any]] = []
         discovery_plugin = ""
         if raw_pid is not None:
-            try:
-                matches = [{"pid": int(raw_pid), "name": raw_name or str(raw_pid)}]
-            except (TypeError, ValueError):
+            parsed_pid = _parse_int_value(raw_pid)
+            if parsed_pid is None:
                 raise ValueError("pid must be an integer")
+            matches = [{"pid": parsed_pid, "name": raw_name or str(parsed_pid)}]
         else:
+            pslist_plugin = f"{os_family}.pslist.PsList"
+
             def _run_pslist() -> tuple:
-                return mgr.run_plugin(engine_id, "windows.pslist.PsList")
+                return mgr.run_plugin(engine_id, pslist_plugin)
 
             columns, rows = await loop.run_in_executor(None, _run_pslist)
-            discovery_plugin = "windows.pslist.PsList"
+            discovery_plugin = pslist_plugin
             matches = _extract_process_matches(columns, rows, raw_name, max_matches)
 
             if not matches:
+                psscan_plugin = f"{os_family}.psscan.PsScan"
+
                 def _run_psscan() -> tuple:
-                    return mgr.run_plugin(engine_id, "windows.psscan.PsScan")
+                    return mgr.run_plugin(engine_id, psscan_plugin)
 
                 columns, rows = await loop.run_in_executor(None, _run_psscan)
-                discovery_plugin = "windows.psscan.PsScan"
+                discovery_plugin = psscan_plugin
                 matches = _extract_process_matches(columns, rows, raw_name, max_matches)
 
         if not matches:
-            raise ValueError(f"No Windows process matched: {raw_name}")
+            raise ValueError(f"No {os_family} process matched: {raw_name}")
 
         before = _file_snapshot(dump_dir)
         dump_results: list[dict[str, Any]] = []
+        dump_plugin = (
+            "windows.memmap.Memmap"
+            if os_family == "windows"
+            else "linux.pslist.PsList"
+        )
         for match in matches:
             pid = int(match["pid"])
 
             def _dump_one(pid=pid) -> tuple:
                 return mgr.run_plugin(
                     engine_id,
-                    "windows.memmap.Memmap",
+                    dump_plugin,
                     pid=pid,
                     dump=True,
                     dump_dir=str(dump_dir),
@@ -708,7 +864,7 @@ async def _execute_agent_tool(
 
             columns, rows = await loop.run_in_executor(None, _dump_one)
             dump_results.append({
-                "plugin": "windows.memmap.Memmap",
+                "plugin": dump_plugin,
                 "pid": pid,
                 "process_name": match.get("name", ""),
                 "columns": columns,
@@ -721,7 +877,7 @@ async def _execute_agent_tool(
             "target": raw_name,
             "discovery_plugin": discovery_plugin,
             "matches": matches,
-            "dump_plugin": "windows.memmap.Memmap",
+            "dump_plugin": dump_plugin,
             "dump_dir": str(dump_dir),
             "files": new_files,
             "summary": (

@@ -62,7 +62,7 @@ _MODEL_TOKEN_LIMITS = {
 # ── Agent tool definitions (OpenAI function calling) ──────────────
 
 # Maximum tool-calling rounds per user message to prevent infinite loops.
-_MAX_TOOL_ROUNDS = 5
+_MAX_TOOL_ROUNDS = 8
 
 # The executable catalogue is discovered from the installed Volatility build at
 # runtime.  Only file-writing plugins are denied here; maintaining a static
@@ -172,6 +172,8 @@ _AGENT_TOOLS: list[dict] = [
                 "重要：malfind、vadinfo、proc.Maps、VmaRegExScan 等内存扫描类插件必须传 pid 参数，"
                 "否则会全量扫描所有进程导致超时卡死。"
                 "正确流程：先跑 pslist/psscan 找可疑 PID → 再用 malfind/vadinfo pid=可疑PID 深入分析。"
+                "如果返回 status=pid_required，系统已经自动枚举 PID；"
+                "你必须自行选择 pid_candidates 并立即重试。"
             ),
             "parameters": {
                 "type": "object",
@@ -183,6 +185,11 @@ _AGENT_TOOLS: list[dict] = [
                     "pid": {
                         "type": "integer",
                         "description": "可选，目标进程 PID",
+                    },
+                    "pids": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "可选，批量目标进程 PID；内存扫描插件可一次传多个 PID",
                     },
                     "args": {
                         "type": "object",
@@ -217,10 +224,11 @@ _AGENT_TOOLS: list[dict] = [
         "function": {
             "name": "dump_process",
             "description": (
-                "自动 dump Windows 目标进程的进程内存。"
+                "自动按进程名或 PID dump Linux/Windows 目标进程。"
                 "当用户要求 dump 某个进程名或 PID 的内存时使用这个工具；"
-                "工具会自动枚举进程、匹配 PID，并调用 windows.memmap.Memmap dump=True 写出文件。"
-                "不要让用户手动运行 memmap。"
+                "工具会自动枚举进程并匹配 PID；Windows 使用 Memmap 导出进程内存，"
+                "Linux 使用 PsList 导出进程主 ELF 可执行映像。"
+                "不要让用户手动运行底层 dump 插件。"
             ),
             "parameters": {
                 "type": "object",
@@ -1236,6 +1244,8 @@ class AiService:
                     "除非用户要求教学解释，否则不要输出通用安全科普或与证据无关的长篇背景。"
                     "插件命名以 list_plugins 对当前运行环境返回的 plugin_name 为准；"
                     "调用 run_plugin 时必须原样复制该名称，不要凭记忆生成名称。"
+                    "如果工具返回 status=pid_required，必须从 pid_candidates 中自行选择相关或可疑 PID，"
+                    "立即使用 pid 或 pids 重试原插件，不要停下，也不要要求用户代为选择。"
                 ),
             },
         ]
@@ -1427,6 +1437,7 @@ class AiService:
         # ── Tool-calling loop ──────────────────────────────────────
         tool_round = 0
         all_tool_calls_made: list[dict[str, Any]] = []
+        pending_pid_retries: list[dict[str, Any]] = []
 
         try:
             while tool_round < (_MAX_TOOL_ROUNDS if agent_mode else 1):
@@ -1504,6 +1515,42 @@ class AiService:
                 # ── No tool calls → final text response ────────────
                 if not tool_call_acc:
                     assistant_text = "".join(content_parts)
+                    if pending_pid_retries and agent_mode:
+                        if tool_round < _MAX_TOOL_ROUNDS:
+                            if assistant_text.strip():
+                                messages.append({
+                                    "role": "assistant",
+                                    "content": assistant_text,
+                                })
+                            messages.append({
+                                "role": "system",
+                                "content": (
+                                    "以下按 PID 的原始扫描仍未执行："
+                                    f"{json.dumps(pending_pid_retries, ensure_ascii=False)}。"
+                                    "你不能以文字说明代替重试。请立即从上一条工具结果的 "
+                                    "pid_candidates 中自行选择相关 PID，使用 pid 或 pids "
+                                    "逐项再次调用 run_plugin；不要遗漏、停止或询问用户。"
+                                ),
+                            })
+                            continue
+                        break
+                    if not assistant_text.strip() and agent_mode and all_tool_calls_made:
+                        if tool_round < _MAX_TOOL_ROUNDS:
+                            messages.append({
+                                "role": "system",
+                                "content": (
+                                    "上一轮工具返回后你没有输出内容。不得静默停止。"
+                                    "如果结果包含 status=pid_required，请从 pid_candidates "
+                                    "中自行选择相关 PID，并立即用 pid 或 pids 重试原插件；"
+                                    "如果工具报错，请修正插件名称或参数后重试；"
+                                    "如果证据已经足够，则立即给出完整取证结论。"
+                                ),
+                            })
+                            continue
+                        break
+                    if not assistant_text.strip():
+                        assistant_text = "模型未生成有效回复，请重试或检查当前模型的工具调用兼容性。"
+                        yield {"type": "chunk", "content": assistant_text}
                     self.append_history(conversation_id, {"role": "user", "content": user_message})
                     self.append_history(conversation_id, {"role": "assistant", "content": assistant_text})
                     if self._ai_memory_enabled:
@@ -1553,6 +1600,31 @@ class AiService:
 
                     try:
                         result = await tool_executor(tool_name, tool_args, engine_id)
+                        if isinstance(result, dict):
+                            if result.get("status") == "pid_required":
+                                pending_pid_retries.append({
+                                    "plugin": result.get("plugin"),
+                                    "retry_arguments": result.get("retry_arguments") or {},
+                                })
+                            elif pending_pid_retries and result.get("plugin"):
+                                actual_args = result.get("arguments") or {}
+                                matched_index = None
+                                for index, pending in enumerate(pending_pid_retries):
+                                    expected_args = (
+                                        pending.get("retry_arguments", {}).get("args", {})
+                                    )
+                                    same_arguments = all(
+                                        actual_args.get(key) == value
+                                        for key, value in expected_args.items()
+                                    )
+                                    if (
+                                        result.get("plugin") == pending.get("plugin")
+                                        and same_arguments
+                                    ):
+                                        matched_index = index
+                                        break
+                                if matched_index is not None:
+                                    pending_pid_retries.pop(matched_index)
                         result_text = json.dumps(result, ensure_ascii=False)
                         yield {
                             "type": "tool_result",
@@ -1624,7 +1696,10 @@ class AiService:
                     final_parts.append(final_tail)
                     yield {"type": "chunk", "content": final_tail}
 
-                assistant_text = "".join(final_parts) or "分析完成，但模型未生成结论。请重新提问或指定更具体的问题。"
+                assistant_text = "".join(final_parts)
+                if not assistant_text.strip():
+                    assistant_text = "分析完成，但模型未生成结论。请重新提问或指定更具体的问题。"
+                    yield {"type": "chunk", "content": assistant_text}
                 self.append_history(conversation_id, {"role": "user", "content": user_message})
                 self.append_history(conversation_id, {"role": "assistant", "content": assistant_text})
                 if self._ai_memory_enabled:

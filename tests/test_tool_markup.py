@@ -120,3 +120,111 @@ def test_chat_stream_executes_textual_dsml_calls_instead_of_displaying_them():
     assert [event["type"] for event in events].count("tool_call") == 2
     assert [event["type"] for event in events].count("tool_result") == 2
     assert completions.call_count == 2
+
+
+def test_chat_stream_forces_pid_retry_when_model_stops_after_tool_result():
+    initial_call = """开始扫描。
+<｜｜DSML｜｜tool_calls>
+<｜｜DSML｜｜invoke name="run_plugin">
+<｜｜DSML｜｜parameter name="plugin_name" string="true">vmaregexscan.VmaRegExScan</｜｜DSML｜｜parameter>
+<｜｜DSML｜｜parameter name="args" string="false">{"pattern":"wget|curl"}</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+<｜｜DSML｜｜invoke name="run_plugin">
+<｜｜DSML｜｜parameter name="plugin_name" string="true">vmaregexscan.VmaRegExScan</｜｜DSML｜｜parameter>
+<｜｜DSML｜｜parameter name="args" string="false">{"pattern":"zero\\\\.log"}</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+</｜｜DSML｜｜tool_calls>"""
+    retry_call = """改用可疑 PID。
+<｜｜DSML｜｜tool_calls>
+<｜｜DSML｜｜invoke name="run_plugin">
+<｜｜DSML｜｜parameter name="plugin_name" string="true">vmaregexscan.VmaRegExScan</｜｜DSML｜｜parameter>
+<｜｜DSML｜｜parameter name="pid" string="false">343</｜｜DSML｜｜parameter>
+<｜｜DSML｜｜parameter name="args" string="false">{"pattern":"wget|curl"}</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+<｜｜DSML｜｜invoke name="run_plugin">
+<｜｜DSML｜｜parameter name="plugin_name" string="true">vmaregexscan.VmaRegExScan</｜｜DSML｜｜parameter>
+<｜｜DSML｜｜parameter name="pid" string="false">343</｜｜DSML｜｜parameter>
+<｜｜DSML｜｜parameter name="args" string="false">{"pattern":"zero\\\\.log"}</｜｜DSML｜｜parameter>
+</｜｜DSML｜｜invoke>
+</｜｜DSML｜｜tool_calls>"""
+
+    class FakeCompletions:
+        def __init__(self):
+            self.call_count = 0
+            self.requests = []
+
+        async def create(self, **kwargs):
+            self.call_count += 1
+            self.requests.append(kwargs)
+            responses = [
+                initial_call,
+                "需要先选择一个 PID。",
+                retry_call,
+                "已选择可疑 PID 并继续完成分析。",
+            ]
+            text = responses[self.call_count - 1]
+
+            async def chunks():
+                for offset in range(0, len(text), 11):
+                    delta = SimpleNamespace(
+                        content=text[offset:offset + 11],
+                        tool_calls=None,
+                    )
+                    yield SimpleNamespace(choices=[SimpleNamespace(delta=delta)])
+
+            return chunks()
+
+    completions = FakeCompletions()
+    fake_client = SimpleNamespace(
+        chat=SimpleNamespace(completions=completions),
+    )
+    service = object.__new__(AiService)
+    service._history = {}
+    service._ai_temperature = 0.1
+    service._ai_max_history = 12
+    service._ai_memory_enabled = False
+    service._resolve_config = lambda: ("https://example.invalid", "key", "model")
+    service._get_openai_client = lambda *_args: fake_client
+    service._resolve_max_tokens = lambda _model: 4096
+    service._build_messages = lambda *_args, **_kwargs: [
+        {"role": "user", "content": "调查"}
+    ]
+
+    async def execute(_tool_name, arguments, _engine_id):
+        pattern = arguments.get("args", {}).get("pattern")
+        if arguments.get("pid") == 343:
+            return {
+                "plugin": "linux.vmaregexscan.VmaRegExScan",
+                "arguments": {"pid": 343, "pattern": pattern},
+                "summary": "PID 343 扫描完成",
+            }
+        return {
+            "status": "pid_required",
+            "plugin": "linux.vmaregexscan.VmaRegExScan",
+            "pid_candidates": [{"pid": 343, "name": "psimon"}],
+            "retry_arguments": {
+                "plugin_name": "vmaregexscan.VmaRegExScan",
+                "args": {"pattern": pattern},
+            },
+            "summary": "请选择 PID 后重试",
+        }
+
+    async def collect_events():
+        return [
+            event
+            async for event in service.chat_stream(
+                "调查",
+                tool_executor=execute,
+                engine_id="vol3",
+            )
+        ]
+
+    events = asyncio.run(collect_events())
+    visible_text = "".join(
+        event["content"] for event in events if event["type"] == "chunk"
+    )
+
+    assert completions.call_count == 4
+    assert [event["type"] for event in events].count("tool_call") == 4
+    assert visible_text.endswith("已选择可疑 PID 并继续完成分析。")
+    assert "不能以文字说明代替重试" in str(completions.requests[2]["messages"])
