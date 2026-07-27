@@ -36,7 +36,7 @@ Response:
 
 加载内存镜像。
 
-对 `engine=vol3`，默认还会流式扫描镜像中的 `Linux version` banner，并在远程 ISF 索引中找到同 kernel release 时立即下载匹配符号表。该步骤完成后接口才返回；扫描或下载失败不会使镜像加载失败，结果放在可选的 `symbol_download` 字段中。
+该接口只负责加载镜像并立即返回。Web 前端在成功响应后先记录“镜像已加载”，再调用下方的流式符号准备接口，因此镜像加载和符号下载具有独立的时间和进度状态。
 
 Request:
 
@@ -47,29 +47,28 @@ Request:
 }
 ```
 
-Response（Linux banner 且成功下载时示例）：
+Response：
 
 ```json
 {
   "ok": true,
   "path": "/path/to/memory.raw",
-  "engine": "vol3",
-  "symbol_download": {
-    "enabled": true,
-    "status": "downloaded",
-    "kernel": {
-      "release": "5.15.0-91-generic",
-      "distro": "ubuntu",
-      "architecture": "x86_64"
-    },
-    "downloaded": [{"path": "Ubuntu/...json.xz"}],
-    "skipped": [],
-    "failed": []
-  }
+  "engine": "vol3"
 }
 ```
 
-常见 `symbol_download.status`：`downloaded`、`present`、`partial`、`not_detected`、`scan_limit_reached`、`no_match`、`ambiguous`、`remote_unavailable`、`scan_failed`、`download_failed`。可通过 `zero/config.py` 的 `AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD` 关闭该行为。
+### POST `/api/image/symbols/auto`
+
+在镜像加载成功后，流式扫描 `Linux version` banner、匹配远程 ISF 并下载符号表。响应类型为 `application/x-ndjson`，每行是一个独立事件：
+
+```json
+{"type":"progress","data":{"stage":"downloading","percent":42.5,"downloaded_bytes":4456448,"total_bytes":10485760,"completed_files":0,"total_files":1}}
+{"type":"result","data":{"enabled":true,"status":"downloaded","kernel":{"release":"5.15.0-91-generic"},"downloaded":[{"path":"Ubuntu/...json.xz"}]}}
+```
+
+`stage` 依次为 `detecting`、`matching`、`downloading`。远端未提供 `Content-Length` 时，`percent` 和 `total_bytes` 为 `null`，前端显示不定进度圆环。
+
+常见结果 `status`：`downloaded`、`present`、`partial`、`not_detected`、`scan_limit_reached`、`no_match`、`ambiguous`、`remote_unavailable`、`scan_failed`、`download_failed`。可通过 `zero/config.py` 的 `AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD` 关闭该行为。
 
 ### GET `/api/image/status?engine=vol3`
 

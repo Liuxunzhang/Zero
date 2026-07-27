@@ -42,9 +42,35 @@
           </div>
           <button
             class="topbar-load-btn"
-            :disabled="!localImagePath || store.pluginBusy || store.imageLoadBusy"
+            :disabled="!localImagePath || store.pluginBusy || store.imageLoadBusy || store.symbolDownloadBusy"
             @click="doLoadImage"
           >{{ store.imageLoadBusy ? '加载中...' : '加载' }}</button>
+          <div
+            v-if="store.symbolDownloadBusy"
+            class="symbol-download-progress"
+            :title="symbolDownloadTitle"
+            role="status"
+            :aria-label="symbolDownloadTitle"
+          >
+            <svg
+              class="symbol-progress-ring"
+              :class="{ indeterminate: store.symbolDownloadProgress == null }"
+              viewBox="0 0 24 24"
+              aria-hidden="true"
+            >
+              <circle class="symbol-progress-track" cx="12" cy="12" r="9" />
+              <circle
+                class="symbol-progress-value"
+                cx="12"
+                cy="12"
+                r="9"
+                :style="{ strokeDashoffset: symbolProgressOffset }"
+              />
+            </svg>
+            <span v-if="store.symbolDownloadProgress != null" class="symbol-progress-text">
+              {{ Math.round(store.symbolDownloadProgress) }}%
+            </span>
+          </div>
         </div>
         <div class="topbar-runtime-title">
           <span class="topbar-system-name">{{ systemDisplayName }}</span>
@@ -460,6 +486,18 @@ const themeIcon = computed(() => themeIcons[currentTheme.value])
 const logErrorCount = computed(
   () => store.messages.filter((message) => message.severity === 'error').length,
 )
+const symbolProgressOffset = computed(() => {
+  const progress = Math.min(100, Math.max(0, Number(store.symbolDownloadProgress) || 0))
+  return 56.55 * (1 - progress / 100)
+})
+const symbolDownloadTitle = computed(() => {
+  if (store.symbolDownloadStage === 'detecting') return '正在识别 Linux 内核'
+  if (store.symbolDownloadStage === 'matching') return '正在匹配内核符号表'
+  if (store.symbolDownloadProgress != null) {
+    return `正在下载符号表：${Math.round(store.symbolDownloadProgress)}%`
+  }
+  return '正在下载符号表'
+})
 const activeEngine = computed(() => {
   return store.availableEngines.find(engine => engine.engine_id === store.selectedEngine)
 })
@@ -653,6 +691,64 @@ onBeforeUnmount(() => {
 
 .topbar-log-btn {
   position: relative;
+}
+
+.symbol-download-progress {
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  color: var(--accent-bright);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.symbol-progress-ring {
+  width: 22px;
+  height: 22px;
+  overflow: visible;
+  transform: rotate(-90deg);
+}
+
+.symbol-progress-track,
+.symbol-progress-value {
+  fill: none;
+  stroke-width: 2.5;
+}
+
+.symbol-progress-track {
+  stroke: var(--border);
+}
+
+.symbol-progress-value {
+  stroke: var(--accent-bright);
+  stroke-linecap: round;
+  stroke-dasharray: 56.55;
+  transition: stroke-dashoffset 180ms ease;
+}
+
+.symbol-progress-ring.indeterminate {
+  animation: symbol-ring-spin 900ms linear infinite;
+}
+
+.symbol-progress-ring.indeterminate .symbol-progress-value {
+  stroke-dasharray: 15 41.55;
+  stroke-dashoffset: 0 !important;
+}
+
+.symbol-progress-text {
+  min-width: 25px;
+}
+
+@keyframes symbol-ring-spin {
+  to { transform: rotate(270deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .symbol-progress-ring.indeterminate {
+    animation-duration: 1.8s;
+  }
 }
 
 .topbar-log-error-badge {

@@ -5,6 +5,7 @@ import { defineStore } from "pinia"
 import { ref, computed, reactive, markRaw } from "vue"
 import {
   loadImage as apiLoadImage,
+  autoDownloadImageSymbols,
   getImageStatus,
   getPlugins,
   getPluginArgs as apiGetPluginArgs,
@@ -90,9 +91,23 @@ export const useAppStore = defineStore("app", () => {
   const initBusy = ref(true)
   const backendReady = ref(false)
   const initError = ref("")
+  const symbolDownloadBusy = ref(false)
+  const symbolDownloadProgress = ref(null)
+  const symbolDownloadStage = ref("")
+  let lastMessageTimestamp = 0
 
   function pushMessage(text, severity = "info") {
-    const ts = new Date().toLocaleTimeString("zh-CN", { hour12: false })
+    // Preserve a visible chronological order even when several state changes
+    // finish inside the same millisecond.
+    const timestamp = Math.max(Date.now(), lastMessageTimestamp + 1)
+    lastMessageTimestamp = timestamp
+    const ts = new Date(timestamp).toLocaleTimeString("zh-CN", {
+      hour12: false,
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      fractionalSecondDigits: 3,
+    })
     messages.value.push({ text, severity, ts })
     if (messages.value.length > maxMessages)
       messages.value.splice(0, messages.value.length - maxMessages)
@@ -143,9 +158,15 @@ export const useAppStore = defineStore("app", () => {
 
   function requireImageLoaded(actionLabel = "运行插件", engineId = selectedEngine.value) {
     const st = engineStates[engineId]
-    if (st?.imageLoaded) return true
-    pushMessage("[" + engineId + "] 请先加载内存镜像后再" + actionLabel, "warning")
-    return false
+    if (!st?.imageLoaded) {
+      pushMessage("[" + engineId + "] 请先加载内存镜像后再" + actionLabel, "warning")
+      return false
+    }
+    if (engineId === "vol3" && symbolDownloadBusy.value) {
+      pushMessage("[" + engineId + "] 符号表仍在准备，请等待下载完成后再" + actionLabel, "warning")
+      return false
+    }
+    return true
   }
 
   const _sockets = {}
@@ -168,13 +189,49 @@ export const useAppStore = defineStore("app", () => {
 
   const imageLoadBusy = ref(false)
 
+  async function prepareImageSymbols(path, engineId) {
+    if (engineId !== "vol3") return
+    symbolDownloadBusy.value = true
+    symbolDownloadProgress.value = null
+    symbolDownloadStage.value = "detecting"
+    let downloadAnnounced = false
+    try {
+      const result = await autoDownloadImageSymbols(path, (event) => {
+        symbolDownloadStage.value = event.stage || ""
+        const numericProgress = Number(event.percent)
+        symbolDownloadProgress.value = event.percent != null && Number.isFinite(numericProgress)
+          ? Math.min(100, Math.max(0, numericProgress))
+          : null
+        if (event.stage === "downloading" && !downloadAnnounced) {
+          downloadAnnounced = true
+          const totalFiles = Math.max(1, Number(event.total_files) || 1)
+          pushMessage(
+            "[" + engineId + "] 开始下载 " + totalFiles + " 个匹配符号表",
+            "info",
+          )
+        }
+      })
+      pushAutoSymbolMessage(result, engineId)
+    } catch (e) {
+      pushMessage(
+        "[" + engineId + "] 符号表自动下载未完成: " + e.message,
+        "warning",
+      )
+    } finally {
+      symbolDownloadBusy.value = false
+      symbolDownloadProgress.value = null
+      symbolDownloadStage.value = ""
+    }
+  }
+
   async function loadImage(path) {
-    if (imageLoadBusy.value) return
+    if (imageLoadBusy.value || symbolDownloadBusy.value) return
     const engineId = selectedEngine.value
     const st = engineStates[engineId]
+    let loadedPath = ""
     imageLoadBusy.value = true
     try {
-      const loadResult = await apiLoadImage(path, engineId)
+      await apiLoadImage(path, engineId)
       st.imagePath = path
       st.imageLoaded = true
       // Canonicalize to the backend's resolved absolute path so consumers
@@ -190,11 +247,14 @@ export const useAppStore = defineStore("app", () => {
       st.pluginBusy = false
       await fetchEngineSettings(engineId)
       pushMessage("[" + engineId + "] 镜像已加载: " + path, "success")
-      pushAutoSymbolMessage(loadResult?.symbol_download, engineId)
+      loadedPath = st.imagePath || path
     } catch (e) {
       pushMessage("[" + engineId + "] 加载失败: " + e.message, "error")
     } finally {
       imageLoadBusy.value = false
+    }
+    if (loadedPath) {
+      await prepareImageSymbols(loadedPath, engineId)
     }
   }
 
@@ -673,7 +733,9 @@ export const useAppStore = defineStore("app", () => {
     filterText, sortColumn, sortDesc, profile,
     messages, progress, hasData, hasFilter, hasSort, visibleRows, pluginCount,
     initBusy, backendReady, initError,
-    loadImage, imageLoadBusy, fetchPlugins, fetchResults, runPlugin,
+    loadImage, imageLoadBusy,
+    symbolDownloadBusy, symbolDownloadProgress, symbolDownloadStage,
+    fetchPlugins, fetchResults, runPlugin,
     cancelRunningPlugin, doExport, doClearCache,
     toggleSort, resetSort, setFilter, goToPage, setPageSize,
     appendFilterCondition,

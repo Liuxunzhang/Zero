@@ -39,9 +39,9 @@
             </button>
           </div>
         </div>
-        <div class="statusbar-log-body">
+        <div ref="logBodyRef" class="statusbar-log-body">
           <div
-            v-for="(msg, i) in reversedMessages"
+            v-for="(msg, i) in logMessages"
             :key="`${msg.ts}-${i}`"
             class="statusbar-log-row"
             :class="`msg-${msg.severity}`"
@@ -130,7 +130,7 @@
 </template>
 
 <script setup>
-import { computed, ref, watch, onMounted, onUnmounted } from 'vue'
+import { computed, nextTick, ref, watch, onMounted, onUnmounted } from 'vue'
 import { useAppStore } from '../stores/app'
 import AppIcon from './AppIcon.vue'
 import { useEscClose } from '../composables/useEscClose'
@@ -141,6 +141,7 @@ const jumpPage = ref('')
 const showLog = ref(false)
 const cancelling = ref(false)
 const messagesRef = ref(null)
+const logBodyRef = ref(null)
 
 useEscClose(() => showLog.value, () => { showLog.value = false })
 
@@ -149,7 +150,7 @@ const lastMessage = computed(() => {
   return msgs.length ? msgs[msgs.length - 1] : null
 })
 
-const reversedMessages = computed(() => [...store.messages].reverse())
+const logMessages = computed(() => store.messages)
 
 const errorCount = computed(
   () => store.messages.filter((m) => m.severity === 'error').length,
@@ -164,6 +165,17 @@ const runningPluginName = computed(() => {
 watch(() => store.page, (p) => {
   jumpPage.value = String(p || 1)
 }, { immediate: true })
+
+watch(
+  [showLog, () => store.messages.length],
+  async ([visible]) => {
+    if (!visible) return
+    await nextTick()
+    if (logBodyRef.value) {
+      logBodyRef.value.scrollTop = logBodyRef.value.scrollHeight
+    }
+  },
+)
 
 function goJumpPage() {
   const target = Number(jumpPage.value)

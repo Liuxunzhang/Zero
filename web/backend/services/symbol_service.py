@@ -19,7 +19,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import requests
 
@@ -50,6 +50,7 @@ _AUTO_SCAN_DEFAULT_CHUNK_BYTES = 4 * 1024 * 1024
 # an arbitrary proxy URL, so the download endpoint cannot be used as an SSRF
 # primitive.
 _GH_PROXY_BASE = "https://gh-proxy.com/"
+_ProgressCallback = Optional[Callable[[dict[str, Any]], None]]
 
 # Remote symbol index sources (GitHub owner/name). First entry is the default.
 _DEFAULT_REPOS = (
@@ -218,6 +219,16 @@ def _config_int(name: str, default: int, *, minimum: int = 0) -> int:
         return default
 
 
+def _notify_progress(callback: _ProgressCallback, **event: Any) -> None:
+    """Publish best-effort progress without letting UI failures stop downloads."""
+    if callback is None:
+        return
+    try:
+        callback(event)
+    except Exception:
+        logger.debug("Symbol progress callback failed", exc_info=True)
+
+
 def _normalised_phrase(value: str) -> str:
     """Make separator changes in public ISF paths irrelevant to matching."""
     return re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
@@ -339,18 +350,28 @@ class SymbolService:
         result.update(extra)
         return result
 
-    def auto_download_for_image(self, image_path: str) -> dict:
+    def auto_download_for_image(
+        self,
+        image_path: str,
+        *,
+        progress_callback: _ProgressCallback = None,
+    ) -> dict:
         """Detect a Linux banner and fetch the best matching missing ISF files.
 
         This is intentionally non-fatal: an image is still usable when a
         banner is absent, a remote index is unavailable, or no exact release is
-        published.  It is called synchronously by ``POST /api/image/load`` so
-        that a successful response means a downloaded symbol is ready for the
-        first Volatility plugin run.
+        published. Progress events allow the Web UI to distinguish kernel
+        detection, candidate matching, and byte-level symbol downloading.
         """
         if not _config_bool("AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD", True):
             return self._auto_base_result(enabled=False, status="disabled")
 
+        _notify_progress(
+            progress_callback,
+            stage="detecting",
+            percent=None,
+            message="正在识别 Linux 内核",
+        )
         scan_limit = _config_int("AUTO_SYMBOL_SCAN_MAX_BYTES", 0)
         chunk_bytes = _config_int(
             "AUTO_SYMBOL_SCAN_CHUNK_BYTES",
@@ -381,6 +402,13 @@ class SymbolService:
             )
 
         kernel_payload = kernel.as_dict()
+        _notify_progress(
+            progress_callback,
+            stage="matching",
+            percent=None,
+            message=f"正在匹配内核 {kernel.release} 的符号表",
+            kernel=kernel_payload,
+        )
         max_candidates = min(
             50,
             _config_int("AUTO_SYMBOL_DOWNLOAD_MAX_CANDIDATES", 4, minimum=1),
@@ -427,7 +455,11 @@ class SymbolService:
                 continue
 
             try:
-                download = self.download_symbols(paths, repo=ref.full)
+                download = self.download_symbols(
+                    paths,
+                    repo=ref.full,
+                    progress_callback=progress_callback,
+                )
             except Exception as e:
                 logger.warning(
                     "Auto-download for Linux kernel %s from %s failed: %s",
@@ -937,6 +969,7 @@ class SymbolService:
         target: Path,
         *,
         use_gh_proxy: bool = False,
+        progress_callback: Optional[Callable[[int, Optional[int]], None]] = None,
     ) -> dict:
         """Stream one file to disk. Returns a result record for the caller to bucket."""
         url = self._symbol_download_url(
@@ -953,12 +986,21 @@ class SymbolService:
             with self._raw_session().get(url, timeout=120, stream=True) as resp:
                 resp.raise_for_status()
                 size = 0
+                content_length = resp.headers.get("content-length")
+                try:
+                    total_size = max(0, int(content_length)) if content_length else None
+                except (TypeError, ValueError):
+                    total_size = None
+                if progress_callback is not None:
+                    progress_callback(0, total_size)
                 target.parent.mkdir(parents=True, exist_ok=True)
                 with tmp.open("wb") as fh:
                     for chunk in resp.iter_content(chunk_size=_DOWNLOAD_CHUNK_BYTES):
                         if chunk:
                             fh.write(chunk)
                             size += len(chunk)
+                            if progress_callback is not None:
+                                progress_callback(size, total_size)
             tmp.replace(target)
             return {"bucket": "downloaded", "path": rel, "size": size, "repo": ref.full}
         except Exception as e:
@@ -972,6 +1014,7 @@ class SymbolService:
         repo: str = "",
         *,
         use_gh_proxy: bool = False,
+        progress_callback: _ProgressCallback = None,
     ) -> dict:
         """Download from GitHub raw directly or through the fixed gh-proxy endpoint."""
         use_gh_proxy = bool(use_gh_proxy)
@@ -1007,18 +1050,74 @@ class SymbolService:
             pending.append((rel, target))
 
         if pending:
+            progress_lock = threading.Lock()
+            file_progress = {
+                rel: {"downloaded": 0, "total": None, "complete": False}
+                for rel, _target in pending
+            }
+
+            def publish_download_progress(current_file: str = "") -> None:
+                with progress_lock:
+                    states = list(file_progress.values())
+                    completed_files = sum(1 for item in states if item["complete"])
+                    all_totals_known = all(item["total"] is not None for item in states)
+                    downloaded_bytes = sum(int(item["downloaded"] or 0) for item in states)
+                    total_bytes = (
+                        sum(int(item["total"] or 0) for item in states)
+                        if all_totals_known
+                        else None
+                    )
+                    if total_bytes:
+                        percent = min(100.0, downloaded_bytes * 100.0 / total_bytes)
+                    elif completed_files:
+                        percent = completed_files * 100.0 / len(states)
+                    else:
+                        percent = None
+                    event = {
+                        "stage": "downloading",
+                        "percent": round(percent, 1) if percent is not None else None,
+                        "message": f"正在下载 {len(states)} 个匹配符号表",
+                        "downloaded_bytes": downloaded_bytes,
+                        "total_bytes": total_bytes,
+                        "completed_files": completed_files,
+                        "total_files": len(states),
+                        "current_file": current_file,
+                    }
+                _notify_progress(progress_callback, **event)
+
+            def fetch_pending(item: tuple[str, Path]) -> dict:
+                rel, target = item
+
+                def on_bytes(downloaded_bytes: int, total_bytes: Optional[int]) -> None:
+                    with progress_lock:
+                        state = file_progress[rel]
+                        state["downloaded"] = downloaded_bytes
+                        state["total"] = total_bytes
+                    publish_download_progress(rel)
+
+                record = self._fetch_one_symbol(
+                    ref,
+                    branch,
+                    rel,
+                    target,
+                    use_gh_proxy=use_gh_proxy,
+                    progress_callback=on_bytes,
+                )
+                with progress_lock:
+                    state = file_progress[rel]
+                    state["complete"] = True
+                    if record.get("bucket") == "downloaded":
+                        size = int(record.get("size") or state["downloaded"] or 0)
+                        state["downloaded"] = size
+                        if state["total"] is None:
+                            state["total"] = size
+                publish_download_progress(rel)
+                return record
+
+            publish_download_progress()
             workers = min(_DOWNLOAD_WORKERS, len(pending))
             with ThreadPoolExecutor(max_workers=workers) as pool:
-                results = pool.map(
-                    lambda item: self._fetch_one_symbol(
-                        ref,
-                        branch,
-                        item[0],
-                        item[1],
-                        use_gh_proxy=use_gh_proxy,
-                    ),
-                    pending,
-                )
+                results = pool.map(fetch_pending, pending)
                 for record in results:
                     bucket = record.pop("bucket")
                     (downloaded if bucket == "downloaded" else failed).append(record)

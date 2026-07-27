@@ -145,8 +145,19 @@ def test_download_can_use_fixed_gh_proxy(service, monkeypatch):
     )
     calls = []
 
-    def fake_fetch(_ref, _branch, rel, target, *, use_gh_proxy=False):
+    def fake_fetch(
+        _ref,
+        _branch,
+        rel,
+        target,
+        *,
+        use_gh_proxy=False,
+        progress_callback=None,
+    ):
         calls.append((rel, use_gh_proxy))
+        if progress_callback:
+            progress_callback(1, 2)
+            progress_callback(2, 2)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"{}")
         return {"bucket": "downloaded", "path": rel, "size": 2, "repo": "owner/repo"}
@@ -182,21 +193,33 @@ def test_auto_download_uses_exact_detected_release(service, monkeypatch, tmp_pat
 
     fetched = []
 
-    def fake_fetch(_ref, _branch, rel, target, **_kwargs):
+    def fake_fetch(_ref, _branch, rel, target, **kwargs):
         fetched.append(rel)
+        progress_callback = kwargs.get("progress_callback")
+        if progress_callback:
+            progress_callback(1, 2)
+            progress_callback(2, 2)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"{}")
         return {"bucket": "downloaded", "path": rel, "size": 2, "repo": "owner/repo"}
 
     monkeypatch.setattr(service, "_fetch_one_symbol", fake_fetch)
 
-    out = service.auto_download_for_image(str(image))
+    progress_events = []
+    out = service.auto_download_for_image(
+        str(image),
+        progress_callback=progress_events.append,
+    )
 
     assert out["status"] == "downloaded"
     assert out["kernel"]["release"] == "5.15.0-91-generic"
     assert out["kernel"]["distro"] == "ubuntu"
     assert out["candidates"] == [symbol_path]
     assert fetched == [symbol_path]
+    assert [event["stage"] for event in progress_events[:2]] == ["detecting", "matching"]
+    download_events = [event for event in progress_events if event["stage"] == "downloading"]
+    assert download_events
+    assert download_events[-1]["percent"] == 100.0
 
 
 def test_auto_download_refuses_too_many_equally_good_candidates(service, monkeypatch, tmp_path):

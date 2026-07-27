@@ -79,6 +79,63 @@ export function loadImage(path, engine = 'vol3') {
   return api.post('/api/image/load', { path, engine }, { timeout: 0 })
 }
 
+/**
+ * Start automatic kernel-symbol preparation and consume its NDJSON progress
+ * stream. Native fetch is used because Axios resolves only after the complete
+ * response body has arrived in browsers.
+ */
+export async function autoDownloadImageSymbols(path, onProgress, options = {}) {
+  const response = await fetch('/api/image/symbols/auto', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...authHeaders(),
+    },
+    body: JSON.stringify({ path }),
+    signal: options.signal,
+  })
+  if (!response.ok) {
+    let detail = `HTTP ${response.status}`
+    try {
+      const payload = await response.json()
+      detail = payload?.detail || detail
+    } catch {
+      /* keep the status fallback */
+    }
+    throw new Error(detail)
+  }
+  if (!response.body) throw new Error('浏览器不支持流式符号下载进度')
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  let result = null
+
+  function consumeLine(line) {
+    if (!line.trim()) return
+    const event = JSON.parse(line)
+    if (event.type === 'progress') {
+      onProgress?.(event.data || {})
+    } else if (event.type === 'result') {
+      result = event.data || {}
+    } else if (event.type === 'error') {
+      throw new Error(event.data?.message || '自动下载符号表失败')
+    }
+  }
+
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done })
+    const lines = buffer.split('\n')
+    buffer = lines.pop() || ''
+    for (const line of lines) consumeLine(line)
+    if (done) break
+  }
+  if (buffer.trim()) consumeLine(buffer)
+  if (result == null) throw new Error('符号下载连接结束但未返回结果')
+  return result
+}
+
 export function getImageStatus(engine = 'vol3') {
   return api.get('/api/image/status', { params: { engine } })
 }

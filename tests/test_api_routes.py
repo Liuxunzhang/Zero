@@ -33,7 +33,7 @@ def test_load_image_missing_file_404(client, tmp_path):
     assert r.status_code == 404
 
 
-def test_load_image_returns_nonfatal_auto_symbol_status(client, tmp_path, monkeypatch):
+def test_load_image_returns_before_auto_symbol_download(client, tmp_path, monkeypatch):
     from web.backend.api import routes
 
     image = tmp_path / "memory.raw"
@@ -45,18 +45,50 @@ def test_load_image_returns_nonfatal_auto_symbol_status(client, tmp_path, monkey
             assert engine_id == "vol3"
             return True
 
-    class FakeSymbolService:
-        def auto_download_for_image(self, path):
-            assert path == str(image.resolve())
-            return {"enabled": True, "status": "not_detected"}
-
     monkeypatch.setattr(routes, "get_service", lambda: FakeEngineService())
-    monkeypatch.setattr(routes, "get_symbol_service", lambda: FakeSymbolService())
 
     r = client.post("/api/image/load", json={"path": str(image)})
 
     assert r.status_code == 200
-    assert r.json()["symbol_download"]["status"] == "not_detected"
+    assert r.json() == {"ok": True, "path": str(image), "engine": "vol3"}
+    assert "symbol_download" not in r.json()
+
+
+def test_auto_symbol_download_streams_progress_after_load(client, tmp_path, monkeypatch):
+    import json
+
+    from web.backend.api import routes
+
+    image = tmp_path / "memory.raw"
+    image.write_bytes(b"image")
+
+    class FakeSymbolService:
+        def auto_download_for_image(self, path, *, progress_callback=None):
+            assert path == str(image.resolve())
+            progress_callback(
+                {
+                    "stage": "downloading",
+                    "percent": 50.0,
+                    "completed_files": 0,
+                    "total_files": 1,
+                }
+            )
+            return {
+                "enabled": True,
+                "status": "downloaded",
+                "downloaded": [{"path": "Debian/kernel.json.xz"}],
+            }
+
+    monkeypatch.setattr(routes, "get_symbol_service", lambda: FakeSymbolService())
+
+    r = client.post("/api/image/symbols/auto", json={"path": str(image)})
+
+    assert r.status_code == 200
+    events = [json.loads(line) for line in r.text.splitlines()]
+    assert events[0]["type"] == "progress"
+    assert events[0]["data"]["percent"] == 50.0
+    assert events[1]["type"] == "result"
+    assert events[1]["data"]["status"] == "downloaded"
 
 
 def test_symbol_download_forwards_gh_proxy_choice(client, monkeypatch):

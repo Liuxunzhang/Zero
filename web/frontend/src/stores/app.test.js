@@ -4,6 +4,7 @@ import { setActivePinia, createPinia } from 'pinia'
 // The store imports many api functions at module load; stub them all.
 vi.mock('../api', () => ({
   loadImage: vi.fn(),
+  autoDownloadImageSymbols: vi.fn(),
   getImageStatus: vi.fn(),
   getPlugins: vi.fn(),
   getPluginArgs: vi.fn(),
@@ -24,10 +25,17 @@ vi.mock('../api', () => ({
   getEngineSettings: vi.fn(),
 }))
 
+import {
+  loadImage as apiLoadImage,
+  autoDownloadImageSymbols,
+  getImageStatus,
+  getEngineSettings,
+} from '../api'
 import { useAppStore } from './app'
 
 describe('app store pagination & filter logic', () => {
   beforeEach(() => {
+    vi.clearAllMocks()
     localStorage.clear()
     setActivePinia(createPinia())
   })
@@ -106,5 +114,36 @@ describe('app store pagination & filter logic', () => {
     expect(s.messages.length).toBe(2)
     s.clearMessages()
     expect(s.messages).toEqual([])
+  })
+
+  it('logs image loading before streamed symbol download progress', async () => {
+    apiLoadImage.mockResolvedValue({ ok: true })
+    getImageStatus.mockResolvedValue({ path: '/tmp/memory.raw' })
+    getEngineSettings.mockResolvedValue({ settings: {} })
+    autoDownloadImageSymbols.mockImplementation(async (_path, onProgress) => {
+      const loadLog = useAppStore().messages.find((message) => message.text.includes('镜像已加载'))
+      expect(loadLog).toBeTruthy()
+      onProgress({ stage: 'detecting', percent: null })
+      onProgress({ stage: 'downloading', percent: 42, total_files: 1 })
+      expect(useAppStore().symbolDownloadProgress).toBe(42)
+      return {
+        enabled: true,
+        status: 'downloaded',
+        kernel: { release: '6.12.90+deb13.1-amd64' },
+        downloaded: [{ path: 'Debian/kernel.json.xz' }],
+      }
+    })
+
+    const s = useAppStore()
+    await s.loadImage('/tmp/memory.raw')
+
+    expect(s.messages.map((message) => message.text)).toEqual([
+      '[vol3] 镜像已加载: /tmp/memory.raw',
+      '[vol3] 开始下载 1 个匹配符号表',
+      '[vol3] 检测到 Linux 内核 6.12.90+deb13.1-amd64，已自动下载 1 个匹配符号表',
+    ])
+    expect(new Set(s.messages.map((message) => message.ts)).size).toBe(3)
+    expect(s.symbolDownloadBusy).toBe(false)
+    expect(s.symbolDownloadProgress).toBe(null)
   })
 })

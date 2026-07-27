@@ -1,8 +1,12 @@
 """REST API routes for Zero Web."""
 
+import json
 import logging
+import queue
+import threading
 import time
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import Optional
 from pathlib import Path
@@ -36,6 +40,10 @@ _IMAGE_EXTENSIONS = {
 class ImageLoadRequest(BaseModel):
     path: str
     engine: str = "vol3"
+
+
+class ImageSymbolDownloadRequest(BaseModel):
+    path: str
 
 
 class PluginRunRequest(BaseModel):
@@ -134,12 +142,7 @@ def _image_path_allowed(resolved: Path) -> bool:
 
 @router.post("/image/load")
 def load_image(req: ImageLoadRequest):
-    """Load an image and, for Vol3, prepare matching Linux symbols when possible.
-
-    The banner scan and remote download use blocking file/network I/O.  Keeping
-    this endpoint synchronous makes FastAPI run it in its worker thread rather
-    than blocking the event loop and the plugin-progress WebSocket.
-    """
+    """Load an image without delaying the response for remote symbol downloads."""
     p = Path(req.path).expanduser().resolve()
     if p.suffix.lower() not in _IMAGE_EXTENSIONS:
         raise HTTPException(
@@ -157,20 +160,7 @@ def load_image(req: ImageLoadRequest):
         success = svc.load_image(req.path, engine_id=req.engine)
         if not success:
             raise HTTPException(400, "Failed to load image")
-        payload = {"ok": True, "path": req.path, "engine": req.engine}
-        if req.engine == "vol3":
-            # Missing banners, rate limits, and a failed remote download must
-            # never turn an otherwise valid image load into a 500 response.
-            try:
-                payload["symbol_download"] = get_symbol_service().auto_download_for_image(str(p))
-            except Exception as e:
-                logger.warning("Auto symbol download failed for %s: %s", p, e, exc_info=True)
-                payload["symbol_download"] = {
-                    "enabled": True,
-                    "status": "download_failed",
-                    "reason": str(e),
-                }
-        return payload
+        return {"ok": True, "path": req.path, "engine": req.engine}
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     except ValueError as e:
@@ -178,6 +168,63 @@ def load_image(req: ImageLoadRequest):
     except Exception:
         logger.exception("Unexpected error while loading image: %s", req.path)
         raise HTTPException(500, "Internal error while loading image")
+
+
+@router.post("/image/symbols/auto")
+def auto_download_image_symbols(req: ImageSymbolDownloadRequest):
+    """Stream kernel detection and symbol-download progress as NDJSON events."""
+    image_path = Path(req.path).expanduser().resolve()
+    if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
+        raise HTTPException(400, "Unsupported image file extension")
+    if not _image_path_allowed(image_path):
+        raise HTTPException(403, "Image path is outside ALLOW_IMAGE_PATHS whitelist")
+    if not image_path.is_file():
+        raise HTTPException(404, f"Image file not found: {image_path}")
+
+    events: queue.Queue[Optional[dict]] = queue.Queue()
+
+    def publish_progress(event: dict) -> None:
+        events.put({"type": "progress", "data": event})
+
+    def worker() -> None:
+        try:
+            result = get_symbol_service().auto_download_for_image(
+                str(image_path),
+                progress_callback=publish_progress,
+            )
+            events.put({"type": "result", "data": result})
+        except Exception as e:
+            logger.warning(
+                "Auto symbol download failed for %s: %s",
+                image_path,
+                e,
+                exc_info=True,
+            )
+            events.put({"type": "error", "data": {"message": str(e)}})
+        finally:
+            events.put(None)
+
+    threading.Thread(
+        target=worker,
+        name="zero-auto-symbol-download",
+        daemon=True,
+    ).start()
+
+    def stream_events():
+        while True:
+            event = events.get()
+            if event is None:
+                break
+            yield json.dumps(event, ensure_ascii=False) + "\n"
+
+    return StreamingResponse(
+        stream_events(),
+        media_type="application/x-ndjson",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.get("/image/status")

@@ -56,11 +56,11 @@
         </div>
 
         <div class="log-viewer-meta">
-          <span>按最新时间排序</span>
+          <span>按时间顺序排列</span>
           <span>当前显示 {{ filteredMessages.length }} / {{ store.messages.length }} 条</span>
         </div>
 
-        <div class="log-viewer-body">
+        <div ref="logBodyRef" class="log-viewer-body">
           <div
             v-for="entry in filteredMessages"
             :key="entry.key"
@@ -104,6 +104,7 @@ const store = useAppStore()
 const query = ref('')
 const severity = ref('all')
 const searchRef = ref(null)
+const logBodyRef = ref(null)
 
 const severityOptions = [
   { value: 'all', label: '全部' },
@@ -133,7 +134,6 @@ const filteredMessages = computed(() => {
       const label = severityLabel(level)
       return `${message.ts} ${level} ${label} ${message.text}`.toLowerCase().includes(needle)
     })
-    .reverse()
 })
 
 useEscClose(() => props.show, () => emit('close'))
@@ -142,7 +142,17 @@ watch(() => props.show, async (visible) => {
   if (!visible) return
   await nextTick()
   searchRef.value?.focus()
+  scrollToLatest()
 })
+
+watch(
+  [() => store.messages.length, severity, query],
+  async () => {
+    if (!props.show) return
+    await nextTick()
+    scrollToLatest()
+  },
+)
 
 function severityLabel(level) {
   return {
@@ -154,10 +164,15 @@ function severityLabel(level) {
 }
 
 function visibleLogsAsText() {
-  return [...filteredMessages.value]
-    .reverse()
+  return filteredMessages.value
     .map(({ message }) => `[${message.ts}] [${severityLabel(message.severity)}] ${message.text}`)
     .join('\n')
+}
+
+function scrollToLatest() {
+  if (logBodyRef.value) {
+    logBodyRef.value.scrollTop = logBodyRef.value.scrollHeight
+  }
 }
 
 async function copyVisibleLogs() {
