@@ -3,6 +3,8 @@ const DEFAULT_MAX_WIDTH = 360
 const CELL_HORIZONTAL_PADDING = 20
 const SORT_INDICATOR_WIDTH = 18
 const CHARACTER_WIDTH = 7.25
+const RESIZE_MIN_WIDTH = 48
+const RESIZE_MAX_WIDTH = 1200
 
 function isWideCharacter(codePoint) {
   return (
@@ -62,4 +64,14 @@ export function calculateColumnWidths(
 
     return Math.round(Math.min(maxWidth, Math.max(minWidth, width)))
   })
+}
+
+export function clampColumnWidth(
+  width,
+  minWidth = RESIZE_MIN_WIDTH,
+  maxWidth = RESIZE_MAX_WIDTH,
+) {
+  const numericWidth = Number(width)
+  if (!Number.isFinite(numericWidth)) return minWidth
+  return Math.round(Math.min(maxWidth, Math.max(minWidth, numericWidth)))
 }

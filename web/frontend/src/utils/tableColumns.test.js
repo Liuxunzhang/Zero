@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { calculateColumnWidths } from './tableColumns'
+import { calculateColumnWidths, clampColumnWidth } from './tableColumns'
 
 describe('calculateColumnWidths', () => {
   it('uses every result row so virtual scrolling cannot change the widths', () => {
@@ -31,5 +31,12 @@ describe('calculateColumnWidths', () => {
     const cjk = calculateColumnWidths(['Value'], [['取证分析']])[0]
 
     expect(cjk).toBeGreaterThan(latin)
+  })
+
+  it('clamps manually resized columns to usable limits', () => {
+    expect(clampColumnWidth(20)).toBe(48)
+    expect(clampColumnWidth(345.6)).toBe(346)
+    expect(clampColumnWidth(2000)).toBe(1200)
+    expect(clampColumnWidth(Number.NaN)).toBe(48)
   })
 })

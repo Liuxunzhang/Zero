@@ -56,15 +56,34 @@
       <thead>
         <tr>
           <th
-            v-for="col in store.columns"
+            v-for="(col, columnIndex) in store.columns"
             :key="col"
-            :class="{ sorted: store.sortColumn === col }"
+            :class="{
+              sorted: store.sortColumn === col,
+              'column-resizing': resizingColumnIndex === columnIndex,
+            }"
             @click="store.toggleSort(col)"
           >
             {{ col }}
             <span v-if="store.sortColumn === col" class="sort-arrow">
               <AppIcon :name="store.sortDesc ? 'chevron-down' : 'chevron-up'" :size="10" />
             </span>
+            <button
+              type="button"
+              class="column-resize-handle"
+              role="separator"
+              aria-orientation="vertical"
+              :aria-label="`调整 ${col} 列宽`"
+              :aria-valuemin="48"
+              :aria-valuemax="1200"
+              :aria-valuenow="columnWidths[columnIndex]"
+              title="拖动调整列宽，双击恢复自动宽度"
+              @click.stop
+              @dblclick.stop="resetColumnWidth(columnIndex)"
+              @pointerdown.stop.prevent="startColumnResize($event, columnIndex)"
+              @keydown.left.stop.prevent="resizeColumnBy(columnIndex, -10)"
+              @keydown.right.stop.prevent="resizeColumnBy(columnIndex, 10)"
+            ></button>
           </th>
         </tr>
       </thead>
@@ -142,7 +161,7 @@ import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useAppStore } from '../stores/app'
 import AppIcon from './AppIcon.vue'
 import { useFindingsStore } from '../stores/findings'
-import { calculateColumnWidths } from '../utils/tableColumns'
+import { calculateColumnWidths, clampColumnWidth } from '../utils/tableColumns'
 
 const store = useAppStore()
 const findings = useFindingsStore()
@@ -150,8 +169,68 @@ const containerRef = ref(null)
 
 const ROW_HEIGHT = 28
 const rowCount = computed(() => store.rows?.length || 0)
-const columnWidths = computed(() => calculateColumnWidths(store.columns, store.rows))
+const automaticColumnWidths = computed(() => calculateColumnWidths(store.columns, store.rows))
+const manualColumnWidths = ref([])
+const resizingColumnIndex = ref(-1)
+const columnWidths = computed(() => automaticColumnWidths.value.map(
+  (width, index) => manualColumnWidths.value[index] ?? width,
+))
 const tableWidth = computed(() => columnWidths.value.reduce((total, width) => total + width, 0))
+let resizeStartX = 0
+let resizeStartWidth = 0
+
+function setColumnWidth(columnIndex, width) {
+  const nextWidths = [...manualColumnWidths.value]
+  nextWidths[columnIndex] = clampColumnWidth(width)
+  manualColumnWidths.value = nextWidths
+}
+
+function resizeColumnBy(columnIndex, delta) {
+  setColumnWidth(columnIndex, columnWidths.value[columnIndex] + delta)
+}
+
+function onColumnResize(event) {
+  if (resizingColumnIndex.value < 0) return
+  setColumnWidth(
+    resizingColumnIndex.value,
+    resizeStartWidth + event.clientX - resizeStartX,
+  )
+}
+
+function stopColumnResize() {
+  window.removeEventListener('pointermove', onColumnResize)
+  window.removeEventListener('pointerup', stopColumnResize)
+  window.removeEventListener('pointercancel', stopColumnResize)
+  window.removeEventListener('blur', stopColumnResize)
+  document.body.classList.remove('table-column-resizing')
+  resizingColumnIndex.value = -1
+}
+
+function startColumnResize(event, columnIndex) {
+  stopColumnResize()
+  resizingColumnIndex.value = columnIndex
+  resizeStartX = event.clientX
+  resizeStartWidth = columnWidths.value[columnIndex]
+  document.body.classList.add('table-column-resizing')
+  window.addEventListener('pointermove', onColumnResize)
+  window.addEventListener('pointerup', stopColumnResize)
+  window.addEventListener('pointercancel', stopColumnResize)
+  window.addEventListener('blur', stopColumnResize)
+}
+
+function resetColumnWidth(columnIndex) {
+  const nextWidths = [...manualColumnWidths.value]
+  delete nextWidths[columnIndex]
+  manualColumnWidths.value = nextWidths
+}
+
+watch(
+  () => store.columns.join('\u0000'),
+  () => {
+    stopColumnResize()
+    manualColumnWidths.value = []
+  },
+)
 
 const rowVirtualizer = useVirtualizer(
   computed(() => ({
@@ -390,6 +469,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  stopColumnResize()
   window.removeEventListener('click', onWindowClick)
   window.removeEventListener('keydown', onWindowKeydown)
   clearInterval(hintTimer)
