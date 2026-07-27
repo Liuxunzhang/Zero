@@ -277,6 +277,31 @@ class VolatilityWrapper:
         """Run a Volatility plugin in a child process and report via queue."""
         plugin_kwargs = plugin_kwargs or {}
 
+        # Volatility can spend minutes in CPU/disk-heavy phases without invoking
+        # its framework progress callback. A lightweight heartbeat distinguishes
+        # that legitimate silent work from a worker that is truly unresponsive.
+        heartbeat_seconds = max(
+            1.0,
+            float(getattr(config, "WORKER_HEARTBEAT_SECONDS", 15.0)),
+        )
+        stall_seconds = float(getattr(config, "PLUGIN_STALL_TIMEOUT_SECONDS", 120))
+        if stall_seconds > 0:
+            heartbeat_seconds = min(heartbeat_seconds, max(1.0, stall_seconds / 3))
+
+        def emit_heartbeat() -> None:
+            while True:
+                time.sleep(heartbeat_seconds)
+                try:
+                    out_queue.put(("heartbeat", None))
+                except Exception:
+                    return
+
+        threading.Thread(
+            target=emit_heartbeat,
+            name="zero-vol3-heartbeat",
+            daemon=True,
+        ).start()
+
         try:
             import volatility3.plugins
             import volatility3.symbols
@@ -849,9 +874,15 @@ class VolatilityWrapper:
                 self._terminate_worker_process(force=True)
                 raise ValueError(f"插件执行超时（>{self.plugin_timeout_seconds}s），已自动中断。")
 
-            if now - last_activity_at > self.stall_timeout_seconds:
+            if (
+                self.stall_timeout_seconds > 0
+                and now - last_activity_at > self.stall_timeout_seconds
+            ):
                 self._terminate_worker_process(force=True)
-                raise ValueError(f"插件疑似卡死（{self.stall_timeout_seconds}s 无进度），已自动中断。")
+                raise ValueError(
+                    f"插件工作进程疑似卡死（{self.stall_timeout_seconds}s "
+                    "无心跳或输出），已自动中断。"
+                )
 
             try:
                 event_type, payload = out_queue.get(timeout=0.1)
@@ -978,10 +1009,14 @@ class VolatilityWrapper:
                         f"插件执行超时（>{self.plugin_timeout_seconds}s），已自动中断。"
                     )
 
-                if now - last_activity_at > self.stall_timeout_seconds:
+                if (
+                    self.stall_timeout_seconds > 0
+                    and now - last_activity_at > self.stall_timeout_seconds
+                ):
                     self._terminate_worker_process(force=True)
                     raise ValueError(
-                        f"插件疑似卡死（{self.stall_timeout_seconds}s 无进度），已自动中断。"
+                        f"插件工作进程疑似卡死（{self.stall_timeout_seconds}s "
+                        "无心跳或输出），已自动中断。"
                     )
 
                 for key, _events in selector.select(timeout=0.1):

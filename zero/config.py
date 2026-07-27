@@ -44,7 +44,10 @@ AUTO_SYMBOL_SCAN_CHUNK_BYTES = 4 * 1024 * 1024
 # 同一 release 的候选 ISF 超过该数量时不自动下载，避免下载不确定的符号表。
 AUTO_SYMBOL_DOWNLOAD_MAX_CANDIDATES = 4
 PLUGIN_TIMEOUT_SECONDS = 600  # 单个插件最大运行时长，超时后自动中断
-PLUGIN_STALL_TIMEOUT_SECONDS = 120  # 无进度超时时长，超时后自动中断
+# 工作进程连续无心跳/输出的超时；Volatility 正常的静默扫描不会再触发该限制。
+# 设为 0 可关闭卡死检测，仍保留上面的总执行超时。
+PLUGIN_STALL_TIMEOUT_SECONDS = 120
+WORKER_HEARTBEAT_SECONDS = 15  # 插件子进程在无框架进度时发送内部心跳的间隔
 
 # 结果持久化与缓存策略
 RESULTS_CACHE_DIR = "saved_results"  # 结果缓存根目录（可用绝对路径或相对项目根目录）

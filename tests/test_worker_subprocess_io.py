@@ -114,3 +114,29 @@ def test_stderr_capture_is_bounded_and_keeps_tail(tmp_path):
 
     message = str(excinfo.value)
     assert "symbol table" in message
+
+
+def test_worker_heartbeat_prevents_false_stall_timeout(tmp_path):
+    """Silent plugin work stays alive when the worker itself still responds."""
+    script = _write_worker(
+        tmp_path,
+        """
+        import json, sys, time
+        for _ in range(5):
+            sys.stdout.write(json.dumps(
+                {"type": "heartbeat", "payload": None}
+            ) + "\\n")
+            sys.stdout.flush()
+            time.sleep(0.3)
+        sys.stdout.write(json.dumps(
+            {"type": "result", "payload": {"columns": ["A"], "rows": [["done"]]}}
+        ) + "\\n")
+        sys.stdout.flush()
+        """,
+    )
+    w = _bare_wrapper(script, stall_timeout=1)
+
+    columns, data_rows = w._run_plugin_via_subprocess("fake.Plugin")
+
+    assert columns == ["A"]
+    assert data_rows == [("done",)]

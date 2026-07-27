@@ -6,6 +6,8 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 from pathlib import Path
 from typing import Optional, List, Tuple, Dict, Any
 
@@ -231,6 +233,36 @@ def main() -> int:
     parser.add_argument("--symbols", required=True)
     parser.add_argument("--kwargs", default="{}", help="JSON-encoded plugin kwargs")
     args = parser.parse_args()
+
+    # Keep the parent informed during Volatility phases that do not call the
+    # framework progress callback. stdout's TextIO lock keeps JSON lines from
+    # this daemon thread and the main worker thread from interleaving.
+    try:
+        from zero import config
+
+        heartbeat_seconds = max(
+            1.0,
+            float(getattr(config, "WORKER_HEARTBEAT_SECONDS", 15.0)),
+        )
+        stall_seconds = float(getattr(config, "PLUGIN_STALL_TIMEOUT_SECONDS", 120))
+        if stall_seconds > 0:
+            heartbeat_seconds = min(heartbeat_seconds, max(1.0, stall_seconds / 3))
+    except Exception:
+        heartbeat_seconds = 15.0
+
+    def emit_heartbeat() -> None:
+        while True:
+            time.sleep(heartbeat_seconds)
+            try:
+                _emit("heartbeat", None)
+            except Exception:
+                return
+
+    threading.Thread(
+        target=emit_heartbeat,
+        name="zero-vol3-heartbeat",
+        daemon=True,
+    ).start()
 
     try:
         symbol_dirs = json.loads(args.symbols)
