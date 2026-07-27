@@ -41,7 +41,18 @@
     </div>
 
     <!-- Table (virtualized body for large page sizes) -->
-    <table v-else class="data-table">
+    <table
+      v-else
+      class="data-table"
+      :style="{ width: `${tableWidth}px`, minWidth: '100%' }"
+    >
+      <colgroup>
+        <col
+          v-for="(width, index) in columnWidths"
+          :key="`${store.columns[index]}-${index}`"
+          :style="{ width: `${width}px` }"
+        />
+      </colgroup>
       <thead>
         <tr>
           <th
@@ -131,6 +142,7 @@ import { useVirtualizer } from '@tanstack/vue-virtual'
 import { useAppStore } from '../stores/app'
 import AppIcon from './AppIcon.vue'
 import { useFindingsStore } from '../stores/findings'
+import { calculateColumnWidths } from '../utils/tableColumns'
 
 const store = useAppStore()
 const findings = useFindingsStore()
@@ -138,6 +150,8 @@ const containerRef = ref(null)
 
 const ROW_HEIGHT = 28
 const rowCount = computed(() => store.rows?.length || 0)
+const columnWidths = computed(() => calculateColumnWidths(store.columns, store.rows))
+const tableWidth = computed(() => columnWidths.value.reduce((total, width) => total + width, 0))
 
 const rowVirtualizer = useVirtualizer(
   computed(() => ({

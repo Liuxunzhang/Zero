@@ -423,7 +423,7 @@ body.ai-resizing-ai {
   border-collapse: separate;
   border-spacing: 0;
   font-size: 12px;
-  table-layout: auto;
+  table-layout: fixed;
 }
 
 .data-table thead {
