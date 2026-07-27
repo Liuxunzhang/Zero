@@ -20,22 +20,24 @@
         <AppIcon name="alert-triangle" :size="10" />
         {{ errorCount }}
       </span>
-      <button
-        class="statusbar-log-expand"
-        title="打开完整日志"
-        @click.stop="openFullLog"
-      >
-        <AppIcon name="file-text" :size="11" />
-        <span>展开日志</span>
-      </button>
 
       <!-- Message log popover -->
       <div v-if="showLog" class="statusbar-log" @click.stop>
         <div class="statusbar-log-head">
           <span>消息日志（最近 {{ store.messages.length }} 条）</span>
-          <button class="statusbar-log-close" @click="showLog = false" title="关闭">
-            <AppIcon name="x" :size="12" />
-          </button>
+          <div class="statusbar-log-head-actions">
+            <button
+              class="statusbar-log-expand"
+              title="放大并打开完整日志"
+              @click="openFullLog"
+            >
+              <AppIcon name="maximize-2" :size="11" />
+              <span>完整日志</span>
+            </button>
+            <button class="statusbar-log-close" @click="showLog = false" title="关闭">
+              <AppIcon name="x" :size="12" />
+            </button>
+          </div>
         </div>
         <div class="statusbar-log-body">
           <div

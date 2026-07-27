@@ -948,11 +948,10 @@ body.ai-resizing-ai {
 }
 
 .statusbar-log-expand {
-  height: 22px;
+  height: 24px;
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  flex-shrink: 0;
   padding: 0 7px;
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-sm);
@@ -1000,8 +999,18 @@ body.ai-resizing-ai {
   font-size: 11px;
 }
 
+.statusbar-log-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .statusbar-log-close {
   display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
   padding: 2px;
   background: none;
   border: none;
