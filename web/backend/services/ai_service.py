@@ -17,6 +17,11 @@ from openai import AsyncOpenAI
 
 from zero import config
 from web.backend.services.memory_store import MemoryStore, build_memory_items_from_text
+from web.backend.services.tool_markup import (
+    DsmlStreamFilter,
+    parse_dsml_tool_calls,
+    strip_dsml_tool_markup,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1321,7 +1326,10 @@ class AiService:
             if role == "user":
                 messages.append({"role": "user", "content": msg.get("content") or ""})
             elif role == "assistant":
-                messages.append({"role": "assistant", "content": msg.get("content") or ""})
+                messages.append({
+                    "role": "assistant",
+                    "content": strip_dsml_tool_markup(msg.get("content") or ""),
+                })
             elif role == "tool":
                 # Convert the custom tool/result format back to standard assistant/tool API format
                 tool_call_id = msg.get("tool_call_id") or "call_unknown"
@@ -1456,6 +1464,8 @@ class AiService:
                 )
 
                 content_parts: list[str] = []
+                raw_content_parts: list[str] = []
+                dsml_filter = DsmlStreamFilter()
                 tool_call_acc: dict[int, dict[str, Any]] = {}
 
                 async for chunk in stream:
@@ -1463,8 +1473,11 @@ class AiService:
                     if delta is None:
                         continue
                     if delta.content:
-                        content_parts.append(delta.content)
-                        yield {"type": "chunk", "content": delta.content}
+                        raw_content_parts.append(delta.content)
+                        visible_content = dsml_filter.feed(delta.content)
+                        if visible_content:
+                            content_parts.append(visible_content)
+                            yield {"type": "chunk", "content": visible_content}
                     if delta.tool_calls:
                         for idx_str, tc_data in self._accumulate_tool_calls(delta).items():
                             existing = tool_call_acc.get(idx_str)
@@ -1474,6 +1487,33 @@ class AiService:
                                 existing["id"] = existing["id"] or tc_data["id"]
                                 existing["function_name"] += tc_data["function_name"]
                                 existing["function_arguments"] += tc_data["function_arguments"]
+
+                visible_tail = dsml_filter.finish()
+                if visible_tail:
+                    content_parts.append(visible_tail)
+                    yield {"type": "chunk", "content": visible_tail}
+
+                # Compatibility fallback: some OpenAI-compatible providers put
+                # DSML calls in delta.content rather than delta.tool_calls.
+                if not tool_call_acc:
+                    dsml_calls = parse_dsml_tool_calls("".join(raw_content_parts))
+                    for index, dsml_call in enumerate(dsml_calls):
+                        tool_call_acc[index] = {
+                            "id": (
+                                f"call_dsml_{tool_round}_{index}_"
+                                f"{time.monotonic_ns()}"
+                            ),
+                            "function_name": dsml_call["name"],
+                            "function_arguments": json.dumps(
+                                dsml_call["arguments"],
+                                ensure_ascii=False,
+                            ),
+                        }
+                    if dsml_calls:
+                        logger.info(
+                            "Recovered %d textual DSML tool call(s) from provider response",
+                            len(dsml_calls),
+                        )
 
                 # ── No tool calls → final text response ────────────
                 if not tool_call_acc:
@@ -1584,11 +1624,19 @@ class AiService:
                     **{k: v for k, v in final_req.items() if k != "model"},
                 )
                 final_parts: list[str] = []
+                final_dsml_filter = DsmlStreamFilter()
                 async for chunk in final_stream:
                     delta = chunk.choices[0].delta if chunk.choices else None
                     if delta and delta.content:
-                        final_parts.append(delta.content)
-                        yield {"type": "chunk", "content": delta.content}
+                        visible_content = final_dsml_filter.feed(delta.content)
+                        if visible_content:
+                            final_parts.append(visible_content)
+                            yield {"type": "chunk", "content": visible_content}
+
+                final_tail = final_dsml_filter.finish()
+                if final_tail:
+                    final_parts.append(final_tail)
+                    yield {"type": "chunk", "content": final_tail}
 
                 assistant_text = "".join(final_parts) or "分析完成，但模型未生成结论。请重新提问或指定更具体的问题。"
                 self.append_history(conversation_id, {"role": "user", "content": user_message})

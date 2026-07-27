@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from web.backend.services.ai_service import get_ai_service, AGENT_ALLOWED_PLUGINS, AGENT_PLUGIN_DESCRIPTIONS, AGENT_HEAVY_PLUGINS
+from web.backend.services.tool_markup import strip_dsml_tool_markup
 from web.backend.services.vol_service import get_service
 from web.backend.services import conversation_store as conv_store
 
@@ -919,6 +920,15 @@ async def get_conversation(conv_id: str):
     if not meta:
         raise HTTPException(404, f"Conversation {conv_id!r} not found")
     messages = conv_store.get_messages(conv_id)
+    messages = [
+        {
+            **message,
+            "content": strip_dsml_tool_markup(message.get("content") or ""),
+        }
+        if message.get("role") == "assistant"
+        else message
+        for message in messages
+    ]
     return {"conversation": meta, "messages": messages}
 
 
@@ -953,7 +963,10 @@ async def load_conversation(conv_id: str):
         if msg.get("role") in ("user", "assistant", "tool"):
             clean_msg = {"role": msg["role"]}
             if "content" in msg:
-                clean_msg["content"] = msg["content"]
+                content = msg["content"]
+                if msg.get("role") == "assistant":
+                    content = strip_dsml_tool_markup(content)
+                clean_msg["content"] = content
             if msg.get("role") == "tool":
                 clean_msg.update({
                     "tool_call_id": msg.get("tool_call_id"),
