@@ -98,6 +98,45 @@ export const useAppStore = defineStore("app", () => {
       messages.value.splice(0, messages.value.length - maxMessages)
   }
 
+  function pushAutoSymbolMessage(result, engineId) {
+    if (!result || result.enabled === false) return
+    const release = result.kernel?.release || "未知版本"
+    const downloaded = Array.isArray(result.downloaded) ? result.downloaded.length : 0
+    const skipped = Array.isArray(result.skipped) ? result.skipped.length : 0
+    const prefix = "[" + engineId + "] "
+
+    switch (result.status) {
+      case "downloaded":
+        pushMessage(prefix + "检测到 Linux 内核 " + release + "，已自动下载 " + downloaded + " 个匹配符号表", "success")
+        break
+      case "present":
+        pushMessage(prefix + "检测到 Linux 内核 " + release + "，匹配符号表已存在", "info")
+        break
+      case "partial":
+        pushMessage(prefix + "内核 " + release + " 的符号表仅部分下载成功（下载 " + downloaded + "，已存在 " + skipped + "）", "warning")
+        break
+      case "no_match":
+        pushMessage(prefix + "检测到 Linux 内核 " + release + "，远程仓库未找到同 release 的符号表", "warning")
+        break
+      case "ambiguous":
+        pushMessage(prefix + "内核 " + release + " 的符号表候选过多，未自动下载；请在“符号”面板选择", "warning")
+        break
+      case "scan_limit_reached":
+        pushMessage(prefix + "内核 banner 扫描达到上限，未自动下载符号表", "warning")
+        break
+      case "not_detected":
+        pushMessage(prefix + "未检测到 Linux 内核 banner，未自动下载符号表", "info")
+        break
+      case "remote_unavailable":
+      case "scan_failed":
+      case "download_failed":
+        pushMessage(prefix + "符号表自动下载未完成: " + (result.reason || result.status), "warning")
+        break
+      default:
+        break
+    }
+  }
+
   function requireImageLoaded(actionLabel = "运行插件", engineId = selectedEngine.value) {
     const st = engineStates[engineId]
     if (st?.imageLoaded) return true
@@ -131,7 +170,7 @@ export const useAppStore = defineStore("app", () => {
     const st = engineStates[engineId]
     imageLoadBusy.value = true
     try {
-      await apiLoadImage(path, engineId)
+      const loadResult = await apiLoadImage(path, engineId)
       st.imagePath = path
       st.imageLoaded = true
       // Canonicalize to the backend's resolved absolute path so consumers
@@ -147,6 +186,7 @@ export const useAppStore = defineStore("app", () => {
       st.pluginBusy = false
       await fetchEngineSettings(engineId)
       pushMessage("[" + engineId + "] 镜像已加载: " + path, "success")
+      pushAutoSymbolMessage(loadResult?.symbol_download, engineId)
     } catch (e) {
       pushMessage("[" + engineId + "] 加载失败: " + e.message, "error")
     } finally {

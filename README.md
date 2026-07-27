@@ -19,6 +19,7 @@ Zero 是一个面向内存取证的 Volatility 3 Web 工作台。它把镜像加
 - 表格过滤、列名补全、操作符补全、排序、分页和导出
 - 插件参数弹窗，自动识别必填参数
 - Linux 符号表本地列表和发行版生成脚本
+- 加载 Linux 镜像时轻量识别 kernel banner，并自动下载匹配的远程 ISF 符号表
 - AI 取证分析助手，支持当前插件上下文和过滤规则输出
 - 白天 / 黑夜双主题
 
@@ -231,6 +232,27 @@ centos8_proxy
 ```
 
 生成后的符号表会写入 `symbols/` 根目录。Web 服务每次运行插件前都会重新扫描 `symbols/`，生成完成后无需重启。
+
+符号管理页的“使用 gh-proxy.com 代理下载”选项只代理选中 ISF 文件的下载；仓库索引仍直接请求 GitHub API。该选项默认关闭，并保存在浏览器本地以便下次使用。
+
+### 加载时自动下载 Linux 符号表
+
+默认情况下，加载 `vol3` 镜像会以流式方式查找第一个有效的 `Linux version ...` banner；该检测不启动 Volatility，也不会把镜像整体读入内存。找到内核 release 后，服务会从配置的远程符号仓库中挑选同 release、且发行版/架构提示得分最高的 ISF，并立即下载到 `symbols/`。因此加载完成后可直接运行 Linux 插件。
+
+- 只根据**完整 kernel release**匹配；候选过多时不会盲目批量下载。
+- 已存在的符号表会跳过；远程索引复用现有磁盘缓存。
+- 未发现 banner、没有匹配项、网络/下载失败都不会阻止镜像加载，状态会显示在消息栏。
+
+可在 `zero/config.py` 调整：
+
+```python
+AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD = True  # 设为 False 关闭自动下载
+AUTO_SYMBOL_SCAN_MAX_BYTES = 0              # 0=扫描至找到 banner 或文件结尾
+AUTO_SYMBOL_SCAN_CHUNK_BYTES = 4 * 1024 * 1024
+AUTO_SYMBOL_DOWNLOAD_MAX_CANDIDATES = 4
+```
+
+如果部署中经常加载非 Linux 的超大镜像，可把 `AUTO_SYMBOL_SCAN_MAX_BYTES` 设为正整数（例如 `512 * 1024 * 1024`）以限制扫描范围；达到上限而未找到 banner 时，不会自动下载。
 
 ## 常用命令
 

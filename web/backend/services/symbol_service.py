@@ -24,6 +24,11 @@ from typing import Any, Optional
 import requests
 
 from zero import config
+from zero.core.kernel_detector import (
+    LinuxKernelDetection,
+    LinuxKernelInfo,
+    detect_linux_kernel,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -40,6 +45,11 @@ _DEFAULT_INDEX_STALE_SECONDS = 7 * 24 * 3600
 # Parallel raw.githubusercontent.com downloads (raw host, not the REST quota).
 _DOWNLOAD_WORKERS = 4
 _DOWNLOAD_CHUNK_BYTES = 256 * 1024
+_AUTO_SCAN_DEFAULT_CHUNK_BYTES = 4 * 1024 * 1024
+# Keep the proxy endpoint fixed in code.  The API accepts only a boolean, not
+# an arbitrary proxy URL, so the download endpoint cannot be used as an SSRF
+# primitive.
+_GH_PROXY_BASE = "https://gh-proxy.com/"
 
 # Remote symbol index sources (GitHub owner/name). First entry is the default.
 _DEFAULT_REPOS = (
@@ -63,6 +73,34 @@ _LINUX_MARKERS = (
     "oracle",
     "redhat",
 )
+
+# Terms used by the public symbol repositories.  These are deliberately kept
+# separate from the banner detector: a distro name in a compiler string is a
+# hint for ranking candidates, never a substitute for an exact kernel release
+# match.
+_DISTRO_PATH_MARKERS: dict[str, tuple[str, ...]] = {
+    "ubuntu": ("ubuntu",),
+    "debian": ("debian",),
+    "kali": ("kali",),
+    "almalinux": ("almalinux",),
+    "rocky": ("rocky",),
+    "centos": ("centos",),
+    "rhel": ("rhel", "redhat", "red-hat"),
+    "fedora": ("fedora",),
+    "oracle": ("oracle",),
+    "amazon": ("amazon", "amzn"),
+    "suse": ("suse",),
+    "arch": ("arch",),
+}
+
+_ARCH_PATH_MARKERS: dict[str, tuple[str, ...]] = {
+    "x86_64": ("x86_64", "amd64"),
+    "aarch64": ("aarch64", "arm64"),
+    "arm": ("armv7", "armv6", "/arm/"),
+    "ppc64le": ("ppc64le",),
+    "s390x": ("s390x",),
+    "i386": ("i386", "i486", "i586", "i686"),
+}
 
 
 @dataclass(frozen=True)
@@ -165,6 +203,35 @@ def _os_hint(rel_path: str) -> str:
     return "unknown"
 
 
+def _config_bool(name: str, default: bool) -> bool:
+    """Read a bool-like config value without treating ``\"false\"`` as true."""
+    value = getattr(config, name, default)
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+    return bool(value)
+
+
+def _config_int(name: str, default: int, *, minimum: int = 0) -> int:
+    try:
+        return max(minimum, int(getattr(config, name, default)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _normalised_phrase(value: str) -> str:
+    """Make separator changes in public ISF paths irrelevant to matching."""
+    return re.sub(r"[^a-z0-9]+", "-", str(value or "").lower()).strip("-")
+
+
+def _contains_release(path: str, release: str) -> bool:
+    """Match a complete release, not ``5.15.0-101`` inside ``...-1011``."""
+    wanted = _normalised_phrase(release)
+    if not wanted:
+        return False
+    haystack = _normalised_phrase(path)
+    return f"-{wanted}-" in f"-{haystack}-"
+
+
 class _RateLimitError(RuntimeError):
     def __init__(self, message: str, reset_at: int = 0, remaining: int = 0, limit: int = 0):
         super().__init__(message)
@@ -212,6 +279,221 @@ class SymbolService:
             "github_auth": self._github_auth,
             "rate_limit": dict(self._rate_limit),
         }
+
+    @staticmethod
+    def _rank_linux_candidates(
+        items: list[dict], kernel: LinuxKernelInfo
+    ) -> list[tuple[int, dict]]:
+        """Return exact-release ISFs, with distro/architecture hints ranked first.
+
+        An ISF's filename cannot prove that its embedded banner is identical,
+        so this deliberately requires an exact *kernel release* and only
+        downloads the equally best candidates.  Volatility still performs the
+        final exact banner check when a plugin runs.
+        """
+        ranked: list[tuple[int, dict]] = []
+        for item in items:
+            path = str(item.get("path") or "")
+            if not path:
+                continue
+            os_family = str(item.get("os") or _os_hint(path)).lower()
+            if os_family != "linux" or not _contains_release(path, kernel.release):
+                continue
+
+            normalized_path = f"-{_normalised_phrase(path)}-"
+            score = 100  # exact complete release
+            if kernel.distro:
+                distro_terms = _DISTRO_PATH_MARKERS.get(kernel.distro, (kernel.distro,))
+                if any(
+                    f"-{_normalised_phrase(term)}-" in normalized_path
+                    for term in distro_terms
+                ):
+                    score += 30
+            if kernel.architecture:
+                arch_terms = _ARCH_PATH_MARKERS.get(
+                    kernel.architecture, (kernel.architecture,)
+                )
+                if any(
+                    f"-{_normalised_phrase(term)}-" in normalized_path
+                    for term in arch_terms
+                ):
+                    score += 15
+            ranked.append((score, item))
+
+        ranked.sort(key=lambda pair: (-pair[0], str(pair[1].get("path") or "")))
+        return ranked
+
+    @staticmethod
+    def _auto_scan_payload(detection: LinuxKernelDetection) -> dict:
+        return {
+            "bytes_scanned": detection.bytes_scanned,
+            "image_size": detection.image_size,
+            "scan_limit": detection.scan_limit,
+            "complete": detection.complete,
+            "limit_reached": detection.limit_reached,
+        }
+
+    @staticmethod
+    def _auto_base_result(*, enabled: bool, status: str, **extra: Any) -> dict:
+        result = {"enabled": enabled, "status": status}
+        result.update(extra)
+        return result
+
+    def auto_download_for_image(self, image_path: str) -> dict:
+        """Detect a Linux banner and fetch the best matching missing ISF files.
+
+        This is intentionally non-fatal: an image is still usable when a
+        banner is absent, a remote index is unavailable, or no exact release is
+        published.  It is called synchronously by ``POST /api/image/load`` so
+        that a successful response means a downloaded symbol is ready for the
+        first Volatility plugin run.
+        """
+        if not _config_bool("AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD", True):
+            return self._auto_base_result(enabled=False, status="disabled")
+
+        scan_limit = _config_int("AUTO_SYMBOL_SCAN_MAX_BYTES", 0)
+        chunk_bytes = _config_int(
+            "AUTO_SYMBOL_SCAN_CHUNK_BYTES",
+            _AUTO_SCAN_DEFAULT_CHUNK_BYTES,
+            minimum=4096,
+        )
+        try:
+            detection = detect_linux_kernel(
+                image_path,
+                max_scan_bytes=scan_limit,
+                chunk_bytes=chunk_bytes,
+            )
+        except Exception as e:
+            logger.warning("Linux kernel banner scan failed for %s: %s", image_path, e)
+            return self._auto_base_result(
+                enabled=True,
+                status="scan_failed",
+                reason=str(e),
+            )
+
+        scan = self._auto_scan_payload(detection)
+        kernel = detection.kernel
+        if kernel is None:
+            return self._auto_base_result(
+                enabled=True,
+                status="scan_limit_reached" if detection.limit_reached else "not_detected",
+                scan=scan,
+            )
+
+        kernel_payload = kernel.as_dict()
+        max_candidates = min(
+            50,
+            _config_int("AUTO_SYMBOL_DOWNLOAD_MAX_CANDIDATES", 4, minimum=1),
+        )
+        index_errors: list[str] = []
+        ambiguous_result: Optional[dict] = None
+
+        # Repositories are ordered by config, so the first unambiguous exact
+        # match wins.  This avoids downloading duplicate ISFs from mirrors.
+        for ref in self._repos:
+            try:
+                self._ensure_remote_index(ref)
+            except Exception as e:
+                index_errors.append(f"{ref.full}: {e}")
+                continue
+
+            state = self._state(ref)
+            if not state["remote_index"]:
+                if state.get("last_remote_error"):
+                    index_errors.append(f"{ref.full}: {state['last_remote_error']}")
+                continue
+
+            ranked = self._rank_linux_candidates(state["remote_index"], kernel)
+            if not ranked:
+                continue
+            best_score = ranked[0][0]
+            selected = [item for score, item in ranked if score == best_score]
+            paths = list(dict.fromkeys(str(item["path"]) for item in selected))
+            if len(paths) > max_candidates:
+                ambiguous_result = self._auto_base_result(
+                    enabled=True,
+                    status="ambiguous",
+                    kernel=kernel_payload,
+                    scan=scan,
+                    repo=ref.full,
+                    candidate_count=len(paths),
+                    candidates=paths[:max_candidates],
+                    reason=(
+                        f"{len(paths)} matching symbol tables exceed "
+                        f"AUTO_SYMBOL_DOWNLOAD_MAX_CANDIDATES={max_candidates}"
+                    ),
+                )
+                # Another configured repository may have fewer build variants.
+                continue
+
+            try:
+                download = self.download_symbols(paths, repo=ref.full)
+            except Exception as e:
+                logger.warning(
+                    "Auto-download for Linux kernel %s from %s failed: %s",
+                    kernel.release,
+                    ref.full,
+                    e,
+                )
+                return self._auto_base_result(
+                    enabled=True,
+                    status="download_failed",
+                    kernel=kernel_payload,
+                    scan=scan,
+                    repo=ref.full,
+                    candidates=paths,
+                    reason=str(e),
+                )
+
+            downloaded = download.get("downloaded") or []
+            skipped = download.get("skipped") or []
+            failed = download.get("failed") or []
+            if failed and not downloaded and not skipped:
+                status = "download_failed"
+            elif failed:
+                status = "partial"
+            elif downloaded:
+                status = "downloaded"
+            else:
+                status = "present"
+            logger.info(
+                "Auto symbol lookup for %s: status=%s repo=%s downloaded=%d skipped=%d failed=%d",
+                kernel.release,
+                status,
+                ref.full,
+                len(downloaded),
+                len(skipped),
+                len(failed),
+            )
+            return self._auto_base_result(
+                enabled=True,
+                status=status,
+                kernel=kernel_payload,
+                scan=scan,
+                repo=ref.full,
+                candidates=paths,
+                downloaded=downloaded,
+                skipped=skipped,
+                failed=failed,
+                root=download.get("root", ""),
+            )
+
+        if ambiguous_result is not None:
+            return ambiguous_result
+        if index_errors:
+            return self._auto_base_result(
+                enabled=True,
+                status="remote_unavailable",
+                kernel=kernel_payload,
+                scan=scan,
+                reason="; ".join(index_errors[:3]),
+            )
+        return self._auto_base_result(
+            enabled=True,
+            status="no_match",
+            kernel=kernel_payload,
+            scan=scan,
+        )
 
     def _resolve_repo(self, repo: str = "") -> _RepoRef:
         if not repo or not str(repo).strip():
@@ -619,10 +901,11 @@ class SymbolService:
         return payload
 
     def _raw_session(self) -> requests.Session:
-        """Per-thread session for raw.githubusercontent.com downloads.
+        """Per-thread session for symbol-content downloads.
 
-        No Authorization header: the raw host does not need the API token for
-        public repos, and this keeps the token off a second hostname.
+        No Authorization header: direct raw downloads and optional gh-proxy
+        downloads are public, and this keeps the GitHub API token off both
+        content hosts.
         """
         session = getattr(self._thread_local, "raw_session", None)
         if session is None:
@@ -631,13 +914,42 @@ class SymbolService:
             self._thread_local.raw_session = session
         return session
 
-    def _fetch_one_symbol(self, ref: _RepoRef, branch: str, rel: str, target: Path) -> dict:
+    @staticmethod
+    def _symbol_download_url(
+        ref: _RepoRef,
+        branch: str,
+        rel: str,
+        *,
+        use_gh_proxy: bool = False,
+    ) -> str:
+        """Return the direct raw URL or its gh-proxy.com equivalent."""
+        raw_url = f"{ref.raw_base}/{branch}/{rel}"
+        if use_gh_proxy:
+            # gh-proxy.com accepts a complete GitHub/raw URL as the path.
+            return f"{_GH_PROXY_BASE}{raw_url}"
+        return raw_url
+
+    def _fetch_one_symbol(
+        self,
+        ref: _RepoRef,
+        branch: str,
+        rel: str,
+        target: Path,
+        *,
+        use_gh_proxy: bool = False,
+    ) -> dict:
         """Stream one file to disk. Returns a result record for the caller to bucket."""
-        url = f"{ref.raw_base}/{branch}/{rel}"
+        url = self._symbol_download_url(
+            ref,
+            branch,
+            rel,
+            use_gh_proxy=use_gh_proxy,
+        )
         tmp = target.with_name(target.name + ".part")
         try:
-            # Raw content host — separate from REST API core quota. Streamed so a
-            # large ISF never has to fit in memory alongside the response object.
+            # Direct raw-content requests are separate from the REST API core
+            # quota; optional proxy requests are also streamed so a large ISF
+            # never has to fit in memory alongside the response object.
             with self._raw_session().get(url, timeout=120, stream=True) as resp:
                 resp.raise_for_status()
                 size = 0
@@ -654,8 +966,15 @@ class SymbolService:
             logger.warning("Failed to download symbol %s from %s: %s", rel, ref.full, e)
             return {"bucket": "failed", "path": rel, "reason": str(e)}
 
-    def download_symbols(self, paths: list[str], repo: str = "") -> dict:
-        """Download via raw.githubusercontent.com (does not consume REST API list quota)."""
+    def download_symbols(
+        self,
+        paths: list[str],
+        repo: str = "",
+        *,
+        use_gh_proxy: bool = False,
+    ) -> dict:
+        """Download from GitHub raw directly or through the fixed gh-proxy endpoint."""
+        use_gh_proxy = bool(use_gh_proxy)
         ref = self._resolve_repo(repo)
         self._ensure_remote_index(ref)
         state = self._state(ref)
@@ -691,7 +1010,13 @@ class SymbolService:
             workers = min(_DOWNLOAD_WORKERS, len(pending))
             with ThreadPoolExecutor(max_workers=workers) as pool:
                 results = pool.map(
-                    lambda item: self._fetch_one_symbol(ref, branch, item[0], item[1]),
+                    lambda item: self._fetch_one_symbol(
+                        ref,
+                        branch,
+                        item[0],
+                        item[1],
+                        use_gh_proxy=use_gh_proxy,
+                    ),
                     pending,
                 )
                 for record in results:
@@ -707,6 +1032,7 @@ class SymbolService:
             "failed": failed,
             "root": str(root),
             "repo": ref.full,
+            "use_gh_proxy": use_gh_proxy,
         }
 
 

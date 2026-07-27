@@ -135,8 +135,12 @@ export function getLocalSymbols() {
   return api.get('/api/symbols/local')
 }
 
-export function downloadSymbols(paths, repo = '') {
-  return api.post('/api/symbols/download', { paths, repo })
+export function downloadSymbols(paths, repo = '', useGhProxy = false) {
+  return api.post('/api/symbols/download', {
+    paths,
+    repo,
+    use_gh_proxy: Boolean(useGhProxy),
+  })
 }
 
 /* ── WebSocket helper ──────────────────────────────── */

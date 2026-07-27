@@ -33,6 +33,61 @@ def test_load_image_missing_file_404(client, tmp_path):
     assert r.status_code == 404
 
 
+def test_load_image_returns_nonfatal_auto_symbol_status(client, tmp_path, monkeypatch):
+    from web.backend.api import routes
+
+    image = tmp_path / "memory.raw"
+    image.write_bytes(b"image")
+
+    class FakeEngineService:
+        def load_image(self, path, engine_id="vol3"):
+            assert path == str(image)
+            assert engine_id == "vol3"
+            return True
+
+    class FakeSymbolService:
+        def auto_download_for_image(self, path):
+            assert path == str(image.resolve())
+            return {"enabled": True, "status": "not_detected"}
+
+    monkeypatch.setattr(routes, "get_service", lambda: FakeEngineService())
+    monkeypatch.setattr(routes, "get_symbol_service", lambda: FakeSymbolService())
+
+    r = client.post("/api/image/load", json={"path": str(image)})
+
+    assert r.status_code == 200
+    assert r.json()["symbol_download"]["status"] == "not_detected"
+
+
+def test_symbol_download_forwards_gh_proxy_choice(client, monkeypatch):
+    from web.backend.api import symbol_routes
+
+    calls = []
+
+    class FakeSymbolService:
+        def download_symbols(self, paths, repo="", *, use_gh_proxy=False):
+            calls.append((paths, repo, use_gh_proxy))
+            return {
+                "downloaded": [],
+                "skipped": [],
+                "failed": [],
+                "root": "/tmp/symbols",
+                "repo": repo,
+                "use_gh_proxy": use_gh_proxy,
+            }
+
+    monkeypatch.setattr(symbol_routes, "get_symbol_service", lambda: FakeSymbolService())
+
+    r = client.post(
+        "/api/symbols/download",
+        json={"paths": ["Ubuntu/test.json"], "repo": "owner/repo", "use_gh_proxy": True},
+    )
+
+    assert r.status_code == 200
+    assert calls == [(["Ubuntu/test.json"], "owner/repo", True)]
+    assert r.json()["use_gh_proxy"] is True
+
+
 def test_export_rejects_bad_format(client):
     r = client.post("/api/export", json={"format": "pdf"})
     assert r.status_code == 400

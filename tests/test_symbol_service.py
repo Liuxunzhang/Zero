@@ -7,6 +7,7 @@ import pytest
 
 from web.backend.services import symbol_service as svc_mod
 from web.backend.services.symbol_service import SymbolService, _parse_repo
+from zero.core.kernel_detector import LinuxKernelInfo
 
 
 @pytest.fixture
@@ -98,7 +99,7 @@ def test_download_rejects_paths_outside_index_and_root(service, monkeypatch):
     )
     fetched = []
 
-    def fake_fetch(_ref, _branch, rel, target):
+    def fake_fetch(_ref, _branch, rel, target, **_kwargs):
         fetched.append(rel)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(b"{}")
@@ -126,10 +127,117 @@ def test_download_skips_existing_files(service, monkeypatch):
     (root / "Ubuntu").mkdir(parents=True, exist_ok=True)
     (root / "Ubuntu" / "ok.json").write_bytes(b"{}")
 
-    def boom(*_args):
+    def boom(*_args, **_kwargs):
         raise AssertionError("must not download an existing file")
 
     monkeypatch.setattr(service, "_fetch_one_symbol", boom)
 
     out = service.download_symbols(["Ubuntu/ok.json"])
     assert [s["path"] for s in out["skipped"]] == ["Ubuntu/ok.json"]
+
+
+def test_download_can_use_fixed_gh_proxy(service, monkeypatch):
+    path = "Ubuntu/ok.json"
+    monkeypatch.setattr(
+        service,
+        "_build_remote_index",
+        lambda _ref: (_items(path), "master"),
+    )
+    calls = []
+
+    def fake_fetch(_ref, _branch, rel, target, *, use_gh_proxy=False):
+        calls.append((rel, use_gh_proxy))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"{}")
+        return {"bucket": "downloaded", "path": rel, "size": 2, "repo": "owner/repo"}
+
+    monkeypatch.setattr(service, "_fetch_one_symbol", fake_fetch)
+
+    out = service.download_symbols([path], use_gh_proxy=True)
+
+    assert calls == [(path, True)]
+    assert out["use_gh_proxy"] is True
+    ref = _parse_repo("Abyss-W4tcher/volatility3-symbols")
+    assert service._symbol_download_url(ref, "master", path, use_gh_proxy=True) == (
+        "https://gh-proxy.com/https://raw.githubusercontent.com/"
+        "Abyss-W4tcher/volatility3-symbols/master/Ubuntu/ok.json"
+    )
+
+
+def test_auto_download_uses_exact_detected_release(service, monkeypatch, tmp_path):
+    image = tmp_path / "memory.raw"
+    image.write_bytes(
+        b"prefix\x00Linux version 5.15.0-91-generic "
+        b"(buildd@lcy02-amd64-001) (Ubuntu 11.4.0) #101-Ubuntu SMP\x00"
+    )
+    symbol_path = (
+        "Ubuntu/amd64/5.15.0/91/generic/"
+        "Ubuntu_5.15.0-91-generic_5.15.0-91.101_amd64.json.xz"
+    )
+    monkeypatch.setattr(
+        service,
+        "_build_remote_index",
+        lambda _ref: (_items(symbol_path), "master"),
+    )
+
+    fetched = []
+
+    def fake_fetch(_ref, _branch, rel, target, **_kwargs):
+        fetched.append(rel)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(b"{}")
+        return {"bucket": "downloaded", "path": rel, "size": 2, "repo": "owner/repo"}
+
+    monkeypatch.setattr(service, "_fetch_one_symbol", fake_fetch)
+
+    out = service.auto_download_for_image(str(image))
+
+    assert out["status"] == "downloaded"
+    assert out["kernel"]["release"] == "5.15.0-91-generic"
+    assert out["kernel"]["distro"] == "ubuntu"
+    assert out["candidates"] == [symbol_path]
+    assert fetched == [symbol_path]
+
+
+def test_auto_download_refuses_too_many_equally_good_candidates(service, monkeypatch, tmp_path):
+    image = tmp_path / "memory.raw"
+    image.write_bytes(
+        b"Linux version 6.1.0-23-amd64 "
+        b"(debian-kernel@lists.debian.org) #1 SMP Debian\x00"
+    )
+    paths = [
+        f"Debian/amd64/6.1.0/23/variant-{i}/Debian_6.1.0-23-amd64_{i}_amd64.json.xz"
+        for i in range(5)
+    ]
+    monkeypatch.setattr(
+        service,
+        "_build_remote_index",
+        lambda _ref: (_items(*paths), "master"),
+    )
+    monkeypatch.setattr(svc_mod.config, "AUTO_SYMBOL_DOWNLOAD_MAX_CANDIDATES", 4)
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("ambiguous candidates must not be downloaded")
+
+    monkeypatch.setattr(service, "_fetch_one_symbol", boom)
+
+    out = service.auto_download_for_image(str(image))
+
+    assert out["status"] == "ambiguous"
+    assert out["candidate_count"] == 5
+
+
+def test_auto_candidate_match_does_not_accept_release_prefix(service):
+    kernel = LinuxKernelInfo(
+        banner="Linux version 5.15.0-101-generic (Ubuntu) #1",
+        release="5.15.0-101-generic",
+        offset=0,
+        distro="ubuntu",
+        architecture="x86_64",
+    )
+    exact = "Ubuntu/amd64/Ubuntu_5.15.0-101-generic_amd64.json.xz"
+    longer = "Ubuntu/amd64/Ubuntu_5.15.0-1011-generic_amd64.json.xz"
+
+    ranked = service._rank_linux_candidates(_items(longer, exact), kernel)
+
+    assert [item["path"] for _score, item in ranked] == [exact]

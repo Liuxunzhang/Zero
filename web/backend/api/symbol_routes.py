@@ -21,6 +21,10 @@ logger = logging.getLogger(__name__)
 class DownloadSymbolsRequest(BaseModel):
     paths: list[str]
     repo: str = Field("", description="GitHub owner/name, e.g. Abyss-W4tcher/volatility3-symbols")
+    use_gh_proxy: bool = Field(
+        False,
+        description="Download files through the fixed https://gh-proxy.com endpoint",
+    )
 
 
 @router.get("/repos")
@@ -69,7 +73,11 @@ def download_symbols(req: DownloadSymbolsRequest):
     if len(req.paths) > 100:
         raise HTTPException(400, "too many paths, max 100 per request")
     try:
-        return get_symbol_service().download_symbols(req.paths, repo=req.repo)
+        return get_symbol_service().download_symbols(
+            req.paths,
+            repo=req.repo,
+            use_gh_proxy=req.use_gh_proxy,
+        )
     except ValueError as e:
         raise HTTPException(400, str(e))
     except Exception:

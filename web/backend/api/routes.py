@@ -8,6 +8,7 @@ from typing import Optional
 from pathlib import Path
 
 from web.backend.services.vol_service import get_service
+from web.backend.services.symbol_service import get_symbol_service
 
 router = APIRouter(prefix="/api")
 logger = logging.getLogger(__name__)
@@ -132,7 +133,13 @@ def _image_path_allowed(resolved: Path) -> bool:
 
 
 @router.post("/image/load")
-async def load_image(req: ImageLoadRequest):
+def load_image(req: ImageLoadRequest):
+    """Load an image and, for Vol3, prepare matching Linux symbols when possible.
+
+    The banner scan and remote download use blocking file/network I/O.  Keeping
+    this endpoint synchronous makes FastAPI run it in its worker thread rather
+    than blocking the event loop and the plugin-progress WebSocket.
+    """
     p = Path(req.path).expanduser().resolve()
     if p.suffix.lower() not in _IMAGE_EXTENSIONS:
         raise HTTPException(
@@ -150,7 +157,20 @@ async def load_image(req: ImageLoadRequest):
         success = svc.load_image(req.path, engine_id=req.engine)
         if not success:
             raise HTTPException(400, "Failed to load image")
-        return {"ok": True, "path": req.path, "engine": req.engine}
+        payload = {"ok": True, "path": req.path, "engine": req.engine}
+        if req.engine == "vol3":
+            # Missing banners, rate limits, and a failed remote download must
+            # never turn an otherwise valid image load into a 500 response.
+            try:
+                payload["symbol_download"] = get_symbol_service().auto_download_for_image(str(p))
+            except Exception as e:
+                logger.warning("Auto symbol download failed for %s: %s", p, e, exc_info=True)
+                payload["symbol_download"] = {
+                    "enabled": True,
+                    "status": "download_failed",
+                    "reason": str(e),
+                }
+        return payload
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     except ValueError as e:

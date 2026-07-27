@@ -58,6 +58,14 @@
           </div>
           <div v-else class="symbol-empty">{{ remoteLoading ? '加载中...' : '暂无结果' }}</div>
 
+          <div class="symbol-download-options">
+            <label class="symbol-proxy-option" title="符号文件将经 https://gh-proxy.com 下载">
+              <input v-model="useGhProxy" type="checkbox" @change="saveGhProxyPreference" />
+              <span>使用 gh-proxy.com 代理下载</span>
+            </label>
+            <span class="symbol-proxy-hint">仅代理符号文件下载，仓库索引仍直接访问 GitHub API</span>
+          </div>
+
           <div class="symbol-actions">
             <button class="solid-btn" :disabled="!selectedPaths.length || downloading" @click="downloadSelected">
               <AppIcon name="download" :size="12" />
@@ -136,7 +144,7 @@
               >
                 <div class="symbol-history-time">{{ formatDateTime(record.created_at) }}</div>
                 <div class="symbol-history-summary">
-                  {{ record.repo ? `${record.repo} · ` : '' }}请求 {{ record.requested }} | 成功 {{ record.downloaded.length }} | 跳过 {{ record.skipped.length }} | 失败 {{ record.failed.length }}
+                  {{ record.repo ? `${record.repo} · ` : '' }}{{ record.use_gh_proxy ? 'gh-proxy · ' : '' }}请求 {{ record.requested }} | 成功 {{ record.downloaded.length }} | 跳过 {{ record.skipped.length }} | 失败 {{ record.failed.length }}
                 </div>
               </button>
             </div>
@@ -197,6 +205,7 @@ useEscClose(() => true, () => emit('close'))
 
 const store = useAppStore()
 const STORAGE_KEY = 'zero-symbol-download-history'
+const GH_PROXY_STORAGE_KEY = 'zero-symbol-use-gh-proxy'
 const DEFAULT_REPOS = [
   'Abyss-W4tcher/volatility3-symbols',
   'Sunmedalia/volatility3-symbols',
@@ -219,6 +228,7 @@ const localLoading = ref(false)
 const localRoot = ref('')
 
 const selectedPaths = ref([])
+const useGhProxy = ref(false)
 const downloading = ref(false)
 const remoteStatus = ref({
   ok: true,
@@ -283,7 +293,7 @@ function formatDateTime(ts) {
   }
 }
 
-function pushDownloadRecord(data, requestedCount, repo) {
+function pushDownloadRecord(data, requestedCount, repo, useProxy) {
   const record = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     created_at: Date.now(),
@@ -292,11 +302,28 @@ function pushDownloadRecord(data, requestedCount, repo) {
     downloaded: data.downloaded || [],
     skipped: data.skipped || [],
     failed: data.failed || [],
+    use_gh_proxy: Boolean(data.use_gh_proxy ?? useProxy),
   }
   downloadHistory.value.unshift(record)
   downloadHistory.value = downloadHistory.value.slice(0, 20)
   activeHistoryId.value = record.id
   localStorage.setItem(STORAGE_KEY, JSON.stringify(downloadHistory.value))
+}
+
+function saveGhProxyPreference() {
+  try {
+    localStorage.setItem(GH_PROXY_STORAGE_KEY, useGhProxy.value ? 'true' : 'false')
+  } catch {
+    /* private mode / quota: keep the in-memory choice */
+  }
+}
+
+function restoreGhProxyPreference() {
+  try {
+    useGhProxy.value = localStorage.getItem(GH_PROXY_STORAGE_KEY) === 'true'
+  } catch {
+    useGhProxy.value = false
+  }
 }
 
 function restoreHistory() {
@@ -388,9 +415,10 @@ async function downloadSelected() {
   downloading.value = true
   const requestedCount = selectedPaths.value.length
   const repo = selectedRepo.value
+  const useProxy = useGhProxy.value
   try {
-    const data = await downloadSymbols(selectedPaths.value, repo)
-    pushDownloadRecord(data, requestedCount, repo)
+    const data = await downloadSymbols(selectedPaths.value, repo, useProxy)
+    pushDownloadRecord(data, requestedCount, repo, useProxy)
     tab.value = 'downloads'
     const downloaded = (data.downloaded || []).length
     const skipped = (data.skipped || []).length
@@ -410,10 +438,13 @@ async function retryFailed() {
   if (!activeRecord.value || !activeRecord.value.failed.length) return
   downloading.value = true
   const repo = activeRecord.value.repo || selectedRepo.value
+  // Use the current checkbox so a user can enable gh-proxy after a direct
+  // download failed, then retry from the history tab.
+  const useProxy = useGhProxy.value
   try {
     const paths = activeRecord.value.failed.map((x) => x.path)
-    const data = await downloadSymbols(paths, repo)
-    pushDownloadRecord(data, paths.length, repo)
+    const data = await downloadSymbols(paths, repo, useProxy)
+    pushDownloadRecord(data, paths.length, repo, useProxy)
     tab.value = 'downloads'
     const downloaded = (data.downloaded || []).length
     const skipped = (data.skipped || []).length
@@ -442,6 +473,7 @@ async function clearHistory() {
 }
 
 onMounted(async () => {
+  restoreGhProxyPreference()
   restoreHistory()
   await Promise.all([loadRemote(1), loadLocal()])
 })

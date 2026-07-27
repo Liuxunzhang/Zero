@@ -36,6 +36,8 @@ Response:
 
 加载内存镜像。
 
+对 `engine=vol3`，默认还会流式扫描镜像中的 `Linux version` banner，并在远程 ISF 索引中找到同 kernel release 时立即下载匹配符号表。该步骤完成后接口才返回；扫描或下载失败不会使镜像加载失败，结果放在可选的 `symbol_download` 字段中。
+
 Request:
 
 ```json
@@ -44,6 +46,30 @@ Request:
   "engine": "vol3"
 }
 ```
+
+Response（Linux banner 且成功下载时示例）：
+
+```json
+{
+  "ok": true,
+  "path": "/path/to/memory.raw",
+  "engine": "vol3",
+  "symbol_download": {
+    "enabled": true,
+    "status": "downloaded",
+    "kernel": {
+      "release": "5.15.0-91-generic",
+      "distro": "ubuntu",
+      "architecture": "x86_64"
+    },
+    "downloaded": [{"path": "Ubuntu/...json.xz"}],
+    "skipped": [],
+    "failed": []
+  }
+}
+```
+
+常见 `symbol_download.status`：`downloaded`、`present`、`partial`、`not_detected`、`scan_limit_reached`、`no_match`、`ambiguous`、`remote_unavailable`、`scan_failed`、`download_failed`。可通过 `zero/config.py` 的 `AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD` 关闭该行为。
 
 ### GET `/api/image/status?engine=vol3`
 
@@ -263,6 +289,8 @@ AI 接口位于 `/api/ai/*`，用于配置 OpenAI-compatible 模型、提示词�
 
 未配置 token 时 GitHub REST 匿名配额约 **60 次/小时**；配置 `SYMBOL_GITHUB_TOKEN` 或环境变量 `GITHUB_TOKEN` / `ZERO_GITHUB_TOKEN` 后约 **5000 次/小时**。符号文件下载走 `raw.githubusercontent.com`，不占用列表 API 配额。
 
+下载页可选用 `https://gh-proxy.com` 代理符号文件；该选项不会代理上述 GitHub 索引 API 请求。
+
 Query:
 
 ```text
@@ -289,6 +317,9 @@ Request:
   "paths": [
     "Ubuntu/ubuntu-6.8.0-100-generic.json.xz"
   ],
-  "repo": "Abyss-W4tcher/volatility3-symbols"
+  "repo": "Abyss-W4tcher/volatility3-symbols",
+  "use_gh_proxy": true
 }
 ```
+
+`use_gh_proxy` 默认为 `false`。设为 `true` 时，服务使用固定格式 `https://gh-proxy.com/https://raw.githubusercontent.com/...` 下载选中的符号文件。

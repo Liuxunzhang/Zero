@@ -33,6 +33,16 @@ SYMBOL_GITHUB_TOKEN = ""
 SYMBOL_INDEX_TTL_SECONDS = 6 * 3600
 # 刷新失败时仍可继续使用磁盘陈旧索引的最长时间（秒）
 SYMBOL_INDEX_STALE_SECONDS = 7 * 24 * 3600
+# 加载 Vol3 镜像时，轻量扫描 ``Linux version`` banner 并下载匹配的 Linux ISF。
+# 关闭后仍可在“符号”面板手动下载。自动下载失败不会阻止镜像加载。
+AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD = True
+# 0 表示扫描到发现 banner 或文件结尾；正整数表示只扫描镜像前 N 字节，适合
+# 非 Linux 镜像很多、且优先要求快速加载的部署。
+AUTO_SYMBOL_SCAN_MAX_BYTES = 0
+# 检测器每次读取的块大小；始终是流式读取，不会把整个镜像载入内存。
+AUTO_SYMBOL_SCAN_CHUNK_BYTES = 4 * 1024 * 1024
+# 同一 release 的候选 ISF 超过该数量时不自动下载，避免下载不确定的符号表。
+AUTO_SYMBOL_DOWNLOAD_MAX_CANDIDATES = 4
 PLUGIN_TIMEOUT_SECONDS = 600  # 单个插件最大运行时长，超时后自动中断
 PLUGIN_STALL_TIMEOUT_SECONDS = 120  # 无进度超时时长，超时后自动中断
 

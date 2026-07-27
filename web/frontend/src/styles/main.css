@@ -2816,6 +2816,32 @@ body.ai-float-dragging {
   gap: 8px;
 }
 
+.symbol-download-options {
+  margin-top: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  font-size: 11px;
+}
+
+.symbol-proxy-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.symbol-proxy-option input {
+  accent-color: var(--accent);
+}
+
+.symbol-proxy-hint {
+  color: var(--text-muted);
+}
+
 .symbol-page {
   margin-top: 10px;
   display: flex;
