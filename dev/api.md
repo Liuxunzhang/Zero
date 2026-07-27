@@ -84,6 +84,48 @@ Response：
 .raw .mem .dmp .vmem .img .bin .lime .elf .core .crash .hpak .aff4
 ```
 
+## Runtime Settings
+
+### GET `/api/settings`
+
+返回 WebUI 可修改的白名单配置、分类和字段元数据：
+
+```json
+{
+  "settings": {
+    "plugin_timeout_seconds": 600,
+    "plugin_stall_timeout_seconds": 120,
+    "worker_heartbeat_seconds": 15,
+    "auto_download_linux_symbols": true
+  },
+  "categories": [
+    {
+      "id": "runtime",
+      "label": "运行与超时",
+      "fields": []
+    }
+  ],
+  "storage": ".zero/runtime_settings.json",
+  "effective": "immediate"
+}
+```
+
+### PUT `/api/settings`
+
+部分或完整更新运行设置。值会进行类型、范围和关联校验，成功后立即更新已初始化的 Vol3 引擎，并持久化到 `.zero/runtime_settings.json`。
+
+```json
+{
+  "settings": {
+    "plugin_timeout_seconds": 1800,
+    "plugin_stall_timeout_seconds": 300,
+    "worker_heartbeat_seconds": 15
+  }
+}
+```
+
+工作进程心跳必须小于非零的无响应超时；符号索引陈旧可用时间不能短于刷新间隔。未知字段返回 `400`，避免通过该接口修改敏感或任意配置。
+
 ## Plugins
 
 ### GET `/api/plugins/{os_family}?engine=vol3`

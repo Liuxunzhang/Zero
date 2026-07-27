@@ -288,6 +288,33 @@ class Vol3Engine(EngineBase):
     def reload_plugins(self) -> int:
         return self._wrapper.reload_plugins()
 
+    def apply_runtime_settings(self) -> None:
+        """Apply the allowlisted WebUI settings to this live engine instance."""
+        from zero import config as runtime_config
+
+        global _MAX_EXPORT_ROWS
+        with self._lock:
+            self._wrapper.apply_runtime_settings()
+            self._results_query_cache_max_entries = max(
+                1,
+                int(getattr(runtime_config, "RESULTS_QUERY_CACHE_MAX", 64)),
+            )
+            self._results_query_cache_max_rows = max(
+                1000,
+                int(
+                    getattr(
+                        runtime_config,
+                        "RESULTS_QUERY_CACHE_MAX_ROWS",
+                        2_000_000,
+                    )
+                ),
+            )
+            _MAX_EXPORT_ROWS = max(
+                0,
+                int(getattr(runtime_config, "MAX_TABLE_ROWS", 10000) or 0),
+            )
+            self._trim_results_query_cache()
+
     # ------------------------------------------------------------------
     # Results retrieval
     # ------------------------------------------------------------------

@@ -200,6 +200,16 @@ export function downloadSymbols(paths, repo = '', useGhProxy = false) {
   })
 }
 
+/* ── Runtime settings helpers ─────────────────────── */
+
+export function getRuntimeSettings() {
+  return api.get('/api/settings')
+}
+
+export function saveRuntimeSettings(settings) {
+  return api.put('/api/settings', { settings })
+}
+
 /* ── WebSocket helper ──────────────────────────────── */
 
 // Reconnect backoff schedule; clamps at the last entry.

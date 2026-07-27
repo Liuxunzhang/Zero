@@ -196,6 +196,17 @@ class EngineManager:
             return updater(settings["profile"])
         raise ValueError(f"Engine '{engine_id}' does not support runtime settings update")
 
+    def apply_runtime_settings(self, engine_id: str) -> bool:
+        """Refresh an existing engine instance without forcing lazy initialization."""
+        registration = self._engines.get(engine_id)
+        if registration is None or registration.instance is None:
+            return False
+        updater = getattr(registration.instance, "apply_runtime_settings", None)
+        if not callable(updater):
+            return False
+        updater()
+        return True
+
 
 # ---------------------------------------------------------------------------
 # Module-level singleton factory

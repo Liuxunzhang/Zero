@@ -81,6 +81,15 @@
         <div class="topbar-spacer"></div>
         <button
           class="ai-toggle-btn"
+          :class="{ active: showSystemSettings }"
+          @click="showSystemSettings = true"
+          title="系统运行设置"
+        >
+          <AppIcon class="ai-toggle-icon" name="wrench" />
+          <span class="ai-toggle-text">系统</span>
+        </button>
+        <button
+          class="ai-toggle-btn"
           @click="store.showArgsPanel = !store.showArgsPanel"
           title="参数配置"
         >
@@ -245,6 +254,12 @@
       @close="showLogPanel = false"
     />
 
+    <SystemSettingsModal
+      v-if="showSystemSettings"
+      @close="showSystemSettings = false"
+      @saved="onSystemSettingsSaved"
+    />
+
     <NotepadPanel
       :show="showNotepad"
       @close="showNotepad = false"
@@ -301,6 +316,9 @@ import ArgsPanel from './components/ArgsPanel.vue'
 const AiConfigModal = defineAsyncComponent(() => import('./components/AiConfigModal.vue'))
 const SymbolManagerModal = defineAsyncComponent(() => import('./components/SymbolManagerModal.vue'))
 const LogPanel = defineAsyncComponent(() => import('./components/LogPanel.vue'))
+const SystemSettingsModal = defineAsyncComponent(
+  () => import('./components/SystemSettingsModal.vue'),
+)
 
 const store = useAppStore()
 const findingsStore = useFindingsStore()
@@ -314,6 +332,7 @@ const showAiPanel = ref(false)
 const showAiConfig = ref(false)
 const showSymbolManager = ref(false)
 const showLogPanel = ref(false)
+const showSystemSettings = ref(false)
 const showNotepad = ref(false)
 const showFindings = ref(false)
 const showTokenMenu = ref(false)
@@ -608,6 +627,10 @@ function onConfigChanged() {
   if (aiPanelRef.value) {
     aiPanelRef.value.loadConfig()
   }
+}
+
+function onSystemSettingsSaved() {
+  store.pushMessage('系统运行设置已保存并立即应用', 'success')
 }
 
 function handleSendToAiEvent(event) {

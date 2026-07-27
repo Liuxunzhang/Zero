@@ -120,6 +120,37 @@ def test_symbol_download_forwards_gh_proxy_choice(client, monkeypatch):
     assert r.json()["use_gh_proxy"] is True
 
 
+def test_runtime_settings_api_returns_schema_and_updates(client, monkeypatch):
+    from web.backend.api import settings_routes
+
+    payload = {
+        "settings": {"plugin_timeout_seconds": 600},
+        "categories": [{"id": "runtime", "fields": []}],
+        "storage": ".zero/runtime_settings.json",
+        "effective": "immediate",
+    }
+    saved = []
+
+    monkeypatch.setattr(settings_routes, "settings_payload", lambda: dict(payload))
+    monkeypatch.setattr(
+        settings_routes,
+        "save_runtime_settings",
+        lambda values: saved.append(values) or {**payload["settings"], **values},
+    )
+
+    r = client.get("/api/settings")
+    assert r.status_code == 200
+    assert r.json()["categories"][0]["id"] == "runtime"
+
+    r = client.put(
+        "/api/settings",
+        json={"settings": {"plugin_timeout_seconds": 1800}},
+    )
+    assert r.status_code == 200
+    assert saved == [{"plugin_timeout_seconds": 1800}]
+    assert r.json()["settings"]["plugin_timeout_seconds"] == 1800
+
+
 def test_export_rejects_bad_format(client):
     r = client.post("/api/export", json={"format": "pdf"})
     assert r.status_code == 400

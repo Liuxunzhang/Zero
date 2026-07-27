@@ -141,6 +141,37 @@ class VolatilityWrapper:
         self.symbol_dirs = self._resolve_symbol_dirs()
         self._init_volatility()
 
+    def apply_runtime_settings(self) -> None:
+        """Refresh safe execution/cache controls without rebuilding the engine."""
+        self.plugin_timeout_seconds = max(
+            60,
+            int(getattr(config, "PLUGIN_TIMEOUT_SECONDS", 600)),
+        )
+        self.stall_timeout_seconds = max(
+            0,
+            int(getattr(config, "PLUGIN_STALL_TIMEOUT_SECONDS", 120)),
+        )
+        self.progress_log_throttle_seconds = max(
+            0.0,
+            float(getattr(config, "PROGRESS_LOG_THROTTLE_SECONDS", 0.5)),
+        )
+        self.terminate_grace_seconds = max(
+            0.0,
+            float(getattr(config, "TERMINATE_GRACE_SECONDS", 2.0)),
+        )
+        self.worker_start_method = str(
+            getattr(config, "WORKER_START_METHOD", self.worker_start_method)
+        ).lower()
+        self.enable_disk_cache = bool(getattr(config, "ENABLE_DISK_CACHE", True))
+        self._disk_cache.enabled = self.enable_disk_cache
+        self._memory_cache_max = max(
+            1,
+            int(getattr(config, "RESULTS_MEMORY_CACHE_MAX", 8)),
+        )
+        with self._state_lock:
+            while len(self._cache) > self._memory_cache_max:
+                self._cache.popitem(last=False)
+
     def _get_mp_context(self) -> mp.context.BaseContext:
         """Get multiprocessing context for plugin worker process."""
         methods = mp.get_all_start_methods()

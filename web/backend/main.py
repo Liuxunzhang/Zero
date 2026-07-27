@@ -19,10 +19,16 @@ from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from zero import config as zero_config
+# Apply the persisted WebUI overlay before any engine/service can be created.
+from web.backend.services.settings_service import load_runtime_settings
+
+load_runtime_settings()
+
 from web.backend.api.routes import router as api_router
 from web.backend.api.websocket import router as ws_router
 from web.backend.api.ai_routes import router as ai_router
 from web.backend.api.symbol_routes import router as symbol_router
+from web.backend.api.settings_routes import router as settings_router
 
 _LOG_FORMAT = "%(asctime)s %(name)s %(levelname)s %(message)s"
 
@@ -128,6 +134,7 @@ app.include_router(api_router)
 app.include_router(ws_router)
 app.include_router(ai_router)
 app.include_router(symbol_router)
+app.include_router(settings_router)
 
 # Serve built frontend in production (if dist/ exists).
 _dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
