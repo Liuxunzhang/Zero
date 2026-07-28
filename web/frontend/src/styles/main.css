@@ -567,7 +567,8 @@ body.table-column-resizing * {
 }
 
 .sidebar.collapsed {
-  width: 48px;
+  width: 0;
+  border-right: 0;
 }
 
 .sidebar-header {
@@ -950,6 +951,27 @@ body.table-column-resizing * {
   font-size: 11px;
   white-space: nowrap;
   text-overflow: ellipsis;
+}
+
+.statusbar-sidebar-open {
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.statusbar-sidebar-open:hover {
+  border-color: var(--accent-dim);
+  background: var(--accent-glow);
+  color: var(--accent-bright);
 }
 
 .statusbar-messages-clickable {

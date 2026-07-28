@@ -1,6 +1,9 @@
 <template>
   <div class="app-layout">
-    <AppSidebar />
+    <AppSidebar
+      :collapsed="pluginSidebarCollapsed"
+      @update:collapsed="pluginSidebarCollapsed = $event"
+    />
     <div class="main-panel">
       <!-- Top bar -->
       <div class="topbar">
@@ -223,7 +226,11 @@
         </template>
       </div>
 
-      <StatusBar @open-log="showLogPanel = true" />
+      <StatusBar
+        :sidebar-collapsed="pluginSidebarCollapsed"
+        @toggle-sidebar="pluginSidebarCollapsed = !pluginSidebarCollapsed"
+        @open-log="showLogPanel = true"
+      />
     </div>
 
     <!-- AI Panel floating window -->
@@ -407,6 +414,12 @@ const aiPanelRef = ref(null)
 const dumpFiles = ref([])
 const aiPanelWidth = ref(420)
 const pendingAiText = ref('')
+const PLUGIN_SIDEBAR_KEY = 'zero-sidebar-collapsed'
+const pluginSidebarCollapsed = ref(localStorage.getItem(PLUGIN_SIDEBAR_KEY) === 'true')
+
+watch(pluginSidebarCollapsed, (collapsed) => {
+  localStorage.setItem(PLUGIN_SIDEBAR_KEY, String(collapsed))
+})
 
 // ── Floating AI window state ──────────────────────────────────────
 const AI_FLOAT_KEY = 'zero-ai-float'

@@ -1,6 +1,6 @@
 <template>
   <div class="sidebar" :class="{ collapsed: sidebarCollapsed }">
-    <div class="sidebar-header">
+    <div v-if="sidebarExpanded" class="sidebar-header">
       <div class="sidebar-title-row">
         <div class="sidebar-logo">
           <img class="sidebar-logo-icon" src="/favicon.svg" alt="Zero" />
@@ -115,17 +115,16 @@
     </div>
     </template><!-- end sidebarExpanded -->
 
-    <!-- Footer always visible — collapse button stays at bottom -->
-    <div class="sidebar-footer" :class="{ 'sidebar-footer-collapsed': !sidebarExpanded }">
-      <button v-if="sidebarExpanded" class="reload-btn" @click="reloadPlugins" :disabled="reloading">
+    <div v-if="sidebarExpanded" class="sidebar-footer">
+      <button class="reload-btn" @click="reloadPlugins" :disabled="reloading">
         <AppIcon name="refresh" :size="13" :class="{ spin: reloading }" />
         {{ reloading ? '扫描中...' : '刷新插件' }}
       </button>
       <button
         class="sidebar-collapse-btn"
         @click="toggleSidebar"
-        :title="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
-      ><AppIcon :name="sidebarCollapsed ? 'chevron-right' : 'panel-left'" :size="14" /></button>
+        title="收起并隐藏插件侧栏"
+      ><AppIcon name="panel-left" :size="14" /></button>
     </div>
   </div>
 </template>
@@ -136,6 +135,10 @@ import { useAppStore } from '../stores/app'
 import AppIcon from './AppIcon.vue'
 
 const store = useAppStore()
+const props = defineProps({
+  collapsed: { type: Boolean, default: false },
+})
+const emit = defineEmits(['update:collapsed'])
 
 const EXPANDED_KEY = 'zero-sidebar-expanded'
 
@@ -154,16 +157,11 @@ const searchInputRef = ref(null)
 // Category state as it was before a search started, restored on clear.
 let expandedBeforeSearch = null
 
-// Sidebar collapse state, persisted in localStorage.
-// First run (no saved value) defaults to expanded — a collapsed rail with no
-// visible plugin list is a bad first impression.
-const SIDEBAR_COLLAPSED_KEY = 'zero-sidebar-collapsed'
-const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true')
+const sidebarCollapsed = computed(() => props.collapsed)
 const sidebarExpanded = computed(() => !sidebarCollapsed.value)
 
 function toggleSidebar() {
-  sidebarCollapsed.value = !sidebarCollapsed.value
-  localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(sidebarCollapsed.value))
+  emit('update:collapsed', !sidebarCollapsed.value)
 }
 
 const normalizedSearch = computed(() => pluginSearch.value.trim().toLowerCase())
@@ -278,8 +276,7 @@ function highlightPlugin(plugin) {
 }
 
 async function focusPluginSearch() {
-  sidebarCollapsed.value = false
-  localStorage.setItem(SIDEBAR_COLLAPSED_KEY, 'false')
+  emit('update:collapsed', false)
   await nextTick() // the search input only exists once the tree re-renders
   searchInputRef.value?.focus()
 }
@@ -507,12 +504,6 @@ async function reloadPlugins() {
   display: flex;
   gap: 6px;
   align-items: center;
-}
-
-.sidebar-footer-collapsed {
-  margin-top: auto;
-  padding: 10px 8px;
-  justify-content: center;
 }
 
 .reload-btn {

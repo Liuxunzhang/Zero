@@ -1,5 +1,15 @@
 <template>
   <div class="statusbar">
+    <button
+      v-if="sidebarCollapsed"
+      type="button"
+      class="statusbar-sidebar-open"
+      title="展开插件侧栏"
+      @click="$emit('toggle-sidebar')"
+    >
+      <AppIcon name="panel-left" :size="12" />
+      <span>插件</span>
+    </button>
     <div
       ref="messagesRef"
       class="statusbar-messages statusbar-messages-clickable"
@@ -139,7 +149,10 @@ import AppIcon from './AppIcon.vue'
 import { useEscClose } from '../composables/useEscClose'
 
 const store = useAppStore()
-const emit = defineEmits(['open-log'])
+defineProps({
+  sidebarCollapsed: { type: Boolean, default: false },
+})
+const emit = defineEmits(['open-log', 'toggle-sidebar'])
 const jumpPage = ref('')
 const showLog = ref(false)
 const cancelling = ref(false)
