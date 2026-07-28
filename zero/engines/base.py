@@ -87,6 +87,12 @@ class EngineBase(abc.ABC):
         """Resolve a short or UI-side name to the engine's internal plugin name."""
         return plugin_name
 
+    def get_manual_plugin_command(
+        self, plugin_name: str, **kwargs: Any
+    ) -> Optional[str]:
+        """Return an equivalent server-terminal command when supported."""
+        return None
+
     # ------------------------------------------------------------------
     # Plugin execution (blocking; call from a thread executor)
     # ------------------------------------------------------------------

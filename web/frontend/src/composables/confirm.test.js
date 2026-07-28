@@ -19,6 +19,17 @@ describe('confirmAction', () => {
     await expect(p).resolves.toBe(false)
   })
 
+  it('supports a third alternate action', async () => {
+    const p = confirmAction({
+      title: '下载',
+      alternateText: 'gh-proxy 下载',
+      alternateValue: 'gh-proxy',
+    })
+    expect(confirmState.alternateText).toBe('gh-proxy 下载')
+    resolveConfirm(confirmState.alternateValue)
+    await expect(p).resolves.toBe('gh-proxy')
+  })
+
   it('resets defaults between calls', async () => {
     const p1 = confirmAction({ title: 'a', danger: false })
     expect(confirmState.danger).toBe(false)

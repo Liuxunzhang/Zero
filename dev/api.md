@@ -59,7 +59,7 @@ Response：
 
 ### POST `/api/image/symbols/auto`
 
-在镜像加载成功后，流式扫描 `Linux version` banner、匹配远程 ISF 并下载符号表。响应类型为 `application/x-ndjson`，每行是一个独立事件：
+在镜像加载成功后，流式扫描 `Linux version` banner、检查本地 ISF 并匹配远程候选。默认只返回 `available` 候选，不下载。客户确认后传 `download=true`、`paths`、`repo`，可同时传 `use_gh_proxy=true`。响应类型为 `application/x-ndjson`：
 
 ```json
 {"type":"progress","data":{"stage":"downloading","percent":42.5,"downloaded_bytes":4456448,"total_bytes":10485760,"completed_files":0,"total_files":1}}
@@ -68,7 +68,7 @@ Response：
 
 `stage` 依次为 `detecting`、`matching`、`downloading`。远端未提供 `Content-Length` 时，`percent` 和 `total_bytes` 为 `null`，前端显示不定进度圆环。
 
-常见结果 `status`：`downloaded`、`present`、`partial`、`not_detected`、`scan_limit_reached`、`no_match`、`ambiguous`、`remote_unavailable`、`scan_failed`、`download_failed`。可通过 `zero/config.py` 的 `AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD` 关闭该行为。
+常见结果 `status`：`available`、`downloaded`、`present`、`partial`、`not_detected`、`scan_limit_reached`、`no_match`、`ambiguous`、`remote_unavailable`、`scan_failed`、`download_failed`。可通过 `zero/config.py` 的 `AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD` 关闭加载后检查。
 
 ### GET `/api/image/status?engine=vol3`
 

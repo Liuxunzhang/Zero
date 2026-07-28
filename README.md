@@ -19,7 +19,7 @@ Zero 是一个面向内存取证的 Volatility 3 Web 工作台。它把镜像加
 - 表格过滤、列名补全、操作符补全、排序、分页和导出
 - 插件参数弹窗，自动识别必填参数
 - Linux 符号表本地列表和发行版生成脚本
-- 加载 Linux 镜像时轻量识别 kernel banner，并自动下载匹配的远程 ISF 符号表
+- 加载 Linux 镜像时识别 kernel banner，先检查本地 ISF，再询问是否下载
 - AI 取证分析助手，支持当前插件上下文和过滤规则输出
 - 白天 / 黑夜双主题
 
@@ -215,8 +215,11 @@ scripts/import_symbols.sh --distro centos8_proxy --proxy http://127.0.0.1:7890
 Debian 13 流程支持指定内核版本：
 
 ```bash
-scripts/import_symbols.sh --distro debian13 --kernel 6.12.86+deb13
+scripts/import_symbols.sh --distro debian13 --kernel 6.12.96+deb13-amd64
 ```
+
+在目标内核机器上运行 Debian 13 流程时不需要 `--kernel`，脚本会使用
+`uname -r`。只有为其他机器或导入镜像生成时，才需要传完整 kernel release。
 
 可用发行版参数：
 
@@ -235,24 +238,24 @@ centos8_proxy
 
 符号管理页的“使用 gh-proxy.com 代理下载”选项只代理选中 ISF 文件的下载；仓库索引仍直接请求 GitHub API。该选项默认关闭，并保存在浏览器本地以便下次使用。
 
-### 加载时自动下载 Linux 符号表
+### 加载时检查 Linux 符号表
 
-默认情况下，加载 `vol3` 镜像后会以流式方式查找第一个有效的 `Linux version ...` banner；该检测不启动 Volatility，也不会把镜像整体读入内存。镜像加载成功会先写入日志，随后开始匹配和下载符号表。顶部“加载”按钮旁会显示圆形进度：服务器提供文件大小时显示百分比，否则显示不定进度动画。下载完成后即可直接运行 Linux 插件。
+默认情况下，加载 `vol3` 镜像后会流式扫描有效的 `Linux version ...` banner，并从全部候选中选择最可信的 kernel release；该检测不启动 Volatility，也不会把镜像整体读入内存。检测完成后先检查本地符号表，已存在则直接使用；缺失时弹窗提供“直接下载”“gh-proxy 下载”和“暂不下载”。下载阶段会显示圆形进度。
 
 - 只根据**完整 kernel release**匹配；候选过多时不会盲目批量下载。
-- 已存在的符号表会跳过；远程索引复用现有磁盘缓存。
+- 本地精确 release 匹配发生在远程索引请求之前；远程索引复用磁盘缓存。
 - 未发现 banner、没有匹配项、网络/下载失败都不会阻止镜像加载，状态会显示在消息栏。
 
 可在 `zero/config.py` 调整：
 
 ```python
-AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD = True  # 设为 False 关闭自动下载
-AUTO_SYMBOL_SCAN_MAX_BYTES = 0              # 0=扫描至找到 banner 或文件结尾
+AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD = True  # 设为 False 关闭加载后检查
+AUTO_SYMBOL_SCAN_MAX_BYTES = 0              # 0=扫描完整镜像
 AUTO_SYMBOL_SCAN_CHUNK_BYTES = 4 * 1024 * 1024
 AUTO_SYMBOL_DOWNLOAD_MAX_CANDIDATES = 4
 ```
 
-如果部署中经常加载非 Linux 的超大镜像，可把 `AUTO_SYMBOL_SCAN_MAX_BYTES` 设为正整数（例如 `512 * 1024 * 1024`）以限制扫描范围；达到上限而未找到 banner 时，不会自动下载。
+如果需要缩短超大镜像的加载后检查时间，可把 `AUTO_SYMBOL_SCAN_MAX_BYTES` 设为正整数（例如 `512 * 1024 * 1024`）以限制扫描范围。
 
 ### WebUI 系统运行设置
 

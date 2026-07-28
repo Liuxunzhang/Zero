@@ -33,11 +33,11 @@ SYMBOL_GITHUB_TOKEN = ""
 SYMBOL_INDEX_TTL_SECONDS = 6 * 3600
 # 刷新失败时仍可继续使用磁盘陈旧索引的最长时间（秒）
 SYMBOL_INDEX_STALE_SECONDS = 7 * 24 * 3600
-# 加载 Vol3 镜像时，轻量扫描 ``Linux version`` banner 并下载匹配的 Linux ISF。
-# 关闭后仍可在“符号”面板手动下载。自动下载失败不会阻止镜像加载。
+# 加载 Vol3 镜像时扫描 ``Linux version`` banner、检查本地 ISF，并在缺失时
+# 由 GUI 询问是否下载。关闭后仍可在“符号”面板手动下载。
 AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD = True
-# 0 表示扫描到发现 banner 或文件结尾；正整数表示只扫描镜像前 N 字节，适合
-# 非 Linux 镜像很多、且优先要求快速加载的部署。
+# 0 表示扫描完整镜像；正整数表示只扫描镜像前 N 字节。扫描所有候选可避免
+# 把内存中的旧发行版 banner 误判成当前内核。
 AUTO_SYMBOL_SCAN_MAX_BYTES = 0
 # 检测器每次读取的块大小；始终是流式读取，不会把整个镜像载入内存。
 AUTO_SYMBOL_SCAN_CHUNK_BYTES = 4 * 1024 * 1024

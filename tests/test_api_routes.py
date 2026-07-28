@@ -63,8 +63,17 @@ def test_auto_symbol_download_streams_progress_after_load(client, tmp_path, monk
     image.write_bytes(b"image")
 
     class FakeSymbolService:
-        def auto_download_for_image(self, path, *, progress_callback=None):
+        def auto_download_for_image(
+            self,
+            path,
+            *,
+            download=False,
+            use_gh_proxy=False,
+            progress_callback=None,
+        ):
             assert path == str(image.resolve())
+            assert download is False
+            assert use_gh_proxy is False
             progress_callback(
                 {
                     "stage": "downloading",
@@ -75,8 +84,8 @@ def test_auto_symbol_download_streams_progress_after_load(client, tmp_path, monk
             )
             return {
                 "enabled": True,
-                "status": "downloaded",
-                "downloaded": [{"path": "Debian/kernel.json.xz"}],
+                "status": "available",
+                "candidates": ["Debian/kernel.json.xz"],
             }
 
     monkeypatch.setattr(routes, "get_symbol_service", lambda: FakeSymbolService())
@@ -88,7 +97,58 @@ def test_auto_symbol_download_streams_progress_after_load(client, tmp_path, monk
     assert events[0]["type"] == "progress"
     assert events[0]["data"]["percent"] == 50.0
     assert events[1]["type"] == "result"
-    assert events[1]["data"]["status"] == "downloaded"
+    assert events[1]["data"]["status"] == "available"
+
+
+def test_confirmed_image_symbol_download_forwards_proxy_choice(
+    client, tmp_path, monkeypatch
+):
+    import json
+
+    from web.backend.api import routes
+
+    image = tmp_path / "memory.raw"
+    image.write_bytes(b"image")
+    calls = []
+
+    class FakeSymbolService:
+        def download_symbols(
+            self,
+            paths,
+            repo="",
+            *,
+            use_gh_proxy=False,
+            progress_callback=None,
+        ):
+            calls.append((paths, repo, use_gh_proxy))
+            progress_callback({"stage": "downloading", "percent": 100})
+            return {
+                "downloaded": [{"path": paths[0]}],
+                "skipped": [],
+                "failed": [],
+                "root": "/tmp/symbols",
+                "repo": repo,
+                "use_gh_proxy": use_gh_proxy,
+            }
+
+    monkeypatch.setattr(routes, "get_symbol_service", lambda: FakeSymbolService())
+
+    r = client.post(
+        "/api/image/symbols/auto",
+        json={
+            "path": str(image),
+            "download": True,
+            "use_gh_proxy": True,
+            "paths": ["Debian/kernel.json.xz"],
+            "repo": "owner/repo",
+        },
+    )
+
+    assert r.status_code == 200
+    events = [json.loads(line) for line in r.text.splitlines()]
+    assert calls == [(["Debian/kernel.json.xz"], "owner/repo", True)]
+    assert events[-1]["data"]["status"] == "downloaded"
+    assert events[-1]["data"]["use_gh_proxy"] is True
 
 
 def test_symbol_download_forwards_gh_proxy_choice(client, monkeypatch):

@@ -15,6 +15,8 @@ const defaults = {
   message: '',
   confirmText: '确认',
   cancelText: '取消',
+  alternateText: '',
+  alternateValue: 'alternate',
   danger: true,
 }
 

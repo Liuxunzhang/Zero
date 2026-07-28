@@ -18,6 +18,13 @@
             {{ confirmState.cancelText }}
           </button>
           <button
+            v-if="confirmState.alternateText"
+            class="confirm-alternate-btn"
+            @click="resolveConfirm(confirmState.alternateValue)"
+          >
+            {{ confirmState.alternateText }}
+          </button>
+          <button
             ref="confirmBtnRef"
             class="confirm-ok-btn"
             :class="{ danger: confirmState.danger }"
@@ -104,6 +111,7 @@ watch(() => confirmState.show, (show) => {
 }
 
 .confirm-cancel-btn,
+.confirm-alternate-btn,
 .confirm-ok-btn {
   height: 30px;
   padding: 0 14px;
@@ -119,7 +127,14 @@ watch(() => confirmState.show, (show) => {
   color: var(--text-secondary);
 }
 
-.confirm-cancel-btn:hover {
+.confirm-alternate-btn {
+  background: transparent;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+
+.confirm-cancel-btn:hover,
+.confirm-alternate-btn:hover {
   color: var(--text-primary);
   border-color: var(--border-focus);
 }

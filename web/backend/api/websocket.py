@@ -32,7 +32,7 @@ async def plugin_ws(websocket: WebSocket):
         {"action": "cancel",                     "engine": "<id>"}
         {"action": "ping"}
     Server sends:
-        {"type": "progress|result|error|status", "data": ..., "engine": "<id>"}
+        {"type": "progress|result|error|status|command", "data": ..., "engine": "<id>"}
     """
     await websocket.accept()
     svc = get_service()
@@ -66,8 +66,6 @@ async def plugin_ws(websocket: WebSocket):
                     })
                     continue
 
-                await websocket.send_json({"type": "status", "data": "running", "engine": engine_id})
-
                 # Extract plugin kwargs: everything except control fields.
                 # Includes profile, dump_dir, pid, offset, base, key, regex, etc.
                 # force / use_cache control result-cache reuse (not plugin args).
@@ -85,6 +83,27 @@ async def plugin_ws(websocket: WebSocket):
                     "WS run %s/%s kwargs=%s use_cache=%s",
                     engine_id, plugin_name, list(plugin_kwargs.keys()), use_cache,
                 )
+
+                # Echo an equivalent, paste-ready command using the backend's
+                # actual Python executable, absolute image path and symbol
+                # directories.  The GUI writes this event into its message log.
+                try:
+                    command = svc.get_manual_plugin_command(
+                        plugin_name,
+                        engine_id=engine_id,
+                        **plugin_kwargs,
+                    )
+                except Exception:
+                    command = None
+                    logger.debug("Could not build manual plugin command", exc_info=True)
+                if command:
+                    await websocket.send_json({
+                        "type": "command",
+                        "data": command,
+                        "engine": engine_id,
+                    })
+
+                await websocket.send_json({"type": "status", "data": "running", "engine": engine_id})
 
                 progress_queue: asyncio.Queue = asyncio.Queue()
                 loop = asyncio.get_running_loop()

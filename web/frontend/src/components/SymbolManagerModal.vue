@@ -110,7 +110,7 @@
             <div class="symbol-script-command">scripts/import_symbols.sh --distro centos7</div>
             <div class="symbol-script-command">scripts/import_symbols.sh --distro debian13</div>
             <div class="symbol-script-command">scripts/import_symbols.sh --distro centos8_proxy --proxy http://127.0.0.1:7890</div>
-            <div class="symbol-script-command">scripts/import_symbols.sh --distro debian13 --kernel 6.12.86+deb13</div>
+            <div class="symbol-script-command">scripts/import_symbols.sh --distro debian13 --kernel 6.12.96+deb13-amd64</div>
             <div class="symbol-script-note">
               单脚本会按发行版流程安装或下载内核调试包，准备 dwarf2json，并从 vmlinux / System.map
               生成符号表到 symbols/。生成后 Web 服务会在下次运行插件时自动扫描，无需重启。
@@ -118,6 +118,10 @@
             <div class="symbol-script-note">
               支持发行版：ubuntu22_24、debian13、centos6、centos7、centos8、centos8_proxy。
               预制仓库索引仅覆盖部分常见内核；精确匹配时优先使用本机生成。
+            </div>
+            <div class="symbol-script-note">
+              Debian 13 在目标内核机器上运行时会自动使用 uname -r，无需传 --kernel；
+              为其他机器或导入镜像生成时才需要传完整 release（例如 6.12.96+deb13-amd64）。
             </div>
           </div>
         </div>

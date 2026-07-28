@@ -80,9 +80,8 @@ export function loadImage(path, engine = 'vol3') {
 }
 
 /**
- * Start automatic kernel-symbol preparation and consume its NDJSON progress
- * stream. Native fetch is used because Axios resolves only after the complete
- * response body has arrived in browsers.
+ * Detect matching kernel symbols, or download candidates after the operator
+ * confirms. Native fetch is used for byte-level NDJSON progress.
  */
 export async function autoDownloadImageSymbols(path, onProgress, options = {}) {
   const response = await fetch('/api/image/symbols/auto', {
@@ -91,7 +90,13 @@ export async function autoDownloadImageSymbols(path, onProgress, options = {}) {
       'Content-Type': 'application/json',
       ...authHeaders(),
     },
-    body: JSON.stringify({ path }),
+    body: JSON.stringify({
+      path,
+      download: Boolean(options.download),
+      use_gh_proxy: Boolean(options.useGhProxy),
+      paths: Array.isArray(options.paths) ? options.paths : [],
+      repo: options.repo || '',
+    }),
     signal: options.signal,
   })
   if (!response.ok) {

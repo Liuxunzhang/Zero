@@ -97,6 +97,18 @@ class EngineService:
             **kwargs,
         )
 
+    def get_manual_plugin_command(
+        self,
+        plugin_name: str,
+        engine_id: str = "vol3",
+        **kwargs: Any,
+    ) -> Optional[str]:
+        engine = self._manager.get_engine(engine_id)
+        getter = getattr(engine, "get_manual_plugin_command", None)
+        if not callable(getter):
+            return None
+        return getter(plugin_name, **kwargs)
+
     def cancel_plugin(self, engine_id: str = "vol3") -> bool:
         return self._manager.cancel_plugin(engine_id)
 

@@ -20,7 +20,7 @@ def test_detects_banner_across_chunk_boundary(tmp_path):
     assert result.kernel.release == "5.15.0-91-generic"
     assert result.kernel.distro == "ubuntu"
     assert result.kernel.architecture == "x86_64"
-    assert result.bytes_scanned < image.stat().st_size
+    assert result.bytes_scanned == image.stat().st_size
 
 
 def test_respects_scan_cap_when_banner_is_beyond_it(tmp_path):
@@ -49,3 +49,23 @@ def test_rejects_non_printable_false_positive_and_finds_next_banner(tmp_path):
     assert result.kernel is not None
     assert result.kernel.release == "6.1.0-23-amd64"
     assert result.kernel.distro == "debian"
+
+
+def test_prefers_current_debian_banner_over_stale_ubuntu_string(tmp_path):
+    image = tmp_path / "debian.raw"
+    old = (
+        b"Linux version 5.15.0-101-generic "
+        b"(buildd@ubuntu) #111-Ubuntu SMP\x00"
+    )
+    current = (
+        b"Linux version 6.12.96+deb13-amd64 "
+        b"(debian-kernel@lists.debian.org) #1 SMP PREEMPT_DYNAMIC\x00"
+    )
+    image.write_bytes(old + b"cached-data" + current + b"padding" + current)
+
+    result = detect_linux_kernel(image, chunk_bytes=29)
+
+    assert result.kernel is not None
+    assert result.kernel.release == "6.12.96+deb13-amd64"
+    assert result.kernel.distro == "debian"
+    assert result.kernel.architecture == "x86_64"

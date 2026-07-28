@@ -18,6 +18,7 @@ import {
   listEngines as apiListEngines,
   getEngineSettings as apiGetEngineSettings,
 } from "../api"
+import { confirmAction } from "../composables/confirm"
 
 const GLOBAL_ARGS_KEY = "zero-global-args"
 const PAGE_SIZE_OPTIONS = [50, 100, 200, 500, 1000]
@@ -126,7 +127,7 @@ export const useAppStore = defineStore("app", () => {
 
     switch (result.status) {
       case "downloaded":
-        pushMessage(prefix + "检测到 Linux 内核 " + release + "，已自动下载 " + downloaded + " 个匹配符号表", "success")
+        pushMessage(prefix + "检测到 Linux 内核 " + release + "，已下载 " + downloaded + " 个匹配符号表", "success")
         break
       case "present":
         pushMessage(prefix + "检测到 Linux 内核 " + release + "，匹配符号表已存在", "info")
@@ -138,18 +139,18 @@ export const useAppStore = defineStore("app", () => {
         pushMessage(prefix + "检测到 Linux 内核 " + release + "，远程仓库未找到同 release 的符号表", "warning")
         break
       case "ambiguous":
-        pushMessage(prefix + "内核 " + release + " 的符号表候选过多，未自动下载；请在“符号”面板选择", "warning")
+        pushMessage(prefix + "内核 " + release + " 的符号表候选过多，未下载；请在“符号”面板选择", "warning")
         break
       case "scan_limit_reached":
-        pushMessage(prefix + "内核 banner 扫描达到上限，未自动下载符号表", "warning")
+        pushMessage(prefix + "内核 banner 扫描达到上限，未找到匹配符号表", "warning")
         break
       case "not_detected":
-        pushMessage(prefix + "未检测到 Linux 内核 banner，未自动下载符号表", "info")
+        pushMessage(prefix + "未检测到 Linux 内核 banner", "info")
         break
       case "remote_unavailable":
       case "scan_failed":
       case "download_failed":
-        pushMessage(prefix + "符号表自动下载未完成: " + (result.reason || result.status), "warning")
+        pushMessage(prefix + "符号表准备未完成: " + (result.reason || result.status), "warning")
         break
       default:
         break
@@ -196,7 +197,7 @@ export const useAppStore = defineStore("app", () => {
     symbolDownloadStage.value = "detecting"
     let downloadAnnounced = false
     try {
-      const result = await autoDownloadImageSymbols(path, (event) => {
+      const progressHandler = (event) => {
         symbolDownloadStage.value = event.stage || ""
         const numericProgress = Number(event.percent)
         symbolDownloadProgress.value = event.percent != null && Number.isFinite(numericProgress)
@@ -210,11 +211,57 @@ export const useAppStore = defineStore("app", () => {
             "info",
           )
         }
+      }
+
+      const analysis = await autoDownloadImageSymbols(path, progressHandler)
+      if (analysis?.status !== "available") {
+        pushAutoSymbolMessage(analysis, engineId)
+        return
+      }
+
+      const release = analysis.kernel?.release || "未知版本"
+      const distro = analysis.kernel?.distro
+        ? analysis.kernel.distro.charAt(0).toUpperCase() + analysis.kernel.distro.slice(1)
+        : "Linux"
+      const candidates = Array.isArray(analysis.candidates) ? analysis.candidates : []
+      const choice = await confirmAction({
+        title: "下载匹配的 Linux 符号表？",
+        message:
+          `检测到 ${distro} 内核 ${release}。本地未找到匹配符号表，` +
+          `远程仓库找到 ${candidates.length} 个候选。请选择下载方式。`,
+        confirmText: "直接下载",
+        alternateText: "gh-proxy 下载",
+        alternateValue: "gh-proxy",
+        cancelText: "暂不下载",
+        danger: false,
       })
-      pushAutoSymbolMessage(result, engineId)
+      if (!choice) {
+        pushMessage(
+          "[" + engineId + "] 已识别 Linux 内核 " + release + "，用户暂不下载符号表",
+          "info",
+        )
+        return
+      }
+
+      downloadAnnounced = false
+      symbolDownloadStage.value = "downloading"
+      const useGhProxy = choice === "gh-proxy"
+      const downloadResult = await autoDownloadImageSymbols(path, progressHandler, {
+        download: true,
+        useGhProxy,
+        paths: candidates,
+        repo: analysis.repo || "",
+      })
+      pushAutoSymbolMessage(
+        {
+          ...downloadResult,
+          kernel: analysis.kernel,
+        },
+        engineId,
+      )
     } catch (e) {
       pushMessage(
-        "[" + engineId + "] 符号表自动下载未完成: " + e.message,
+        "[" + engineId + "] 符号表准备未完成: " + e.message,
         "warning",
       )
     } finally {
@@ -392,6 +439,11 @@ export const useAppStore = defineStore("app", () => {
       } else if (msg.type === "error") {
         if (target) { target.pluginBusy = false; target.progress = -1; target.runningPlugin = "" }
         pushMessage("[" + msgEngine + "] " + msg.data, "error")
+      } else if (msg.type === "command") {
+        pushMessage(
+          "[" + msgEngine + "] 服务器 Terminal 手动执行命令: " + String(msg.data || ""),
+          "info",
+        )
       } else if (msg.type === "status") {
         if (target) {
           if (msg.data === "running") { target.pluginBusy = true; target.progress = 0 }

@@ -3,8 +3,9 @@
 The normal Volatility Linux stack needs a matching ISF symbol table before it
 can build a layer.  A Linux ``linux_banner`` string is present in physical
 memory, however, so it can be found without starting Volatility or loading any
-symbols.  This module intentionally only streams the image and stops at the
-first valid banner; it is therefore suitable for the image-load path.
+symbols.  This module streams the image, compares all banners in the configured
+scan range, and keeps memory use bounded; it is therefore suitable for the
+image-load path without accepting the first stale banner it encounters.
 """
 
 from __future__ import annotations
@@ -102,6 +103,10 @@ class LinuxKernelDetection:
 
 def _detect_distro(banner: str) -> str:
     lower = banner.lower()
+    # Debian's kernel release itself commonly contains ``+deb13`` even when
+    # the short banner has no literal "Debian" compiler/build suffix.
+    if re.search(r"(?:^|[^a-z0-9])deb\d+(?:[^a-z0-9]|$)", lower):
+        return "debian"
     for distro, markers in _DISTRO_MARKERS:
         if any(marker in lower for marker in markers):
             return distro
@@ -169,6 +174,26 @@ def _candidate_bytes(data: bytes, start: int, *, at_end: bool) -> Optional[bytes
     return None
 
 
+def _release_version_key(release: str) -> tuple[int, int, int, str]:
+    """Return a deterministic tie-break key for equally frequent banners.
+
+    Crash dumps can contain stale ``Linux version`` strings in cached files or
+    process memory.  The active kernel banner is normally repeated more often,
+    so occurrence count is the primary selector.  If counts tie, prefer the
+    newest numeric release rather than whichever unrelated string happened to
+    occur at the lowest physical offset.
+    """
+    match = re.match(r"^(\d+)\.(\d+)(?:\.(\d+))?", release)
+    if not match:
+        return (0, 0, 0, release)
+    return (
+        int(match.group(1)),
+        int(match.group(2)),
+        int(match.group(3) or 0),
+        release,
+    )
+
+
 def detect_linux_kernel(
     image_path: str | Path,
     *,
@@ -177,9 +202,9 @@ def detect_linux_kernel(
 ) -> LinuxKernelDetection:
     """Find the first valid Linux banner with bounded, constant-size reads.
 
-    ``max_scan_bytes=0`` scans until a banner is found or the end of the image.
-    A positive cap is useful for deployments that prefer a fast best-effort
-    load over a full scan of an image that is not Linux.
+    ``max_scan_bytes=0`` scans the complete image.  A positive cap is useful
+    for deployments that prefer a fast best-effort result.  All valid banners
+    within that range are compared to reduce stale-banner misidentification.
     """
     path = Path(image_path).expanduser()
     image_size = path.stat().st_size
@@ -196,6 +221,11 @@ def detect_linux_kernel(
     bytes_scanned = 0
     tail = b""
     seen_offsets: set[int] = set()
+    # Do not return the first printable banner.  Memory frequently contains
+    # stale banners (for example an Ubuntu banner in a cached package) before
+    # the real Debian linux_banner.  Group all valid candidates by release and
+    # select the most frequently occurring release after the bounded scan.
+    candidates: dict[str, dict] = {}
 
     with path.open("rb") as image_file:
         while bytes_scanned < scan_limit:
@@ -227,12 +257,21 @@ def detect_linux_kernel(
                 seen_offsets.add(absolute_offset)
                 kernel = _parse_banner(raw, absolute_offset)
                 if kernel is not None:
-                    return LinuxKernelDetection(
-                        kernel=kernel,
-                        bytes_scanned=bytes_scanned + len(chunk),
-                        image_size=image_size,
-                        scan_limit=requested_limit,
-                    )
+                    entry = candidates.get(kernel.release)
+                    if entry is None:
+                        candidates[kernel.release] = {
+                            "count": 1,
+                            "kernel": kernel,
+                        }
+                    else:
+                        entry["count"] += 1
+                        current = entry["kernel"]
+                        # Prefer the richer representation for the selected
+                        # release so distro/architecture hints are retained.
+                        current_hints = bool(current.distro) + bool(current.architecture)
+                        new_hints = bool(kernel.distro) + bool(kernel.architecture)
+                        if new_hints > current_hints:
+                            entry["kernel"] = kernel
 
             bytes_scanned += len(chunk)
             # Keep enough bytes to re-evaluate a prefix or an incomplete banner
@@ -245,8 +284,21 @@ def detect_linux_kernel(
             tail_start = bytes_scanned - len(tail)
             seen_offsets = {offset for offset in seen_offsets if offset >= tail_start}
 
+    selected_kernel = None
+    if candidates:
+        selected = max(
+            candidates.values(),
+            key=lambda entry: (
+                int(entry["count"]),
+                _release_version_key(entry["kernel"].release),
+                bool(entry["kernel"].distro),
+                bool(entry["kernel"].architecture),
+            ),
+        )
+        selected_kernel = selected["kernel"]
+
     return LinuxKernelDetection(
-        kernel=None,
+        kernel=selected_kernel,
         bytes_scanned=bytes_scanned,
         image_size=image_size,
         scan_limit=requested_limit,

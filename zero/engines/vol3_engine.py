@@ -8,6 +8,7 @@ multiple Vol3Engine instances are fully independent.
 from __future__ import annotations
 
 import logging
+import shlex
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -190,6 +191,16 @@ class Vol3Engine(EngineBase):
 
     def resolve_plugin_name(self, plugin_name: str) -> str:
         return self._wrapper.resolve_plugin_name(plugin_name)
+
+    def get_manual_plugin_command(
+        self, plugin_name: str, **kwargs: Any
+    ) -> Optional[str]:
+        """Build the exact standalone worker command used by this engine."""
+        if not self._image_loaded:
+            return None
+        resolved = self._wrapper.resolve_plugin_name(plugin_name)
+        argv = self._wrapper._build_worker_command(resolved, kwargs)
+        return shlex.join(str(value) for value in argv)
 
     def _resolve_plugin_class(self, plugin_name: str) -> Tuple[Optional[str], Any]:
         """Return (resolved_name, plugin_class); (name, None) when not installed."""

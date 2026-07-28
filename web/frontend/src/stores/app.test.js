@@ -32,6 +32,7 @@ import {
   getEngineSettings,
 } from '../api'
 import { useAppStore } from './app'
+import { confirmState, resolveConfirm } from '../composables/confirm'
 
 describe('app store pagination & filter logic', () => {
   beforeEach(() => {
@@ -116,7 +117,7 @@ describe('app store pagination & filter logic', () => {
     expect(s.messages).toEqual([])
   })
 
-  it('logs image loading before streamed symbol download progress', async () => {
+  it('logs image loading before checking a local symbol', async () => {
     apiLoadImage.mockResolvedValue({ ok: true })
     getImageStatus.mockResolvedValue({ path: '/tmp/memory.raw' })
     getEngineSettings.mockResolvedValue({ settings: {} })
@@ -124,13 +125,11 @@ describe('app store pagination & filter logic', () => {
       const loadLog = useAppStore().messages.find((message) => message.text.includes('镜像已加载'))
       expect(loadLog).toBeTruthy()
       onProgress({ stage: 'detecting', percent: null })
-      onProgress({ stage: 'downloading', percent: 42, total_files: 1 })
-      expect(useAppStore().symbolDownloadProgress).toBe(42)
       return {
         enabled: true,
-        status: 'downloaded',
+        status: 'present',
         kernel: { release: '6.12.90+deb13.1-amd64' },
-        downloaded: [{ path: 'Debian/kernel.json.xz' }],
+        local_matches: [{ path: 'debian-kernel.json.xz' }],
       }
     })
 
@@ -139,11 +138,55 @@ describe('app store pagination & filter logic', () => {
 
     expect(s.messages.map((message) => message.text)).toEqual([
       '[vol3] 镜像已加载: /tmp/memory.raw',
-      '[vol3] 开始下载 1 个匹配符号表',
-      '[vol3] 检测到 Linux 内核 6.12.90+deb13.1-amd64，已自动下载 1 个匹配符号表',
+      '[vol3] 检测到 Linux 内核 6.12.90+deb13.1-amd64，匹配符号表已存在',
     ])
-    expect(new Set(s.messages.map((message) => message.ts)).size).toBe(3)
+    expect(new Set(s.messages.map((message) => message.ts)).size).toBe(2)
     expect(s.symbolDownloadBusy).toBe(false)
     expect(s.symbolDownloadProgress).toBe(null)
+  })
+
+  it('waits for confirmation and forwards the gh-proxy choice', async () => {
+    apiLoadImage.mockResolvedValue({ ok: true })
+    getImageStatus.mockResolvedValue({ path: '/tmp/debian.raw' })
+    getEngineSettings.mockResolvedValue({ settings: {} })
+    autoDownloadImageSymbols
+      .mockResolvedValueOnce({
+        enabled: true,
+        status: 'available',
+        kernel: { release: '6.12.96+deb13-amd64', distro: 'debian' },
+        repo: 'owner/repo',
+        candidates: ['Debian/kernel.json.xz'],
+      })
+      .mockImplementationOnce(async (_path, onProgress) => {
+        onProgress({ stage: 'downloading', percent: 100, total_files: 1 })
+        return {
+          enabled: true,
+          status: 'downloaded',
+          downloaded: [{ path: 'Debian/kernel.json.xz' }],
+          skipped: [],
+          failed: [],
+          use_gh_proxy: true,
+        }
+      })
+
+    const s = useAppStore()
+    const loading = s.loadImage('/tmp/debian.raw')
+    await vi.waitFor(() => expect(confirmState.show).toBe(true))
+    expect(confirmState.alternateText).toBe('gh-proxy 下载')
+    resolveConfirm('gh-proxy')
+    await loading
+
+    expect(autoDownloadImageSymbols).toHaveBeenNthCalledWith(
+      2,
+      '/tmp/debian.raw',
+      expect.any(Function),
+      {
+        download: true,
+        useGhProxy: true,
+        paths: ['Debian/kernel.json.xz'],
+        repo: 'owner/repo',
+      },
+    )
+    expect(s.messages.some((message) => message.text.includes('已下载 1 个匹配符号表'))).toBe(true)
   })
 })

@@ -32,7 +32,7 @@ Examples:
   scripts/import_symbols.sh
   scripts/import_symbols.sh --distro ubuntu22_24
   scripts/import_symbols.sh --distro centos7
-  scripts/import_symbols.sh --distro debian13 --kernel 6.12.86+deb13
+  scripts/import_symbols.sh --distro debian13 --kernel 6.12.96+deb13-amd64
   scripts/import_symbols.sh --distro centos8_proxy --proxy http://127.0.0.1:7890
 USAGE
 }
@@ -250,13 +250,17 @@ install_debian13_debug() {
   need_cmd apt
   need_cmd curl
 
-  local arch="amd64"
-  local dbg_pkg="linux-image-${KERNEL}-${arch}-dbg"
-  local vmlinux="/usr/lib/debug/boot/vmlinux-${KERNEL}-${arch}"
-  local system_map="/boot/System.map-${KERNEL}-${arch}"
+  local arch full_kernel dbg_pkg vmlinux="" system_map=""
+  arch="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+  case "$KERNEL" in
+    *-"$arch") full_kernel="$KERNEL" ;;
+    *) full_kernel="${KERNEL}-${arch}" ;;
+  esac
+  dbg_pkg="linux-image-${full_kernel}-dbg"
 
   log_step "准备 Debian 13 内核调试符号"
-  if [ -f "$vmlinux" ] && [ -f "$system_map" ]; then
+  if [ -f "/usr/lib/debug/boot/vmlinux-${full_kernel}" ] ||
+     [ -f "/usr/lib/debug/lib/modules/${full_kernel}/vmlinux" ]; then
     echo "debug files already exist"
   elif apt-cache show "$dbg_pkg" >/dev/null 2>&1; then
     sudo apt install -y "$dbg_pkg" xz-utils
@@ -285,7 +289,29 @@ install_debian13_debug() {
     sudo dpkg -i "$deb_path" || sudo apt-get install -f -y
   fi
 
-  emit_symbol "$vmlinux" "$system_map" "debian-${KERNEL}-${arch}.json.xz"
+  for candidate in \
+    "/usr/lib/debug/boot/vmlinux-${full_kernel}" \
+    "/usr/lib/debug/lib/modules/${full_kernel}/vmlinux"; do
+    if [ -f "$candidate" ]; then
+      vmlinux="$candidate"
+      break
+    fi
+  done
+  for candidate in \
+    "/boot/System.map-${full_kernel}" \
+    "/usr/lib/debug/boot/System.map-${full_kernel}" \
+    "/usr/lib/debug/lib/modules/${full_kernel}/System.map"; do
+    if [ -f "$candidate" ]; then
+      system_map="$candidate"
+      break
+    fi
+  done
+  if [ -z "$vmlinux" ]; then
+    echo "Could not find vmlinux for installed package: $dbg_pkg" >&2
+    exit 1
+  fi
+
+  emit_symbol "$vmlinux" "$system_map" "debian-${full_kernel}.json.xz"
 }
 
 install_debian13_snapshot_debug() {

@@ -335,6 +335,45 @@ class SymbolService:
         return ranked
 
     @staticmethod
+    def _rank_local_linux_symbols(
+        items: list[dict], kernel: LinuxKernelInfo
+    ) -> list[tuple[int, dict]]:
+        """Find exact-release local files before touching a remote index.
+
+        Locally generated ISFs are often stored directly under ``symbols/`` and
+        therefore have no ``Linux/`` path marker.  Exact release matching is
+        required; distro and architecture are ranking hints only.
+        """
+        ranked: list[tuple[int, dict]] = []
+        for item in items:
+            path = str(item.get("path") or "")
+            if not path or not _contains_release(path, kernel.release):
+                continue
+            normalized_path = f"-{_normalised_phrase(path)}-"
+            score = 100
+            if kernel.distro:
+                distro_terms = _DISTRO_PATH_MARKERS.get(
+                    kernel.distro, (kernel.distro,)
+                )
+                if any(
+                    f"-{_normalised_phrase(term)}-" in normalized_path
+                    for term in distro_terms
+                ):
+                    score += 30
+            if kernel.architecture:
+                arch_terms = _ARCH_PATH_MARKERS.get(
+                    kernel.architecture, (kernel.architecture,)
+                )
+                if any(
+                    f"-{_normalised_phrase(term)}-" in normalized_path
+                    for term in arch_terms
+                ):
+                    score += 15
+            ranked.append((score, item))
+        ranked.sort(key=lambda pair: (-pair[0], str(pair[1].get("path") or "")))
+        return ranked
+
+    @staticmethod
     def _auto_scan_payload(detection: LinuxKernelDetection) -> dict:
         return {
             "bytes_scanned": detection.bytes_scanned,
@@ -354,14 +393,17 @@ class SymbolService:
         self,
         image_path: str,
         *,
+        download: bool = False,
+        use_gh_proxy: bool = False,
         progress_callback: _ProgressCallback = None,
     ) -> dict:
-        """Detect a Linux banner and fetch the best matching missing ISF files.
+        """Detect Linux and prepare an explicit symbol-download decision.
 
         This is intentionally non-fatal: an image is still usable when a
         banner is absent, a remote index is unavailable, or no exact release is
-        published. Progress events allow the Web UI to distinguish kernel
-        detection, candidate matching, and byte-level symbol downloading.
+        published.  By default this method only detects, checks local symbols,
+        and returns remote candidates.  A download occurs only when
+        ``download=True`` so the GUI can ask the operator first.
         """
         if not _config_bool("AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD", True):
             return self._auto_base_result(enabled=False, status="disabled")
@@ -402,6 +444,29 @@ class SymbolService:
             )
 
         kernel_payload = kernel.as_dict()
+
+        # Check every local ISF before querying GitHub.  Apart from avoiding an
+        # unnecessary network request, this prevents the load workflow from
+        # prompting for a symbol table that is already usable.
+        local_payload = self.list_local_symbols()
+        local_ranked = self._rank_local_linux_symbols(
+            list(local_payload.get("items") or []),
+            kernel,
+        )
+        if local_ranked:
+            best_local_score = local_ranked[0][0]
+            local_matches = [
+                item for score, item in local_ranked if score == best_local_score
+            ]
+            return self._auto_base_result(
+                enabled=True,
+                status="present",
+                kernel=kernel_payload,
+                scan=scan,
+                local_matches=local_matches,
+                root=local_payload.get("root", ""),
+            )
+
         _notify_progress(
             progress_callback,
             stage="matching",
@@ -454,10 +519,21 @@ class SymbolService:
                 # Another configured repository may have fewer build variants.
                 continue
 
+            if not download:
+                return self._auto_base_result(
+                    enabled=True,
+                    status="available",
+                    kernel=kernel_payload,
+                    scan=scan,
+                    repo=ref.full,
+                    candidates=paths,
+                )
+
             try:
-                download = self.download_symbols(
+                download_result = self.download_symbols(
                     paths,
                     repo=ref.full,
+                    use_gh_proxy=use_gh_proxy,
                     progress_callback=progress_callback,
                 )
             except Exception as e:
@@ -477,9 +553,9 @@ class SymbolService:
                     reason=str(e),
                 )
 
-            downloaded = download.get("downloaded") or []
-            skipped = download.get("skipped") or []
-            failed = download.get("failed") or []
+            downloaded = download_result.get("downloaded") or []
+            skipped = download_result.get("skipped") or []
+            failed = download_result.get("failed") or []
             if failed and not downloaded and not skipped:
                 status = "download_failed"
             elif failed:
@@ -507,7 +583,8 @@ class SymbolService:
                 downloaded=downloaded,
                 skipped=skipped,
                 failed=failed,
-                root=download.get("root", ""),
+                root=download_result.get("root", ""),
+                use_gh_proxy=bool(download_result.get("use_gh_proxy")),
             )
 
         if ambiguous_result is not None:

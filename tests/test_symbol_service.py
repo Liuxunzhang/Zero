@@ -211,15 +211,45 @@ def test_auto_download_uses_exact_detected_release(service, monkeypatch, tmp_pat
         progress_callback=progress_events.append,
     )
 
-    assert out["status"] == "downloaded"
+    assert out["status"] == "available"
     assert out["kernel"]["release"] == "5.15.0-91-generic"
     assert out["kernel"]["distro"] == "ubuntu"
     assert out["candidates"] == [symbol_path]
-    assert fetched == [symbol_path]
+    assert fetched == []
     assert [event["stage"] for event in progress_events[:2]] == ["detecting", "matching"]
+
+    out = service.auto_download_for_image(
+        str(image),
+        download=True,
+        progress_callback=progress_events.append,
+    )
+    assert out["status"] == "downloaded"
+    assert fetched == [symbol_path]
     download_events = [event for event in progress_events if event["stage"] == "downloading"]
     assert download_events
     assert download_events[-1]["percent"] == 100.0
+
+
+def test_auto_check_returns_local_match_without_remote_index(service, monkeypatch, tmp_path):
+    image = tmp_path / "memory.raw"
+    image.write_bytes(
+        b"Linux version 6.12.96+deb13-amd64 "
+        b"(debian-kernel@lists.debian.org) #1 SMP Debian\x00"
+    )
+    root = svc_mod._resolve_symbol_root()
+    root.mkdir(parents=True)
+    (root / "debian-6.12.96+deb13-amd64.json.xz").write_bytes(b"symbol")
+
+    def boom(*_args, **_kwargs):
+        raise AssertionError("local exact match must be checked before GitHub")
+
+    monkeypatch.setattr(service, "_ensure_remote_index", boom)
+
+    out = service.auto_download_for_image(str(image))
+
+    assert out["status"] == "present"
+    assert out["kernel"]["release"] == "6.12.96+deb13-amd64"
+    assert out["local_matches"][0]["path"] == "debian-6.12.96+deb13-amd64.json.xz"
 
 
 def test_auto_download_refuses_too_many_equally_good_candidates(service, monkeypatch, tmp_path):

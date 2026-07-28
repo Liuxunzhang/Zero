@@ -7,7 +7,7 @@ import threading
 import time
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional
 from pathlib import Path
 
@@ -44,6 +44,10 @@ class ImageLoadRequest(BaseModel):
 
 class ImageSymbolDownloadRequest(BaseModel):
     path: str
+    download: bool = False
+    use_gh_proxy: bool = False
+    paths: list[str] = Field(default_factory=list)
+    repo: str = ""
 
 
 class PluginRunRequest(BaseModel):
@@ -172,7 +176,9 @@ def load_image(req: ImageLoadRequest):
 
 @router.post("/image/symbols/auto")
 def auto_download_image_symbols(req: ImageSymbolDownloadRequest):
-    """Stream kernel detection and symbol-download progress as NDJSON events."""
+    """Stream symbol detection or an operator-confirmed download as NDJSON."""
+    if len(req.paths) > 100:
+        raise HTTPException(400, "too many symbol paths, max 100 per request")
     image_path = Path(req.path).expanduser().resolve()
     if image_path.suffix.lower() not in _IMAGE_EXTENSIONS:
         raise HTTPException(400, "Unsupported image file extension")
@@ -188,10 +194,38 @@ def auto_download_image_symbols(req: ImageSymbolDownloadRequest):
 
     def worker() -> None:
         try:
-            result = get_symbol_service().auto_download_for_image(
-                str(image_path),
-                progress_callback=publish_progress,
-            )
+            symbol_service = get_symbol_service()
+            if req.download and req.paths:
+                download_result = symbol_service.download_symbols(
+                    req.paths,
+                    repo=req.repo,
+                    use_gh_proxy=req.use_gh_proxy,
+                    progress_callback=publish_progress,
+                )
+                downloaded = download_result.get("downloaded") or []
+                skipped = download_result.get("skipped") or []
+                failed = download_result.get("failed") or []
+                if failed and not downloaded and not skipped:
+                    status = "download_failed"
+                elif failed:
+                    status = "partial"
+                elif downloaded:
+                    status = "downloaded"
+                else:
+                    status = "present"
+                result = {
+                    "enabled": True,
+                    "status": status,
+                    "candidates": req.paths,
+                    **download_result,
+                }
+            else:
+                result = symbol_service.auto_download_for_image(
+                    str(image_path),
+                    download=req.download,
+                    use_gh_proxy=req.use_gh_proxy,
+                    progress_callback=publish_progress,
+                )
             events.put({"type": "result", "data": result})
         except Exception as e:
             logger.warning(
