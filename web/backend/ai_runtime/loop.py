@@ -48,8 +48,10 @@ class RunBudget:
     max_turns: int = 12
     max_tool_calls: int = 20
     max_seconds: int = 30 * 60
+    max_output_continuations: int = 2
     turns_used: int = 0
     tool_calls_used: int = 0
+    output_continuations_used: int = 0
     started_monotonic: float = 0.0
     final_summary_requested: bool = False
 
@@ -74,11 +76,16 @@ class RunBudget:
             "max_turns": self.max_turns,
             "max_tool_calls": self.max_tool_calls,
             "max_seconds": self.max_seconds,
+            "max_output_continuations": self.max_output_continuations,
             "turns_used": self.turns_used,
             "tool_calls_used": self.tool_calls_used,
+            "output_continuations_used": self.output_continuations_used,
             "elapsed_seconds": round(self.elapsed_seconds, 3),
             "remaining_turns": max(0, self.max_turns - self.turns_used),
             "remaining_tool_calls": max(0, self.max_tool_calls - self.tool_calls_used),
+            "remaining_output_continuations": max(
+                0, self.max_output_continuations - self.output_continuations_used
+            ),
             "remaining_seconds": max(0, round(self.max_seconds - self.elapsed_seconds, 3)),
         }
 
@@ -119,6 +126,7 @@ class AgentLoop:
         budget.start()
         await emit("run_start", {"budget": budget.to_dict()})
         final_reason = "completed"
+        continue_truncated_output = False
         try:
             while True:
                 if cancel_event.is_set():
@@ -151,6 +159,18 @@ class AgentLoop:
                 if plan.compacted:
                     await emit("compaction", plan.stats())
                 messages = list(plan.messages)
+                if continue_truncated_output:
+                    # The partial assistant message is already persisted and therefore
+                    # present in ``messages``. This synthetic instruction is deliberately
+                    # not added to conversation history.
+                    from .models import UserMessage
+
+                    messages.append(UserMessage(content=(
+                        "上一条回答因达到输出上限而被截断。请严格从中断处继续，"
+                        "不要重复任何已输出的标题、表格或段落；优先补完当前句子，"
+                        "然后用最短篇幅收束剩余结论。"
+                    )))
+                    continue_truncated_output = False
                 if final_phase:
                     # Synthetic instruction is not persisted as user history.
                     from .models import UserMessage
@@ -217,6 +237,28 @@ class AgentLoop:
                     },
                     "usage": assistant.usage.to_dict(),
                 })
+                if (
+                    assistant.stop_reason == "length"
+                    and not calls
+                    and not final_phase
+                    and not budget.exhausted()
+                    and budget.output_continuations_used < budget.max_output_continuations
+                ):
+                    budget.output_continuations_used += 1
+                    continue_truncated_output = True
+                    await emit("output_continuation", {
+                        "attempt": budget.output_continuations_used,
+                        "max_attempts": budget.max_output_continuations,
+                        "reason": "length",
+                        "budget": budget.to_dict(),
+                    })
+                    await emit("turn_end", {
+                        "turn": budget.turns_used,
+                        "stop_reason": assistant.stop_reason,
+                        "continuing": True,
+                        "budget": budget.to_dict(),
+                    })
+                    continue
                 if final_phase or not calls:
                     final_reason = exhausted or assistant.stop_reason or "completed"
                     await emit("turn_end", {

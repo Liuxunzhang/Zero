@@ -596,3 +596,62 @@ def test_agent_loop_retries_transient_provider_without_replaying_tools(tmp_path)
     retry = next(data for kind, data in emitted if kind == "retry")
     assert retry["attempt"] == 1
     assert retry["delay_seconds"] == 2
+
+
+def test_agent_loop_continues_a_length_limited_answer_without_repeating_history(tmp_path):
+    store = ConversationStore(tmp_path / "conversations")
+    meta = store.create()
+    store.append_message(meta["id"], UserMessage("analyze"))
+    requests = []
+
+    class Adapter:
+        def __init__(self, text, reason):
+            self.text = text
+            self.reason = reason
+
+        async def stream(self, request):
+            requests.append(request)
+            yield ProviderEvent("text_delta", {"text": self.text})
+            yield ProviderEvent("message_end", {"stop_reason": self.reason})
+
+        async def close(self):
+            return None
+
+    adapters = [Adapter("first half", "length"), Adapter(" second half", "stop")]
+    loop = AgentLoop(
+        conversations=store,
+        context=ContextManager(store),
+        tools=ToolRegistry(),
+        adapter_factory=lambda _snapshot: adapters.pop(0),
+    )
+    emitted = []
+
+    async def emit(kind, data):
+        emitted.append((kind, data))
+
+    result = asyncio.run(loop.run(
+        run_id="run",
+        conversation_id=meta["id"],
+        engine_id="vol3",
+        image_id="",
+        snapshot_factory=lambda _disabled: snapshot("openai_chat"),
+        emit=emit,
+        cancel_event=asyncio.Event(),
+        budget=RunBudget(max_turns=4, max_output_continuations=2),
+        agent_mode=False,
+    ))
+
+    assistants = [
+        message for message in store.messages(meta["id"])
+        if isinstance(message, AssistantMessage)
+    ]
+    assert [message.stop_reason for message in assistants] == ["length", "stop"]
+    assert result["reason"] == "stop"
+    continuation = next(data for kind, data in emitted if kind == "output_continuation")
+    assert continuation["attempt"] == 1
+    assert result["budget"]["output_continuations_used"] == 1
+    # The second request sees the persisted partial answer followed by an
+    # ephemeral, targeted continuation instruction.
+    assert isinstance(requests[1].messages[-2], AssistantMessage)
+    assert isinstance(requests[1].messages[-1], UserMessage)
+    assert "从中断处继续" in requests[1].messages[-1].content

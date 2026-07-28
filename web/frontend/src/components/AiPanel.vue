@@ -7,25 +7,12 @@
       @mousedown="floating ? $emit('drag-start', $event) : undefined"
     >
       <div class="ai-panel-title">
-        <span class="ai-panel-icon">IR</span>
-        <span>取证分析助手</span>
+        <span class="ai-panel-icon">Z/IR</span>
+        <span class="ai-panel-heading">
+          <b>证据研判台</b>
+          <small>AI FORENSIC AGENT</small>
+        </span>
         <span class="ai-panel-model" v-if="modelLabel">{{ modelLabel }}</span>
-        <div class="ai-quick-max-group">
-          <button
-            class="ai-quick-max-btn"
-            :class="{ active: tokenIsMax }"
-            :disabled="quickUpdating"
-            @click="toggleTokenMax"
-            title="最大响应 Token 设为 max"
-          >输出 {{ tokenIsMax ? 'max' : (tokenIsAuto ? '推荐' : '自定义') }}</button>
-          <button
-            class="ai-quick-max-btn"
-            :class="{ active: rowsIsMax }"
-            :disabled="quickUpdating"
-            @click="toggleRowsMax"
-            title="最大数据行数设为 max"
-          >上下文 {{ rowsIsMax ? 'max' : '默认' }}</button>
-        </div>
       </div>
       <div class="ai-panel-actions" ref="actionsEl">
         <button class="ai-header-btn" @click="$emit('open-config')" title="取证助手设置">
@@ -87,27 +74,27 @@
         <div class="ai-header-dropdown">
           <button
             class="ai-header-btn ai-header-dropdown-trigger"
-            :class="{ active: showMemoryPanel }"
-            @click.stop="toggleMemoryPanel"
-            title="压缩记忆"
+            :class="{ active: showRunPanel }"
+            @click.stop="toggleRunPanel"
+            title="运行详情"
           >
             <AppIcon name="brain" />
           </button>
-          <div v-if="showMemoryPanel" class="ai-header-dropdown-menu ai-header-dropdown-menu-memory">
+          <div v-if="showRunPanel" class="ai-header-dropdown-menu ai-header-dropdown-menu-memory">
             <div class="ai-dropdown-head">
               <div>
-                <div class="ai-dropdown-title">压缩记忆</div>
-                <div class="ai-dropdown-subtitle">与当前主题同步的临时摘要区</div>
-              </div>
-              <div class="ai-dropdown-head-actions">
-                <button class="ai-dropdown-ghost-btn" @click.stop="loadMemory" title="刷新">刷新</button>
-                <button class="ai-dropdown-ghost-btn danger" @click.stop="clearMemory" title="清空压缩记忆" :disabled="streaming">清空</button>
+                <div class="ai-dropdown-title">运行观测</div>
+                <div class="ai-dropdown-subtitle">真实上下文、预算与完成状态</div>
               </div>
             </div>
-            <div v-if="memoryLoading" class="ai-dropdown-empty">加载中...</div>
-            <div v-else-if="memoryError" class="ai-dropdown-empty">{{ memoryError }}</div>
-            <pre v-else-if="memoryText" class="ai-memory-text">{{ memoryText }}</pre>
-            <div v-else class="ai-dropdown-empty">暂无压缩记忆</div>
+            <div class="ai-run-inspector">
+              <div><span>运行状态</span><b>{{ runStatusLabel }}</b></div>
+              <div><span>上下文占用</span><b>{{ runtimeContextLabel }}</b></div>
+              <div><span>模型轮次</span><b>{{ aiRun.current.budget.turns_used || 0 }} / {{ aiRun.current.budget.max_turns || 12 }}</b></div>
+              <div><span>工具调用</span><b>{{ aiRun.current.budget.tool_calls_used || 0 }} / {{ aiRun.current.budget.max_tool_calls || 20 }}</b></div>
+              <div><span>自动续写</span><b>{{ aiRun.current.continuations || 0 }} 次</b></div>
+              <div><span>结束原因</span><b>{{ aiRun.current.stopReason || '—' }}</b></div>
+            </div>
           </div>
         </div>
         <!-- Pin/Float toggle -->
@@ -122,52 +109,66 @@
       </div>
     </div>
 
-    <!-- Prompt selector bar -->
-    <div class="ai-prompt-bar">
-      <span class="ai-prompt-bar-label">提示词:</span>
-      <select class="ai-prompt-select" v-model="activePromptId" @change="onPromptChange">
-        <option v-for="p in prompts" :key="p.id" :value="p.id">
-          {{ p.name }}{{ p.builtin ? '' : ' (自定义)' }}
-        </option>
-      </select>
+    <div class="ai-control-deck">
+      <div class="ai-prompt-bar">
+        <span class="ai-prompt-bar-label">分析策略</span>
+        <select class="ai-prompt-select" v-model="activePromptId" @change="onPromptChange">
+          <option v-for="p in prompts" :key="p.id" :value="p.id">
+            {{ p.name }}{{ p.builtin ? '' : ' (自定义)' }}
+          </option>
+        </select>
+        <button
+          class="ai-quick-max-btn"
+          :class="{ active: tokenIsMax }"
+          :disabled="quickUpdating"
+          @click="toggleTokenMax"
+          title="切换响应输出上限"
+        >输出 {{ tokenIsMax ? 'MAX' : (tokenIsAuto ? 'AUTO' : '自定义') }}</button>
+        <button
+          class="ai-quick-max-btn"
+          :class="{ active: rowsIsMax }"
+          :disabled="quickUpdating"
+          @click="toggleRowsMax"
+          title="切换插件上下文上限"
+        >证据 {{ rowsIsMax ? 'MAX' : '默认' }}</button>
+      </div>
+      <div class="ai-agent-strip">
+        <span
+          v-for="item in agentContextItems"
+          :key="item.label"
+          class="ai-agent-pill"
+          :class="{ muted: item.muted }"
+        >
+          <span class="ai-agent-pill-label">{{ item.label }}</span>
+          <span class="ai-agent-pill-value">{{ item.value }}</span>
+        </span>
+      </div>
     </div>
-    <div class="ai-agent-strip">
-      <span
-        v-for="item in agentContextItems"
-        :key="item.label"
-        class="ai-agent-pill"
-        :class="{ muted: item.muted }"
-      >
-        <span class="ai-agent-pill-label">{{ item.label }}</span>
-        <span class="ai-agent-pill-value">{{ item.value }}</span>
-      </span>
-    </div>
+    <AiRunRail :run="aiRun.current" :streaming="streaming" />
 
     <!-- Messages -->
     <div class="ai-messages" ref="messagesEl">
       <!-- Welcome -->
       <div v-if="!chatMessages.length" class="ai-welcome">
-        <div class="ai-welcome-icon">IR</div>
-        <div class="ai-welcome-title">内存取证分析助手</div>
+        <div class="ai-welcome-overline">EVIDENCE-FIRST ANALYSIS</div>
+        <div class="ai-welcome-icon">01</div>
+        <div class="ai-welcome-title">从证据出发，不替异常下定义</div>
         <div class="ai-welcome-text">
-          面向进程、网络、注册表、模块和可疑行为证据链。<br/>
-          智能体模式会直接调用可用插件，优先说明已取得的证据和风险。
+          当前镜像、插件结果和工具回执组成同一条证据链。<br/>
+          Agent 会先核验插件目录，再执行补证；证据不足时明确保持未知。
         </div>
         <div class="ai-quick-actions">
-          <button class="ai-quick-btn" @click="sendQuick('基于当前插件输出，按证据强度列出可疑进程、模块、网络连接或持久化痕迹，并说明依据。')" :disabled="streaming">
-            分析可疑迹象
+          <button class="ai-quick-btn" @click="sendQuick('严格基于当前插件输出做低误报研判。先列已确认事实；只有同一对象具备至少两个独立异常证据时才列为可疑，否则明确说明证据不足。')" :disabled="streaming">
+            <span class="ai-quick-index">01</span>
+            <span><b>快速研判</b><small>低误报提取事实与异常</small></span>
           </button>
-          <button class="ai-quick-btn" @click="sendQuick('只基于当前插件输出，总结关键取证事实。按字段和值列出证据，不要复述完整表格，不要推测未出现的数据。')" :disabled="streaming">
-            提取取证事实
-          </button>
-          <button class="ai-quick-btn" @click="sendQuick('进入智能体排查模式：先列出当前镜像可用插件，然后直接运行基础插件收集进程、网络、模块和持久化证据；不要输出下一步验证路径。')" :disabled="streaming">
-            自动基础排查
-          </button>
-          <button class="ai-quick-btn" @click="sendQuick('基于已有发现继续深入：如果需要更多证据，直接调用合适的 Volatility 插件；最终只输出已执行插件、关键证据、可疑项和无法确认的点。')" :disabled="streaming">
-            继续深入
+          <button class="ai-quick-btn" @click="sendQuick('进入证据链排查：先调用 list_plugins 核验可用插件名，再直接运行必要插件交叉验证当前异常。最终只报告已执行动作和可复核证据。')" :disabled="streaming">
+            <span class="ai-quick-index">02</span>
+            <span><b>证据链排查</b><small>自动核验目录并执行补证</small></span>
           </button>
           <button class="ai-quick-btn" @click="sendQuick('根据当前数据生成 Zero 过滤规则，筛选可疑 PID、路径、连接或注册表项，并用 ```filter 代码块输出。')" :disabled="streaming">
-            生成过滤规则
+            <span class="ai-quick-index">03</span>
+            <span><b>生成过滤规则</b><small>把已确认特征转为可执行筛选</small></span>
           </button>
         </div>
       </div>
@@ -180,19 +181,23 @@
         :class="'ai-message-' + msg.role"
       >
         <div class="ai-message-avatar">
-          {{ msg.role === 'user' ? '你' : 'IR' }}
+          {{ msg.role === 'user' ? 'Q' : msg.role === 'tool' ? 'T' : 'A' }}
         </div>
         <div class="ai-message-body">
-          <div class="ai-message-role">{{ msg.role === 'user' ? '你' : '取证分析' }}</div>
-          <div
-            v-if="msg.role === 'assistant'"
-            class="ai-message-content ai-markdown"
-            v-html="renderMarkdown(msg.content)"
-          />
-          <div v-if="msg.role === 'assistant' && ['aborted', 'interrupted', 'error'].includes(msg.status)" class="ai-message-meta">
-            {{ msg.status === 'aborted' ? '已由用户停止' : msg.status === 'interrupted' ? '连接或服务中断' : '生成出错' }}
+          <div class="ai-message-role">
+            <span>{{ msg.role === 'user' ? '分析请求' : msg.role === 'tool' ? '证据动作' : '研判结论' }}</span>
+            <span v-if="msg.role === 'assistant' && msg.stopReason" class="ai-message-state">{{ formatStopReason(msg.stopReason) }}</span>
           </div>
-          <div v-else class="ai-message-content">{{ msg.content }}</div>
+          <template v-if="msg.role === 'assistant'">
+            <div class="ai-message-content ai-markdown" v-html="renderMarkdown(msg.content)" />
+            <div v-if="msg.stopReason === 'length'" class="ai-incomplete-note">
+              本条输出达到上限，内容可能不完整。可发送“从中断处继续”补全。
+            </div>
+            <div v-if="['aborted', 'interrupted', 'error'].includes(msg.status)" class="ai-message-meta">
+              {{ msg.status === 'aborted' ? '已由用户停止' : msg.status === 'interrupted' ? '连接或服务中断' : '生成出错' }}
+            </div>
+          </template>
+          <div v-else-if="msg.role === 'user'" class="ai-message-content">{{ msg.content }}</div>
           <div v-if="msg.role === 'user'" class="ai-message-meta">
             {{ formatContextMeta(msg.context) }}
           </div>
@@ -239,9 +244,16 @@
 
       <!-- Streaming indicator -->
       <div v-if="streaming" class="ai-message ai-message-assistant">
-        <div class="ai-message-avatar">IR</div>
+        <div class="ai-message-avatar">A</div>
         <div class="ai-message-body">
-          <div class="ai-message-role">取证分析</div>
+          <div class="ai-message-role">
+            <span>实时研判</span>
+            <span class="ai-live-label"><i></i>{{ streamingStageLabel }}</span>
+          </div>
+          <details v-if="aiRun.current.thinkingSummary" class="ai-thinking-summary">
+            <summary>查看推理摘要</summary>
+            <p>{{ aiRun.current.thinkingSummary }}</p>
+          </details>
           <div class="ai-message-content ai-markdown" v-html="streamHtml" />
           <div v-if="!streamBuffer" class="ai-thinking">
             <span class="ai-thinking-dot"></span>
@@ -249,15 +261,6 @@
             <span class="ai-thinking-dot"></span>
           </div>
         </div>
-      </div>
-
-      <div v-if="memoryCompressing" class="ai-memory-status">正在更新取证记忆...</div>
-      <div v-if="aiRun.current.runId" class="ai-memory-status">
-        上下文 {{ runtimeContextLabel }}
-        · Turn {{ aiRun.current.budget.turns_used || 0 }}/{{ aiRun.current.budget.max_turns || 12 }}
-        · 工具 {{ aiRun.current.budget.tool_calls_used || 0 }}/{{ aiRun.current.budget.max_tool_calls || 20 }}
-        <span v-if="aiRun.current.compaction"> · 已压缩</span>
-        <span v-if="aiRun.current.retry"> · 重试 {{ aiRun.current.retry.attempt }}</span>
       </div>
 
       <!-- Error -->
@@ -283,40 +286,35 @@
 
     <!-- Input -->
     <div class="ai-input-area">
-      <div class="ai-input-row">
-        <label class="ai-context-toggle" title="附带当前插件数据">
-          <input type="checkbox" v-model="includeContext" />
-          <span class="ai-context-label">附带插件数据</span>
-        </label>
-        <span class="ai-context-current">{{ liveContextLabel }}</span>
-
-        <div class="ai-mode-switch-group">
+      <div class="ai-composer-head">
+        <div class="ai-mode-switch-group" aria-label="运行模式">
           <button
             type="button"
             class="ai-mode-switch-btn"
             :class="{ active: aiMode === 'chat' }"
             @click="aiMode = 'chat'"
             title="对话模式：AI 不会自主执行取证工具"
-          >
-            对话
-          </button>
+          >对话</button>
           <button
             type="button"
             class="ai-mode-switch-btn"
             :class="{ active: aiMode === 'agent' }"
             @click="aiMode = 'agent'"
             title="智能体模式：AI 可以自主决定并运行取证工具"
-          >
-            智能体
-          </button>
+          >Agent</button>
         </div>
+        <label class="ai-context-toggle" title="附带当前插件数据">
+          <input type="checkbox" v-model="includeContext" />
+          <span class="ai-context-label">附带当前证据</span>
+        </label>
+        <span class="ai-context-current">{{ liveContextLabel }}</span>
       </div>
-      <div class="ai-input-row">
+      <div class="ai-composer">
         <textarea
           ref="inputEl"
           class="ai-input"
           v-model="inputText"
-          placeholder="输入分析问题..."
+          placeholder="描述需要核验的对象、异常或证据范围…"
           @keydown.enter.exact.prevent="sendMessage"
           rows="1"
           :disabled="streaming"
@@ -326,8 +324,12 @@
           @click="streaming ? abortStream() : sendMessage()"
           :class="{ 'ai-stop-btn': streaming }"
         >
-          {{ streaming ? '停止' : '发送' }}
+          {{ streaming ? '停止运行' : (aiMode === 'agent' ? '开始研判' : '发送') }}
         </button>
+      </div>
+      <div class="ai-composer-foot">
+        <span>Enter 发送 · Shift+Enter 换行</span>
+        <span>结论仅引用当前证据链</span>
       </div>
     </div>
   </div>
@@ -337,9 +339,10 @@
 import { ref, computed, nextTick, watch, onMounted, onBeforeUnmount } from 'vue'
 import { marked } from 'marked'
 import AppIcon from './AppIcon.vue'
+import AiRunRail from './AiRunRail.vue'
 import { confirmAction } from '../composables/confirm'
 import {
-  getAiConfig, clearAiHistory, clearAiMemory, getAiMemory,
+  getAiConfig, clearAiHistory,
   getAiPrompts, setActivePrompt, saveAiSettings,
   listConversations, createConversation, getConversation, deleteConversation,
   renameConversation, loadConversation, queryAiToolResult,
@@ -376,10 +379,6 @@ const prompts = ref([])
 const activePromptId = ref('default')
 const activeDropdown = ref('')
 const actionsEl = ref(null)
-const memoryText = ref('')
-const memoryLoading = ref(false)
-const memoryError = ref('')
-const memoryCompressing = ref(false)
 const toolCallIndex = ref({})   // tool_call_id → chatMessages index
 const toolResultView = ref(null)
 const copiedId = ref(null)      // index of the last-copied message (for "已复制" feedback)
@@ -395,7 +394,7 @@ const conversations = ref([])
 const historyLoading = ref(false)
 const renamingId = ref(null)
 const renameText = ref('')
-const showMemoryPanel = computed(() => activeDropdown.value === 'memory')
+const showRunPanel = computed(() => activeDropdown.value === 'run')
 const showHistory = computed(() => activeDropdown.value === 'history')
 
 let currentAbort = null
@@ -529,6 +528,7 @@ const agentContextItems = computed(() => {
   const imageName = store.imagePath ? String(store.imagePath).split(/[\\/]/).pop() : '未加载镜像'
   return [
     { label: '模式', value: activePromptName.value },
+    { label: '模型', value: modelLabel.value || '未配置', muted: !modelLabel.value },
     { label: '引擎', value: store.selectedEngine || 'vol3' },
     { label: '镜像', value: imageName, muted: !store.imagePath },
     { label: '插件', value: store.currentPlugin || '未选择', muted: !store.currentPlugin },
@@ -541,6 +541,28 @@ const runtimeContextLabel = computed(() => {
   const used = Number(context.estimated_tokens || context.usage?.input_tokens || 0)
   const window = Number(context.context_window || 0)
   return window ? `${used.toLocaleString()}/${window.toLocaleString()} token` : `${used.toLocaleString()} token`
+})
+
+const runStatusLabel = computed(() => {
+  if (streaming.value) return '运行中'
+  const labels = {
+    idle: '待命',
+    completed: '已完成',
+    failed: '失败',
+    cancelled: '已停止',
+    interrupted: '已中断',
+  }
+  return labels[aiRun.current.status] || aiRun.current.status || '待命'
+})
+
+const streamingStageLabel = computed(() => {
+  if (aiRun.current.continuations > 0 && aiRun.current.lastEventType !== 'run_end') return '自动续写'
+  const tools = Object.values(aiRun.current.tools || {})
+  const runningTool = tools.find(tool => tool.status === 'running')
+  if (runningTool) return `执行 ${runningTool.name || '取证工具'}`
+  if (streamBuffer.value) return '形成结论'
+  if (aiRun.current.lastEventType === 'context') return '装载证据'
+  return '分析证据'
 })
 
 /**
@@ -636,7 +658,6 @@ async function sendMessage() {
   inputText.value = ''
   streaming.value = true
   streamBuffer.value = ''
-  memoryCompressing.value = false
   scrollToBottom()
 
   try {
@@ -656,6 +677,7 @@ async function sendMessage() {
         role: 'assistant',
         content: streamBuffer.value,
         status: aiRun.current.status,
+        stopReason: aiRun.current.stopReason,
       })
     }
   } catch (err) {
@@ -664,13 +686,13 @@ async function sendMessage() {
         role: 'assistant',
         content: streamBuffer.value,
         status: aiRun.current.status === 'cancelled' ? 'aborted' : 'interrupted',
+        stopReason: aiRun.current.stopReason,
       })
     }
     if (err?.name !== 'AbortError') errorText.value = err?.message || String(err)
   } finally {
     streamBuffer.value = ''
     streaming.value = false
-    memoryCompressing.value = false
     currentAbort = null
     if (showHistory.value) loadConversations()
     scrollToBottom()
@@ -680,6 +702,18 @@ async function sendMessage() {
 function formatContextMeta(context) {
   if (!context || !context.include) return '附带数据: 关闭'
   return `附带数据: ${context.plugin || '无'}`
+}
+
+function formatStopReason(reason) {
+  const labels = {
+    stop: '完整',
+    completed: '完整',
+    length: '达到输出上限',
+    cancelled: '已停止',
+    content_filter: '内容受限',
+    error: '异常结束',
+  }
+  return labels[reason] || reason
 }
 
 function formatToolArgs(args) {
@@ -735,11 +769,11 @@ async function abortStream() {
         role: 'assistant',
         content: streamBuffer.value + '\n\n*(已中断)*',
         status: 'aborted',
+        stopReason: 'cancelled',
       })
     }
     streamBuffer.value = ''
     streaming.value = false
-    memoryCompressing.value = false
     currentAbort = null
   }
 }
@@ -756,47 +790,13 @@ async function clearChat() {
   chatMessages.value = []
   errorText.value = ''
   streamBuffer.value = ''
-  memoryCompressing.value = false
   conversationId.value = null
   toolCallIndex.value = {}
   try { await clearAiHistory() } catch { /* ignore */ }
 }
 
-async function clearMemory() {
-  const ok = await confirmAction({
-    title: '清空压缩记忆',
-    message: '将删除 AI 的压缩记忆摘要，影响后续分析的上下文连续性。',
-    confirmText: '清空',
-  })
-  if (!ok) return
-  try {
-    await clearAiMemory()
-    memoryText.value = ''
-    memoryError.value = ''
-    store.pushMessage('AI 压缩记忆已清空', 'success')
-  } catch {
-    store.pushMessage('清空 AI 压缩记忆失败', 'error')
-  }
-}
-
-async function loadMemory() {
-  memoryLoading.value = true
-  memoryError.value = ''
-  try {
-    const data = await getAiMemory()
-    memoryText.value = data.compressed_memory || ''
-  } catch (e) {
-    memoryError.value = e.message || '加载压缩记忆失败'
-  } finally {
-    memoryLoading.value = false
-  }
-}
-
-function toggleMemoryPanel() {
-  activeDropdown.value = activeDropdown.value === 'memory' ? '' : 'memory'
-  if (showMemoryPanel.value) {
-    loadMemory()
-  }
+function toggleRunPanel() {
+  activeDropdown.value = activeDropdown.value === 'run' ? '' : 'run'
 }
 
 async function onPromptChange() {
@@ -890,6 +890,9 @@ async function selectConversation(conv) {
       toolRunning: m.toolRunning,
       toolSummary: m.toolSummary,
       toolError: m.toolError,
+      details: m.details,
+      stopReason: m.stopReason,
+      status: m.status,
     }))
     toolCallIndex.value = {}
     errorText.value = ''
@@ -991,6 +994,7 @@ onMounted(() => {
           role: 'assistant',
           content: streamBuffer.value,
           status: aiRun.current.status === 'cancelled' ? 'aborted' : aiRun.current.status,
+          stopReason: aiRun.current.stopReason,
         })
         streamBuffer.value = ''
       }
@@ -1487,6 +1491,485 @@ watch(() => props.open, (val) => {
   .ai-dropdown-ghost-btn {
     animation: none;
     transition: none;
+  }
+}
+
+/* ── Evidence workbench refresh ────────────────────── */
+.ai-panel {
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 2%, transparent), transparent 26%),
+    var(--bg-secondary);
+}
+
+.ai-panel-header {
+  min-height: 54px;
+  padding: 10px 13px;
+  border-bottom-color: var(--border-subtle);
+  background:
+    linear-gradient(100deg, color-mix(in srgb, var(--accent) 8%, transparent), transparent 42%),
+    var(--bg-tertiary);
+}
+
+.ai-panel-title {
+  flex: 1;
+  flex-wrap: nowrap;
+  gap: 9px;
+}
+
+.ai-panel-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 28px;
+  flex: none;
+  border: 1px solid color-mix(in srgb, #39c6c8 50%, var(--border));
+  border-radius: 5px;
+  background: color-mix(in srgb, #39c6c8 8%, var(--bg-elevated));
+  color: #60dadd;
+  font: 800 10px/1 var(--font-mono, monospace);
+  letter-spacing: .04em;
+}
+
+.ai-panel-heading {
+  display: grid;
+  min-width: 0;
+  line-height: 1.05;
+}
+
+.ai-panel-heading b {
+  color: var(--text-primary);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.ai-panel-heading small {
+  margin-top: 4px;
+  color: var(--text-muted);
+  font: 700 8px/1 var(--font-mono, monospace);
+  letter-spacing: .11em;
+}
+
+.ai-panel-model {
+  display: none;
+}
+
+.ai-control-deck {
+  flex: none;
+  border-bottom: 1px solid var(--border-subtle);
+  background: color-mix(in srgb, var(--bg-secondary) 96%, black 4%);
+}
+
+.ai-prompt-bar {
+  gap: 6px;
+  padding: 7px 12px 5px;
+  border: 0;
+  background: transparent;
+}
+
+.ai-prompt-bar-label {
+  color: var(--text-secondary);
+  font: 650 10px/1 var(--font-mono, monospace);
+}
+
+.ai-prompt-select {
+  min-width: 88px;
+  height: 26px;
+  border-radius: 5px;
+  background-color: var(--bg-elevated);
+}
+
+.ai-quick-max-btn {
+  height: 26px;
+  border-radius: 5px;
+  font-size: 9px;
+}
+
+.ai-agent-strip {
+  gap: 5px;
+  padding: 4px 12px 8px;
+  border: 0;
+  background: transparent;
+}
+
+.ai-agent-pill {
+  height: 21px;
+  padding: 0 7px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--bg-elevated) 70%, transparent);
+  font-size: 9px;
+}
+
+.ai-agent-pill:first-child {
+  border-color: color-mix(in srgb, #39c6c8 36%, var(--border-subtle));
+}
+
+.ai-run-inspector {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1px;
+  padding: 1px;
+  background: var(--border-subtle);
+}
+
+.ai-run-inspector > div {
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  background: var(--bg-secondary);
+}
+
+.ai-run-inspector span {
+  color: var(--text-muted);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: .05em;
+}
+
+.ai-run-inspector b {
+  color: var(--text-primary);
+  font: 600 11px/1.2 var(--font-mono, monospace);
+}
+
+.ai-messages {
+  gap: 18px;
+  padding: 18px 14px 22px;
+  scroll-padding-bottom: 24px;
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--border-subtle) 35%, transparent) 1px, transparent 1px);
+  background-size: 100% 44px;
+}
+
+.ai-welcome {
+  align-items: stretch;
+  justify-content: flex-start;
+  padding: 34px 12px 22px;
+  text-align: left;
+}
+
+.ai-welcome-overline {
+  margin-bottom: 12px;
+  color: #39c6c8;
+  font: 700 9px/1 var(--font-mono, monospace);
+  letter-spacing: .16em;
+}
+
+.ai-welcome-icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin: 0 0 18px;
+  border: 1px solid color-mix(in srgb, #39c6c8 45%, var(--border));
+  border-radius: 50%;
+  background: color-mix(in srgb, #39c6c8 9%, var(--bg-secondary));
+  color: #65dfe1;
+  font: 700 12px/1 var(--font-mono, monospace);
+  opacity: 1;
+  animation: none;
+}
+
+.ai-welcome-title {
+  max-width: 320px;
+  margin-bottom: 10px;
+  font-size: 19px;
+  line-height: 1.25;
+  letter-spacing: -.015em;
+}
+
+.ai-welcome-text {
+  max-width: 390px;
+  margin-bottom: 24px;
+  color: var(--text-secondary);
+  line-height: 1.75;
+}
+
+.ai-quick-actions {
+  max-width: none;
+  gap: 7px;
+}
+
+.ai-quick-btn {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 54px;
+  padding: 9px 12px;
+  border-radius: 7px;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 5%, transparent), transparent 55%),
+    var(--bg-elevated);
+}
+
+.ai-quick-btn:hover:not(:disabled) {
+  transform: translateX(2px);
+}
+
+.ai-quick-index {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-right: 1px solid var(--border);
+  color: #39c6c8;
+  font: 700 9px/1 var(--font-mono, monospace);
+}
+
+.ai-quick-btn > span:last-child {
+  display: grid;
+  gap: 3px;
+}
+
+.ai-quick-btn b {
+  color: var(--text-primary);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.ai-quick-btn small {
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.ai-message {
+  position: relative;
+  gap: 9px;
+}
+
+.ai-message::before {
+  position: absolute;
+  top: 30px;
+  bottom: -18px;
+  left: 13px;
+  width: 1px;
+  background: var(--border-subtle);
+  content: "";
+}
+
+.ai-message:last-of-type::before {
+  display: none;
+}
+
+.ai-message-avatar {
+  z-index: 1;
+  width: 27px;
+  height: 27px;
+  border-radius: 50%;
+  background: var(--bg-secondary);
+  font: 700 9px/1 var(--font-mono, monospace);
+}
+
+.ai-message-tool .ai-message-avatar {
+  border-color: color-mix(in srgb, var(--text-success, #46c780) 45%, var(--border));
+  color: var(--text-success, #46c780);
+}
+
+.ai-message-role {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 20px;
+  margin-bottom: 5px;
+  font-family: var(--font-mono, monospace);
+  letter-spacing: .08em;
+}
+
+.ai-message-state,
+.ai-live-label {
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.ai-live-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #39c6c8;
+}
+
+.ai-live-label i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: ai-live-pulse 1.2s ease-in-out infinite;
+}
+
+.ai-message-assistant .ai-message-body {
+  padding: 10px 12px 8px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-elevated) 85%, transparent);
+}
+
+.ai-message-user .ai-message-content {
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg-elevated));
+}
+
+.ai-message-content {
+  font-size: 12px;
+  line-height: 1.72;
+}
+
+.ai-incomplete-note {
+  margin-top: 10px;
+  padding: 8px 9px;
+  border-left: 2px solid var(--text-warning, #e5a84b);
+  background: color-mix(in srgb, var(--text-warning, #e5a84b) 8%, transparent);
+  color: var(--text-warning, #e5a84b);
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.ai-thinking-summary {
+  margin: 0 0 9px;
+  padding: 7px 9px;
+  border: 1px dashed var(--border);
+  border-radius: 5px;
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.ai-thinking-summary summary {
+  cursor: pointer;
+  color: var(--text-secondary);
+}
+
+.ai-thinking-summary p {
+  margin: 7px 0 0;
+  white-space: pre-wrap;
+}
+
+.ai-tool-card {
+  border-radius: 6px;
+  background: var(--bg-secondary);
+}
+
+.ai-input-area {
+  padding: 9px 12px 10px;
+  border-top-color: var(--border-subtle);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, #39c6c8 4%, transparent), transparent 50%),
+    var(--bg-tertiary);
+}
+
+.ai-composer-head,
+.ai-composer,
+.ai-composer-foot {
+  display: flex;
+  align-items: center;
+}
+
+.ai-composer-head {
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.ai-mode-switch-group {
+  margin: 0;
+  padding: 2px;
+  border-radius: 5px;
+}
+
+.ai-mode-switch-btn {
+  border-radius: 3px;
+  padding: 4px 9px;
+  font-size: 9px;
+}
+
+.ai-mode-switch-btn.active {
+  background: color-mix(in srgb, #39c6c8 22%, var(--bg-elevated));
+  color: #73e3e5;
+  box-shadow: none;
+}
+
+.ai-context-current {
+  max-width: 36%;
+  font-size: 9px;
+}
+
+.ai-composer {
+  gap: 7px;
+  align-items: stretch;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  transition: border-color .18s ease, box-shadow .18s ease;
+}
+
+.ai-composer:focus-within {
+  border-color: color-mix(in srgb, #39c6c8 58%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, #39c6c8 8%, transparent);
+}
+
+.ai-input {
+  min-height: 36px;
+  max-height: 150px;
+  padding: 8px 9px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  resize: vertical;
+}
+
+.ai-input:focus {
+  border: 0;
+  box-shadow: none;
+}
+
+.ai-send-btn {
+  min-width: 76px;
+  border-radius: 5px;
+  background: linear-gradient(135deg, #278b91, #37b7b9);
+  color: #041315;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.ai-stop-btn {
+  background: color-mix(in srgb, var(--text-error, #f87171) 18%, var(--bg-elevated));
+  color: var(--text-error, #f87171);
+}
+
+.ai-composer-foot {
+  justify-content: space-between;
+  margin-top: 6px;
+  color: var(--text-muted);
+  font-size: 8px;
+}
+
+@keyframes ai-live-pulse {
+  50% { opacity: .3; }
+}
+
+@media (max-width: 560px) {
+  .ai-panel-model,
+  .ai-prompt-bar-label,
+  .ai-quick-max-btn:last-child {
+    display: none;
+  }
+
+  .ai-control-deck .ai-agent-pill:nth-child(n+4) {
+    display: none;
+  }
+
+  .ai-composer-head {
+    flex-wrap: wrap;
+  }
+
+  .ai-context-current {
+    max-width: 44%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-live-label i {
+    animation: none;
   }
 }
 </style>

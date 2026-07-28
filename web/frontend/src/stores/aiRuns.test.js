@@ -63,4 +63,22 @@ describe('AI run event reducer', () => {
     expect(state.status).toBe('cancelled')
     expect(state.text).toBe('partial')
   })
+
+  it('tracks automatic continuation and the final stop reason', () => {
+    const state = initialRunState()
+    reduceRunEvent(state, event(1, 'message_end', {
+      message: { stop_reason: 'length' },
+      usage: { output_tokens: 8192 },
+    }))
+    reduceRunEvent(state, event(2, 'output_continuation', {
+      attempt: 1,
+      budget: { output_continuations_used: 1 },
+    }))
+    reduceRunEvent(state, event(3, 'message_end', {
+      message: { stop_reason: 'stop' },
+    }))
+    expect(state.continuations).toBe(1)
+    expect(state.stopReason).toBe('stop')
+    expect(state.context.usage.output_tokens).toBe(8192)
+  })
 })

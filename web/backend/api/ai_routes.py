@@ -1544,12 +1544,27 @@ async def get_conversation(conv_id: str):
                 if isinstance(block, RuntimeTextBlock)
             )
             if text:
-                messages.append({
-                    "role": "assistant",
-                    "content": strip_dsml_tool_markup(text),
-                    "ts": message.created_at,
-                    "status": message.status,
-                })
+                clean_text = strip_dsml_tool_markup(text)
+                # Automatic output continuation is persisted as another canonical
+                # assistant message. Present it as one seamless answer in history,
+                # matching the live SSE experience.
+                if (
+                    messages
+                    and messages[-1].get("role") == "assistant"
+                    and messages[-1].get("stopReason") == "length"
+                ):
+                    messages[-1]["content"] += clean_text
+                    messages[-1]["ts"] = message.created_at
+                    messages[-1]["status"] = message.status
+                    messages[-1]["stopReason"] = message.stop_reason
+                else:
+                    messages.append({
+                        "role": "assistant",
+                        "content": clean_text,
+                        "ts": message.created_at,
+                        "status": message.status,
+                        "stopReason": message.stop_reason,
+                    })
             for block in message.content:
                 if isinstance(block, RuntimeToolCallBlock):
                     messages.append({

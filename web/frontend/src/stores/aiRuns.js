@@ -23,6 +23,9 @@ export function initialRunState() {
     context: {},
     retry: null,
     compaction: null,
+    stopReason: '',
+    continuations: 0,
+    lastEventType: '',
     error: '',
   }
 }
@@ -33,6 +36,7 @@ export function reduceRunEvent(state, event) {
   state.lastSeq = seq
   state.runId = event.run_id || state.runId
   state.conversationId = event.conversation_id || state.conversationId
+  state.lastEventType = event.type
   const data = event.data || {}
   switch (event.type) {
     case 'run_start':
@@ -72,6 +76,14 @@ export function reduceRunEvent(state, event) {
     case 'usage':
       state.context = { ...state.context, usage: data }
       break
+    case 'message_end':
+      state.stopReason = data.message?.stop_reason || data.stop_reason || state.stopReason
+      state.context = { ...state.context, usage: data.usage || state.context.usage }
+      break
+    case 'output_continuation':
+      state.continuations = Math.max(state.continuations, Number(data.attempt || 0))
+      state.budget = data.budget || state.budget
+      break
     case 'context':
       state.context = { ...state.context, ...data }
       break
@@ -89,6 +101,7 @@ export function reduceRunEvent(state, event) {
       break
     case 'run_end':
       state.status = data.status || 'completed'
+      state.stopReason = data.reason || state.stopReason
       state.error = data.error || ''
       state.budget = data.budget || state.budget
       break
