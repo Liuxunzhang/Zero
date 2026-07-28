@@ -45,6 +45,8 @@ logs/
 # Local configuration
 .env
 config.local.py
+# Local upstream design reference; never packaged or committed.
+pi/
 
 # Editors
 .vscode/

@@ -189,6 +189,9 @@
             class="ai-message-content ai-markdown"
             v-html="renderMarkdown(msg.content)"
           />
+          <div v-if="msg.role === 'assistant' && ['aborted', 'interrupted', 'error'].includes(msg.status)" class="ai-message-meta">
+            {{ msg.status === 'aborted' ? '已由用户停止' : msg.status === 'interrupted' ? '连接或服务中断' : '生成出错' }}
+          </div>
           <div v-else class="ai-message-content">{{ msg.content }}</div>
           <div v-if="msg.role === 'user'" class="ai-message-meta">
             {{ formatContextMeta(msg.context) }}
@@ -221,7 +224,14 @@
               <code class="ai-tool-name">{{ msg.toolName }}</code>
             </div>
             <div v-if="msg.toolArgs && Object.keys(msg.toolArgs).length" class="ai-tool-args">{{ formatToolArgs(msg.toolArgs) }}</div>
+            <div v-if="msg.toolProgress?.message" class="ai-tool-summary">{{ msg.toolProgress.message }}</div>
+            <div v-if="msg.toolProgress?.percent != null" class="ai-tool-summary">进度 {{ msg.toolProgress.percent }}%</div>
             <div v-if="msg.toolSummary" class="ai-tool-summary">{{ msg.toolSummary }}</div>
+            <div v-if="msg.details?.result_id" class="ai-tool-args">
+              result_id={{ msg.details.result_id }}
+              <span v-if="msg.details.total != null"> · {{ msg.details.total }} 行</span>
+              <button class="ai-copy-btn" @click="openToolResult(msg.details.result_id, 1)">查看结果</button>
+            </div>
             <div v-if="msg.toolError" class="ai-tool-err">{{ msg.toolError }}</div>
           </div>
         </div>
@@ -242,10 +252,32 @@
       </div>
 
       <div v-if="memoryCompressing" class="ai-memory-status">正在更新取证记忆...</div>
+      <div v-if="aiRun.current.runId" class="ai-memory-status">
+        上下文 {{ runtimeContextLabel }}
+        · Turn {{ aiRun.current.budget.turns_used || 0 }}/{{ aiRun.current.budget.max_turns || 12 }}
+        · 工具 {{ aiRun.current.budget.tool_calls_used || 0 }}/{{ aiRun.current.budget.max_tool_calls || 20 }}
+        <span v-if="aiRun.current.compaction"> · 已压缩</span>
+        <span v-if="aiRun.current.retry"> · 重试 {{ aiRun.current.retry.attempt }}</span>
+      </div>
 
       <!-- Error -->
       <div v-if="errorText" class="ai-error">
         <span>错误: {{ errorText }}</span>
+      </div>
+
+      <div v-if="toolResultView" class="ai-tool-card ai-tool-done">
+        <div class="ai-tool-header">
+          <code class="ai-tool-name">{{ toolResultView.result_id }}</code>
+          <button class="ai-copy-btn" @click="toolResultView = null">关闭</button>
+        </div>
+        <div class="ai-tool-args">
+          {{ toolResultView.total }} 行 · 第 {{ toolResultView.page }}/{{ toolResultView.total_pages }} 页
+        </div>
+        <pre class="ai-tool-summary">{{ JSON.stringify(toolResultView.rows, null, 2) }}</pre>
+        <div class="ai-msg-toolbar">
+          <button class="ai-copy-btn" :disabled="toolResultView.page <= 1" @click="openToolResult(toolResultView.result_id, toolResultView.page - 1)">上一页</button>
+          <button class="ai-copy-btn" :disabled="toolResultView.page >= toolResultView.total_pages" @click="openToolResult(toolResultView.result_id, toolResultView.page + 1)">下一页</button>
+        </div>
       </div>
     </div>
 
@@ -307,12 +339,13 @@ import { marked } from 'marked'
 import AppIcon from './AppIcon.vue'
 import { confirmAction } from '../composables/confirm'
 import {
-  streamAiChat, getAiConfig, clearAiHistory, clearAiMemory, getAiMemory, getAiMemoryStats,
+  getAiConfig, clearAiHistory, clearAiMemory, getAiMemory,
   getAiPrompts, setActivePrompt, saveAiSettings,
-  listConversations, getConversation, deleteConversation,
-  renameConversation, loadConversation,
+  listConversations, createConversation, getConversation, deleteConversation,
+  renameConversation, loadConversation, queryAiToolResult,
 } from '../api'
 import { useAppStore } from '../stores/app'
+import { useAiRunStore } from '../stores/aiRuns'
 
 const emit = defineEmits(['close', 'open-config', 'prefill-consumed', 'toggle-pin', 'drag-start'])
 
@@ -323,6 +356,7 @@ const props = defineProps({
 })
 
 const store = useAppStore()
+const aiRun = useAiRunStore()
 
 // State
 const chatMessages = ref([])
@@ -347,6 +381,7 @@ const memoryLoading = ref(false)
 const memoryError = ref('')
 const memoryCompressing = ref(false)
 const toolCallIndex = ref({})   // tool_call_id → chatMessages index
+const toolResultView = ref(null)
 const copiedId = ref(null)      // index of the last-copied message (for "已复制" feedback)
 const tokenIsMax = ref(false)
 const rowsIsMax = ref(false)
@@ -503,6 +538,13 @@ const agentContextItems = computed(() => {
   ]
 })
 
+const runtimeContextLabel = computed(() => {
+  const context = aiRun.current.context || {}
+  const used = Number(context.estimated_tokens || context.usage?.input_tokens || 0)
+  const window = Number(context.context_window || 0)
+  return window ? `${used.toLocaleString()}/${window.toLocaleString()} token` : `${used.toLocaleString()} token`
+})
+
 /**
  * Extract filter rules from ```filter ... ``` blocks in AI response.
  */
@@ -547,7 +589,43 @@ function sendQuick(text) {
   sendMessage()
 }
 
-function sendMessage() {
+function handleRunEvent(event) {
+  const payload = event.data || {}
+  if (event.type === 'text_delta') {
+    streamBuffer.value += payload.text || ''
+    scrollToBottom()
+  } else if (event.type === 'tool_start') {
+    const idx = chatMessages.value.length
+    chatMessages.value.push({
+      role: 'tool',
+      toolName: payload.tool_name,
+      toolArgs: payload.arguments || {},
+      toolRunning: true,
+      toolProgress: {},
+      toolSummary: '',
+      toolError: '',
+    })
+    toolCallIndex.value[payload.tool_call_id] = idx
+    scrollToBottom()
+  } else if (event.type === 'tool_progress') {
+    const idx = toolCallIndex.value[payload.tool_call_id]
+    if (idx !== undefined && chatMessages.value[idx]) {
+      chatMessages.value[idx].toolProgress = payload
+    }
+  } else if (event.type === 'tool_end') {
+    const idx = toolCallIndex.value[payload.tool_call_id]
+    if (idx !== undefined && chatMessages.value[idx]) {
+      const message = chatMessages.value[idx]
+      message.toolRunning = false
+      message.details = payload.details || {}
+      if (payload.is_error) message.toolError = payload.content || 'Unknown error'
+      else message.toolSummary = payload.content || ''
+    }
+    scrollToBottom()
+  }
+}
+
+async function sendMessage() {
   const msg = inputText.value.trim()
   if (!msg || streaming.value) return
 
@@ -563,109 +641,42 @@ function sendMessage() {
   memoryCompressing.value = false
   scrollToBottom()
 
-  currentAbort = streamAiChat(
-    msg,
-    includeContext.value,
-    (chunk) => {
-      streamBuffer.value += chunk
-      scrollToBottom()
-    },
-    (returnedConvId) => {
-      chatMessages.value.push({ role: 'assistant', content: streamBuffer.value })
-      if (returnedConvId && !conversationId.value) {
-        conversationId.value = returnedConvId
-      }
-      streamBuffer.value = ''
-      streaming.value = false
-      memoryCompressing.value = false
-      currentAbort = null
-      // Refresh sidebar if open
-      if (showHistory.value) loadConversations()
-      scrollToBottom()
-    },
-    (err) => {
-      if (streamBuffer.value) {
-        chatMessages.value.push({ role: 'assistant', content: streamBuffer.value })
-      }
-      errorText.value = err
-      streamBuffer.value = ''
-      streaming.value = false
-      memoryCompressing.value = false
-      currentAbort = null
-      scrollToBottom()
-    },
-    (status) => {
-      if (status === 'queued') {
-        memoryCompressing.value = true
-        let pollCount = 0
-        const maxPolls = 30
-        const poll = () => {
-          setTimeout(async () => {
-            if (pollCount >= maxPolls || !memoryCompressing.value) {
-              memoryCompressing.value = false
-              return
-            }
-            pollCount++
-            try {
-              const res = await getAiMemoryStats()
-              const currentStatus = res?.stats?.status
-              if (currentStatus === 'done') {
-                memoryCompressing.value = false
-                if (showMemoryPanel.value) loadMemory()
-              } else if (currentStatus === 'failed') {
-                memoryCompressing.value = false
-              } else {
-                poll()
-              }
-            } catch {
-              poll()
-            }
-          }, 2000)
-        }
-        poll()
-      } else if (status === 'compressing') {
-        memoryCompressing.value = true
-      } else if (status === 'done') {
-        memoryCompressing.value = false
-        if (showMemoryPanel.value) loadMemory()
-      } else if (status === 'failed') {
-        memoryCompressing.value = false
-      }
-      scrollToBottom()
-    },
-    // onToolCall — agent requested a tool execution
-    (payload) => {
-      const idx = chatMessages.value.length
+  try {
+    if (!conversationId.value) {
+      const created = await createConversation('', store.selectedEngine || 'vol3')
+      conversationId.value = created.conversation.id
+    }
+    currentAbort = { abort: () => aiRun.cancel() }
+    await aiRun.start(conversationId.value, {
+      message: msg,
+      engine_id: store.selectedEngine || 'vol3',
+      mode: aiMode.value,
+      include_context: includeContext.value,
+    }, handleRunEvent)
+    if (streamBuffer.value) {
       chatMessages.value.push({
-        role: 'tool',
-        toolName: payload.tool_name,
-        toolArgs: payload.arguments || {},
-        toolRunning: true,
-        toolSummary: '',
-        toolError: '',
+        role: 'assistant',
+        content: streamBuffer.value,
+        status: aiRun.current.status,
       })
-      toolCallIndex.value[payload.tool_call_id] = idx
-      scrollToBottom()
-    },
-    // onToolResult — tool execution finished
-    (payload) => {
-      const idx = toolCallIndex.value[payload.tool_call_id]
-      if (idx !== undefined && chatMessages.value[idx]) {
-        const msg = chatMessages.value[idx]
-        msg.toolRunning = false
-        if (payload.ok) {
-          msg.toolSummary = payload.summary || ''
-        } else {
-          msg.toolError = payload.error || 'Unknown error'
-        }
-      }
-      scrollToBottom()
-    },
-    store.selectedEngine || 'vol3',
-    conversationId.value,
-    aiMode.value,
-    store.osFamily || 'linux',
-  )
+    }
+  } catch (err) {
+    if (streamBuffer.value) {
+      chatMessages.value.push({
+        role: 'assistant',
+        content: streamBuffer.value,
+        status: aiRun.current.status === 'cancelled' ? 'aborted' : 'interrupted',
+      })
+    }
+    if (err?.name !== 'AbortError') errorText.value = err?.message || String(err)
+  } finally {
+    streamBuffer.value = ''
+    streaming.value = false
+    memoryCompressing.value = false
+    currentAbort = null
+    if (showHistory.value) loadConversations()
+    scrollToBottom()
+  }
 }
 
 function formatContextMeta(context) {
@@ -682,6 +693,19 @@ function formatToolArgs(args) {
     }
   }
   return parts.join(', ')
+}
+
+async function openToolResult(resultId, page = 1) {
+  if (!conversationId.value) return
+  try {
+    toolResultView.value = await queryAiToolResult(resultId, {
+      conversation_id: conversationId.value,
+      page,
+      page_size: 50,
+    })
+  } catch (error) {
+    errorText.value = error?.message || '加载工具结果失败'
+  }
 }
 
 async function copyMessage(idx, text) {
@@ -704,11 +728,16 @@ async function copyMessage(idx, text) {
   }
 }
 
-function abortStream() {
+async function abortStream() {
   if (currentAbort) {
-    currentAbort.abort()
+    // The server must terminate the SDK request and Volatility worker first.
+    await aiRun.cancel().catch(() => false)
     if (streamBuffer.value) {
-      chatMessages.value.push({ role: 'assistant', content: streamBuffer.value + '\n\n*(已中断)*' })
+      chatMessages.value.push({
+        role: 'assistant',
+        content: streamBuffer.value + '\n\n*(已中断)*',
+        status: 'aborted',
+      })
     }
     streamBuffer.value = ''
     streaming.value = false
@@ -950,6 +979,29 @@ onMounted(() => {
   loadConfig()
   applyPrefillText(props.prefillText)
   document.addEventListener('pointerdown', handleDocumentClick)
+  streaming.value = true
+  aiRun.reconnect(handleRunEvent).then((recovered) => {
+    if (!recovered) {
+      streaming.value = false
+      return
+    }
+    conversationId.value = aiRun.current.conversationId || conversationId.value
+    if (aiRun.current.text && !streamBuffer.value) streamBuffer.value = aiRun.current.text
+    if (['completed', 'failed', 'cancelled', 'interrupted'].includes(aiRun.current.status)) {
+      if (streamBuffer.value) {
+        chatMessages.value.push({
+          role: 'assistant',
+          content: streamBuffer.value,
+          status: aiRun.current.status === 'cancelled' ? 'aborted' : aiRun.current.status,
+        })
+        streamBuffer.value = ''
+      }
+      streaming.value = false
+    }
+  }).catch((error) => {
+    errorText.value = error?.message || String(error)
+    streaming.value = false
+  })
 })
 
 onBeforeUnmount(() => {

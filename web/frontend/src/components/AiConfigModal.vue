@@ -68,7 +68,12 @@
             </div>
             <div class="profile-card-info">
               <span class="profile-card-tag">{{ p.model }}</span>
+              <span class="profile-card-tag">{{ p.protocol }}</span>
+              <span class="profile-card-tag">{{ Number(p.context_window || 65536).toLocaleString() }} ctx</span>
               <span class="profile-card-url">{{ p.base_url }}</span>
+            </div>
+            <div v-if="p.context_window_estimated" class="setting-hint warning">
+              上下文窗口为迁移估算值，请按模型文档确认。
             </div>
           </div>
         </div>
@@ -76,6 +81,15 @@
         <!-- Add new profile form -->
         <div class="add-section">
           <div class="add-section-title">{{ editingProfileId ? '编辑配置' : '添加新配置' }}</div>
+          <div class="form-group full">
+            <label>内置模型目录（选择后仍可手动覆盖）</label>
+            <select @change="applyCatalog($event.target.value)">
+              <option value="">手动配置</option>
+              <option v-for="(model, index) in modelCatalog" :key="model.model" :value="index">
+                {{ model.name }} · {{ model.protocol }}
+              </option>
+            </select>
+          </div>
           <div class="form-grid">
             <div class="form-group">
               <label>名称</label>
@@ -93,10 +107,50 @@
               <label>模型名称</label>
               <input v-model="newProfile.model" placeholder="gpt-4o / deepseek-chat / ..." />
             </div>
+            <div class="form-group">
+              <label>协议</label>
+              <select v-model="newProfile.protocol">
+                <option value="openai_responses">OpenAI Responses</option>
+                <option value="openai_chat">OpenAI-compatible Chat</option>
+                <option value="anthropic_messages">Anthropic Messages</option>
+                <option value="google_genai">Google GenerateContent</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>上下文窗口</label>
+              <input v-model.number="newProfile.context_window" type="number" min="4096" step="1024" />
+            </div>
+            <div class="form-group">
+              <label>Reasoning 档位</label>
+              <select v-model="newProfile.reasoning_level">
+                <option value="off">off</option>
+                <option value="low">low</option>
+                <option value="medium">medium</option>
+                <option value="high">high</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label>能力覆盖</label>
+              <label class="setting-inline-toggle">
+                <input type="checkbox" v-model="newProfile.capabilities.tools" />
+                <span>工具调用</span>
+              </label>
+              <label class="setting-inline-toggle">
+                <input type="checkbox" v-model="newProfile.capabilities.reasoning" />
+                <span>Reasoning</span>
+              </label>
+              <label class="setting-inline-toggle">
+                <input type="checkbox" v-model="newProfile.capabilities.thinking_summary" />
+                <span>公开思考摘要</span>
+              </label>
+            </div>
           </div>
           <div class="profile-form-actions">
             <button class="add-btn" @click="saveProfile" :disabled="!canSaveProfile">
               {{ editingProfileId ? '保存配置' : '+ 添加配置' }}
+            </button>
+            <button class="form-cancel-btn" @click="testConnection" :disabled="!canSaveProfile || profileTesting">
+              {{ profileTesting ? '测试中…' : '连接测试' }}
             </button>
             <button v-if="editingProfileId" class="form-cancel-btn" @click="cancelEditProfile">取消编辑</button>
           </div>
@@ -259,9 +313,10 @@ import { confirmAction } from '../composables/confirm'
 import { useEscClose } from '../composables/useEscClose'
 import { ref, computed, onMounted } from 'vue'
 import {
-  getAiProfiles, saveAiProfiles, setActiveProfile, getActiveProfile,
+  getAiProfiles, getAiModelCatalog, saveAiProfiles, setActiveProfile, getActiveProfile,
   getAiPrompts, saveAiPrompt, deleteAiPrompt, setActivePrompt,
   getAiConfig, getAiPersistConfig, setAiPersistConfig, getAiSettings, saveAiSettings,
+  testAiProfile,
 } from '../api'
 
 const emit = defineEmits(['close', 'config-changed'])
@@ -270,6 +325,7 @@ useEscClose(() => true, () => emit('close'))
 
 const tab = ref('profiles')
 const profiles = ref([])
+const modelCatalog = ref([])
 const prompts = ref([])
 const activeProfileId = ref(null)
 const activePromptId = ref('default')
@@ -278,6 +334,7 @@ const expandedPrompt = ref(null)
 const persistToConfig = ref(true)
 const editingProfileId = ref('')
 const profileStatus = ref({ type: '', text: '' })
+const profileTesting = ref(false)
 const aiSettings = ref({
   ai_max_tokens: 4096,
   ai_temperature: 0.1,
@@ -291,11 +348,20 @@ const aiSettings = ref({
 const aiMaxTokensIsMax = ref(false)
 const aiContextRowsIsMax = ref(false)
 
-const newProfile = ref({ name: '', base_url: '', api_key: '', model: '' })
+const newProfile = ref({
+  name: '',
+  base_url: '',
+  api_key: '',
+  model: '',
+  protocol: 'openai_chat',
+  context_window: 65536,
+  reasoning_level: 'off',
+  capabilities: { tools: true, reasoning: true, thinking_summary: true, usage: true },
+})
 const newPrompt = ref({ name: '', content: '' })
 
 const canSaveProfile = computed(() =>
-  newProfile.value.name.trim() && newProfile.value.base_url.trim() && newProfile.value.model.trim()
+  newProfile.value.name.trim() && newProfile.value.model.trim()
 )
 const canAddPrompt = computed(() =>
   newPrompt.value.name.trim() && newPrompt.value.content.trim()
@@ -310,8 +376,9 @@ const aiLimitHint = computed(() => {
 
 async function loadData() {
   try {
-    const [profData, promptData, cfgData, activeData, persistData, settingsData] = await Promise.all([
+    const [profData, catalogData, promptData, cfgData, activeData, persistData, settingsData] = await Promise.all([
       getAiProfiles(),
+      getAiModelCatalog(),
       getAiPrompts(),
       getAiConfig(),
       getActiveProfile(),
@@ -319,6 +386,7 @@ async function loadData() {
       getAiSettings(),
     ])
     profiles.value = profData.profiles || []
+    modelCatalog.value = catalogData.models || []
     prompts.value = promptData.prompts || []
     configModel.value = cfgData.model || ''
     activePromptId.value = cfgData.active_prompt_id || 'default'
@@ -343,6 +411,17 @@ async function loadData() {
     }
   } catch (e) {
     console.error('Failed to load AI config:', e)
+  }
+}
+
+function applyCatalog(index) {
+  if (index === '') return
+  const model = modelCatalog.value[Number(index)]
+  if (!model) return
+  newProfile.value = {
+    ...newProfile.value,
+    ...model,
+    api_key: newProfile.value.api_key,
   }
 }
 
@@ -408,12 +487,41 @@ function startEditProfile(profile) {
     base_url: profile.base_url || '',
     api_key: profile.api_key || '',
     model: profile.model || '',
+    protocol: profile.protocol || 'openai_chat',
+    context_window: profile.context_window || 65536,
+    reasoning_level: profile.reasoning_level || 'off',
+    capabilities: {
+      tools: true, reasoning: true, thinking_summary: true, usage: true,
+      ...(profile.capabilities || {}),
+    },
   }
 }
 
 function cancelEditProfile() {
   editingProfileId.value = ''
-  newProfile.value = { name: '', base_url: '', api_key: '', model: '' }
+  newProfile.value = {
+    name: '', base_url: '', api_key: '', model: '',
+    protocol: 'openai_chat', context_window: 65536,
+    reasoning_level: 'off',
+    capabilities: { tools: true, reasoning: true, thinking_summary: true, usage: true },
+  }
+}
+
+async function testConnection() {
+  if (!canSaveProfile.value || profileTesting.value) return
+  profileTesting.value = true
+  profileStatus.value = { type: '', text: '' }
+  try {
+    const data = await testAiProfile(newProfile.value)
+    profileStatus.value = {
+      type: data.ok ? 'success' : 'error',
+      text: data.ok ? `连接成功：${data.protocol} / ${data.model}` : '模型未返回文本。',
+    }
+  } catch (error) {
+    profileStatus.value = { type: 'error', text: error?.message || '连接测试失败' }
+  } finally {
+    profileTesting.value = false
+  }
 }
 
 async function saveProfile() {
