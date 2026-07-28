@@ -343,7 +343,7 @@ body.ai-resizing-ai {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 6px 12px 0;
+  padding: 6px 12px 0 0;
   gap: 6px;
 }
 
@@ -568,12 +568,6 @@ body.table-column-resizing * {
 
 .sidebar.collapsed {
   width: 48px;
-}
-
-.sidebar.hover-open {
-  width: var(--sidebar-width);
-  box-shadow: var(--shadow-side);
-  z-index: 800;
 }
 
 .sidebar-header {

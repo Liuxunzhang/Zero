@@ -1,10 +1,5 @@
 <template>
-  <div
-    class="sidebar"
-    :class="{ collapsed: sidebarCollapsed && !sidebarHoverOpen, 'hover-open': sidebarCollapsed && sidebarHoverOpen }"
-    @mouseenter="sidebarHoverOpen = true"
-    @mouseleave="sidebarHoverOpen = false"
-  >
+  <div class="sidebar" :class="{ collapsed: sidebarCollapsed }">
     <div class="sidebar-header">
       <div class="sidebar-title-row">
         <div class="sidebar-logo">
@@ -130,7 +125,7 @@
         class="sidebar-collapse-btn"
         @click="toggleSidebar"
         :title="sidebarCollapsed ? '展开侧边栏' : '收起侧边栏'"
-      ><AppIcon name="panel-left" :size="14" /></button>
+      ><AppIcon :name="sidebarCollapsed ? 'chevron-right' : 'panel-left'" :size="14" /></button>
     </div>
   </div>
 </template>
@@ -164,8 +159,7 @@ let expandedBeforeSearch = null
 // visible plugin list is a bad first impression.
 const SIDEBAR_COLLAPSED_KEY = 'zero-sidebar-collapsed'
 const sidebarCollapsed = ref(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true')
-const sidebarHoverOpen = ref(false)
-const sidebarExpanded = computed(() => !sidebarCollapsed.value || sidebarHoverOpen.value)
+const sidebarExpanded = computed(() => !sidebarCollapsed.value)
 
 function toggleSidebar() {
   sidebarCollapsed.value = !sidebarCollapsed.value
@@ -516,6 +510,7 @@ async function reloadPlugins() {
 }
 
 .sidebar-footer-collapsed {
+  margin-top: auto;
   padding: 10px 8px;
   justify-content: center;
 }

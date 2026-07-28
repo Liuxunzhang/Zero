@@ -332,29 +332,6 @@
 
     <!-- Input -->
     <div class="ai-input-area">
-      <div class="ai-composer-head">
-        <div class="ai-mode-switch-group" aria-label="运行模式">
-          <button
-            type="button"
-            class="ai-mode-switch-btn"
-            :class="{ active: aiMode === 'chat' }"
-            @click="aiMode = 'chat'"
-            title="对话模式：AI 不会自主执行取证工具"
-          >对话</button>
-          <button
-            type="button"
-            class="ai-mode-switch-btn"
-            :class="{ active: aiMode === 'agent' }"
-            @click="aiMode = 'agent'"
-            title="智能体模式：AI 可以自主决定并运行取证工具"
-          >Agent</button>
-        </div>
-        <label class="ai-context-toggle" title="附带当前插件数据">
-          <input type="checkbox" v-model="includeContext" />
-          <span class="ai-context-label">附带当前证据</span>
-        </label>
-        <span class="ai-context-current">{{ liveContextLabel }}</span>
-      </div>
       <div class="ai-composer">
         <textarea
           ref="inputEl"
@@ -374,8 +351,29 @@
         </button>
       </div>
       <div class="ai-composer-foot">
-        <span>Enter 发送 · Shift+Enter 换行</span>
-        <span>结论仅引用当前证据链</span>
+        <div class="ai-composer-bottom-controls">
+          <div class="ai-mode-switch-group" aria-label="运行模式">
+            <button
+              type="button"
+              class="ai-mode-switch-btn"
+              :class="{ active: aiMode === 'chat' }"
+              @click="aiMode = 'chat'"
+              title="对话模式：AI 不会自主执行取证工具"
+            >Chat</button>
+            <button
+              type="button"
+              class="ai-mode-switch-btn"
+              :class="{ active: aiMode === 'agent' }"
+              @click="aiMode = 'agent'"
+              title="智能体模式：AI 可以自主决定并运行取证工具"
+            >Agent</button>
+          </div>
+          <label class="ai-context-toggle" title="附带当前插件数据">
+            <input type="checkbox" v-model="includeContext" />
+            <span class="ai-context-label">附带证据</span>
+          </label>
+        </div>
+        <span class="ai-context-current">{{ liveContextLabel }}</span>
       </div>
     </div>
   </div>
@@ -2065,28 +2063,30 @@ watch([contextDeckCollapsed, evidenceRailCollapsed], ([context, evidence]) => {
     var(--bg-tertiary);
 }
 
-.ai-composer-head,
 .ai-composer,
 .ai-composer-foot {
   display: flex;
   align-items: center;
 }
 
-.ai-composer-head {
-  gap: 8px;
-  margin-bottom: 7px;
+.ai-composer-bottom-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
 }
 
 .ai-mode-switch-group {
   margin: 0;
-  padding: 2px;
-  border-radius: 5px;
+  padding: 1px;
+  border-radius: 4px;
 }
 
 .ai-mode-switch-btn {
-  border-radius: 3px;
-  padding: 4px 9px;
-  font-size: 9px;
+  min-height: 18px;
+  border-radius: 2px;
+  padding: 2px 6px;
+  font-size: 8px;
 }
 
 .ai-mode-switch-btn.active {
@@ -2096,8 +2096,8 @@ watch([contextDeckCollapsed, evidenceRailCollapsed], ([context, evidence]) => {
 }
 
 .ai-context-current {
-  max-width: 36%;
-  font-size: 9px;
+  max-width: 42%;
+  font-size: 8px;
 }
 
 .ai-composer {
@@ -2145,10 +2145,29 @@ watch([contextDeckCollapsed, evidenceRailCollapsed], ([context, evidence]) => {
 }
 
 .ai-composer-foot {
-  justify-content: space-between;
-  margin-top: 6px;
+  gap: 8px;
+  min-height: 22px;
+  margin-top: 4px;
   color: var(--text-muted);
   font-size: 8px;
+}
+
+.ai-composer-foot .ai-context-toggle {
+  gap: 4px;
+}
+
+.ai-composer-foot .ai-context-toggle input {
+  width: 11px;
+  height: 11px;
+}
+
+.ai-composer-foot .ai-context-label {
+  font-size: 8px;
+  white-space: nowrap;
+}
+
+.ai-composer-foot .ai-context-current {
+  margin-left: auto;
 }
 
 @keyframes ai-live-pulse {
@@ -2164,10 +2183,6 @@ watch([contextDeckCollapsed, evidenceRailCollapsed], ([context, evidence]) => {
 
   .ai-control-deck .ai-agent-pill:nth-child(n+4) {
     display: none;
-  }
-
-  .ai-composer-head {
-    flex-wrap: wrap;
   }
 
   .ai-context-current {
