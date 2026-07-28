@@ -17,7 +17,7 @@
             :disabled="quickUpdating"
             @click="toggleTokenMax"
             title="最大响应 Token 设为 max"
-          >输出 {{ tokenIsMax ? 'max' : '默认' }}</button>
+          >输出 {{ tokenIsMax ? 'max' : (tokenIsAuto ? '推荐' : '自定义') }}</button>
           <button
             class="ai-quick-max-btn"
             :class="{ active: rowsIsMax }"
@@ -384,9 +384,9 @@ const toolCallIndex = ref({})   // tool_call_id → chatMessages index
 const toolResultView = ref(null)
 const copiedId = ref(null)      // index of the last-copied message (for "已复制" feedback)
 const tokenIsMax = ref(false)
+const tokenIsAuto = ref(true)
 const rowsIsMax = ref(false)
 const quickUpdating = ref(false)
-const tokenDefaultValue = ref(4096)
 const rowsDefaultValue = ref(500)
 
 // Conversation history
@@ -494,16 +494,14 @@ function resolveApiName(cfg) {
 
 function syncQuickMaxState(settings) {
   const tokenMax = settings?.ai_max_tokens === 'max'
+  const tokenAuto = settings?.ai_max_tokens === 'auto' || settings?.ai_max_tokens == null
   const rowsMax = settings?.ai_context_max_rows === 'max'
-  if (!tokenMax) {
-    const n = Number(settings?.ai_max_tokens)
-    if (Number.isFinite(n) && n > 0) tokenDefaultValue.value = Math.trunc(n)
-  }
   if (!rowsMax) {
     const n = Number(settings?.ai_context_max_rows)
     if (Number.isFinite(n) && n > 0) rowsDefaultValue.value = Math.trunc(n)
   }
   tokenIsMax.value = tokenMax
+  tokenIsAuto.value = tokenAuto
   rowsIsMax.value = rowsMax
 }
 
@@ -827,7 +825,7 @@ async function toggleTokenMax() {
   if (quickUpdating.value) return
   quickUpdating.value = true
   const payload = {
-    ai_max_tokens: tokenIsMax.value ? tokenDefaultValue.value : 'max',
+    ai_max_tokens: tokenIsMax.value ? 'auto' : 'max',
   }
   try {
     const data = await saveAiSettings(payload)

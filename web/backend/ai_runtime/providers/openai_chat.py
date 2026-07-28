@@ -30,19 +30,38 @@ class OpenAIChatAdapter(ProviderAdapter):
 
     async def stream(self, request: ProviderRequest) -> AsyncIterator[ProviderEvent]:
         snapshot = request.snapshot
+        provider_state = request.metadata.get("provider_state") or {}
         kwargs: dict[str, Any] = {
             "model": snapshot.model,
-            "messages": openai_chat_messages(request.messages, snapshot.system_prompt),
+            "messages": openai_chat_messages(
+                request.messages,
+                snapshot.system_prompt,
+                provider_state=provider_state,
+            ),
             "stream": True,
             "stream_options": {"include_usage": True},
             "max_tokens": snapshot.max_output_tokens,
         }
         if snapshot.tools:
             kwargs.update(tools=openai_tools(snapshot.tools), tool_choice="auto")
-        if snapshot.model.lower().startswith(("gpt-5", "o1", "o3", "o4")):
+        is_deepseek = snapshot.provider_family == "deepseek"
+        is_openai_reasoning = snapshot.model.lower().startswith(("gpt-5", "o1", "o3", "o4"))
+        if is_deepseek:
+            if snapshot.reasoning_level == "off":
+                kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+                if snapshot.temperature is not None:
+                    kwargs["temperature"] = snapshot.temperature
+            else:
+                kwargs["extra_body"] = {"thinking": {"type": "enabled"}}
+                kwargs["reasoning_effort"] = (
+                    "max" if snapshot.reasoning_level == "max" else "high"
+                )
+        elif is_openai_reasoning:
             kwargs["reasoning_effort"] = (
                 "none" if snapshot.reasoning_level == "off" else snapshot.reasoning_level
             )
+        elif snapshot.temperature is not None:
+            kwargs["temperature"] = snapshot.temperature
         yield ProviderEvent("message_start", {"provider": self.protocol, "model": snapshot.model})
         calls: dict[int, dict[str, str]] = {}
         raw_text: list[str] = []
@@ -50,6 +69,7 @@ class OpenAIChatAdapter(ProviderAdapter):
         stop_reason = ""
         request_id = ""
         usage = Usage()
+        reasoning_parts: list[str] = []
         try:
             stream = await self.client.chat.completions.create(**kwargs)
             async for chunk in stream:
@@ -70,11 +90,16 @@ class OpenAIChatAdapter(ProviderAdapter):
                         if visible:
                             yield ProviderEvent("text_delta", {"text": visible})
                     reasoning = (
+                        getattr(delta, "reasoning_content", None)
+                        or
                         getattr(delta, "reasoning_summary", None)
                         or ""
                     )
-                    if reasoning and snapshot.thinking_summary:
-                        yield ProviderEvent("thinking_summary_delta", {"text": reasoning})
+                    if reasoning:
+                        if is_deepseek:
+                            reasoning_parts.append(reasoning)
+                        elif snapshot.thinking_summary:
+                            yield ProviderEvent("thinking_summary_delta", {"text": reasoning})
                     for tc in getattr(delta, "tool_calls", None) or []:
                         index = int(getattr(tc, "index", 0) or 0)
                         item = calls.setdefault(index, {"id": "", "name": "", "arguments": ""})
@@ -120,6 +145,10 @@ class OpenAIChatAdapter(ProviderAdapter):
                 "arguments": arguments,
                 "raw_arguments": raw,
                 "complete": complete,
+            })
+        if calls and reasoning_parts:
+            yield ProviderEvent("provider_state", {
+                "reasoning_content": "".join(reasoning_parts),
             })
         yield ProviderEvent("message_end", {
             "stop_reason": normalize_stop_reason(stop_reason, has_tool_calls=bool(calls)),

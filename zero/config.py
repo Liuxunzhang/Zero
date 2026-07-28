@@ -80,18 +80,49 @@ RESULTS_QUERY_CACHE_MAX = 64
 RESULTS_QUERY_CACHE_MAX_ROWS = 2_000_000
 
 # 取证助手设置
-AI_PROVIDER = "baishanyun"                          # siliconflow / openai / deepseek / ollama
+AI_PROVIDER = "deepseek"                           # openai / anthropic / google / deepseek / ollama
 AI_API_KEY = ""                                    # API Key（Ollama 不需要；不要提交真实密钥）
 AI_BASE_URL = "https://api.deepseek.com"          # API 地址，留空则按 provider 自动推断
-AI_MODEL = "deepseek-v4-pro"                      # 模型名称，留空则按 provider 自动推断
-AI_MAX_TOKENS = 4096                              # 最大响应 token 数
+AI_MODEL = "deepseek-v4-flash"                    # 默认快速模型；深度分析可在前端切换 Pro
+AI_MAX_TOKENS = "auto"                            # auto=配置推荐值，max=供应商硬上限，也可填正整数
 AI_TEMPERATURE = 0.1                              # 温度（取证分析建议低温度）
 AI_CONTEXT_MAX_ROWS = 500                         # 传给 AI 的最大数据行数
-AI_MAX_HISTORY = 12                               # 最大对话历史轮数
+AI_MAX_HISTORY = 12                               # 旧版兼容；Runtime 使用 token checkpoint
 
 # AI 多模型配置（前端添加的配置会自动回写到此列表）
-# 每个配置项: {"id": "唯一ID", "name": "显示名称", "base_url": "API地址", "api_key": "", "model": "模型名"}
-# 真实 API Key 只应保存在 .zero/ai/profiles.json 等被 .gitignore 忽略的运行时文件中。
+# API Key 不写入这里；两个 DeepSeek 配置共享 credential_id=deepseek 的安全凭据。
+# 真实 API Key 只应保存在 .zero/ai/credentials.json（权限 0600）中。
 AI_PROFILES = [
-    {"id": "e4e6f40e", "name": "deepseek-v4-pro", "base_url": "https://api.deepseek.com", "api_key": "", "model": "deepseek-v4-pro"},
+    {
+        "id": "deepseek-v4-flash",
+        "name": "DeepSeek V4 Flash · 快速",
+        "provider": "deepseek",
+        "credential_id": "deepseek",
+        "base_url": "https://api.deepseek.com",
+        "api_key": "",
+        "model": "deepseek-v4-flash",
+        "protocol": "openai_chat",
+        "context_window": 1_000_000,
+        "output_token_limit": 384_000,
+        "max_output_tokens": 8_192,
+        "temperature": 0.1,
+        "reasoning_level": "off",
+        "agent_budget": {"max_turns": 8, "max_tool_calls": 12, "max_seconds": 900},
+    },
+    {
+        "id": "deepseek-v4-pro",
+        "name": "DeepSeek V4 Pro · 深度分析",
+        "provider": "deepseek",
+        "credential_id": "deepseek",
+        "base_url": "https://api.deepseek.com",
+        "api_key": "",
+        "model": "deepseek-v4-pro",
+        "protocol": "openai_chat",
+        "context_window": 1_000_000,
+        "output_token_limit": 384_000,
+        "max_output_tokens": 16_384,
+        "temperature": None,
+        "reasoning_level": "high",
+        "agent_budget": {"max_turns": 12, "max_tool_calls": 20, "max_seconds": 1800},
+    },
 ]

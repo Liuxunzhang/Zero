@@ -307,6 +307,17 @@ AUTO_SYMBOL_DOWNLOAD_MAX_CANDIDATES = 4
 
 这些设置采用严格的字段白名单、范围校验和关联校验，不允许通过 Web 修改 API Token、GitHub Token、任意目录或其他敏感配置。AI 模型参数仍在“助手”设置中维护，插件的 PID、offset、dump_dir 等默认参数仍在“参数”面板维护。
 
+### AI 助手推荐配置
+
+默认提供共享同一安全凭据的两个 DeepSeek Profile：
+
+- **V4 Flash · 快速**：默认启用，适合普通问答和快速初筛。
+- **V4 Pro · 深度分析**：手动切换，用于复杂证据综合和高强度推理。
+
+在“助手 → 模型配置”中为任一 DeepSeek Profile 录入一次 API Key 即可共享使用；
+密钥仅写入权限为 0600 的 `.zero/ai/credentials.json`。响应 token 建议保持
+`Profile 推荐值（auto）`，只有明确需要超长输出时才切换 `max`。
+
 ## 常用命令
 
 ```bash

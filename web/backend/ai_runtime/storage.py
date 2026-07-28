@@ -387,3 +387,67 @@ class CredentialStore:
             self.save(keys)
             atomic_json(Path(profiles_path), profiles)
         return profiles
+
+
+class ProviderStateStore:
+    """Private provider continuation data kept outside canonical messages."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = Path(root)
+        self.root.mkdir(parents=True, exist_ok=True)
+        self._locks: dict[str, threading.RLock] = {}
+
+    def _path(self, conversation_id: str) -> Path:
+        return self.root / f"{safe_id(conversation_id)}.json"
+
+    def _load(self, conversation_id: str) -> dict[str, dict[str, Any]]:
+        try:
+            raw = json.loads(self._path(conversation_id).read_text("utf-8"))
+            return raw if isinstance(raw, dict) else {}
+        except (OSError, ValueError):
+            return {}
+
+    def set(
+        self,
+        conversation_id: str,
+        message_id: str,
+        *,
+        provider_family: str,
+        model: str,
+        state: dict[str, Any],
+    ) -> None:
+        if not state:
+            return
+        lock = self._locks.setdefault(conversation_id, threading.RLock())
+        with lock:
+            values = self._load(conversation_id)
+            values[safe_id(message_id)] = {
+                "provider_family": str(provider_family or ""),
+                "model": str(model or ""),
+                "state": state,
+            }
+            atomic_json(self._path(conversation_id), values, mode=0o600)
+
+    def for_messages(
+        self,
+        conversation_id: str,
+        message_ids: list[str],
+        *,
+        provider_family: str,
+        model: str,
+    ) -> dict[str, dict[str, Any]]:
+        values = self._load(conversation_id)
+        result: dict[str, dict[str, Any]] = {}
+        for message_id in message_ids:
+            item = values.get(safe_id(message_id))
+            if not isinstance(item, dict):
+                continue
+            if item.get("provider_family") != provider_family or item.get("model") != model:
+                continue
+            state = item.get("state")
+            if isinstance(state, dict):
+                result[message_id] = state
+        return result
+
+    def delete(self, conversation_id: str) -> None:
+        self._path(conversation_id).unlink(missing_ok=True)

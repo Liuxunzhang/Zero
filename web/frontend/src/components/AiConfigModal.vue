@@ -70,6 +70,8 @@
               <span class="profile-card-tag">{{ p.model }}</span>
               <span class="profile-card-tag">{{ p.protocol }}</span>
               <span class="profile-card-tag">{{ Number(p.context_window || 65536).toLocaleString() }} ctx</span>
+              <span class="profile-card-tag">{{ Number(p.max_output_tokens || 4096).toLocaleString() }} 输出</span>
+              <span class="profile-card-tag">{{ p.reasoning_level || 'off' }} 推理</span>
               <span class="profile-card-url">{{ p.base_url }}</span>
             </div>
             <div v-if="p.context_window_estimated" class="setting-hint warning">
@@ -101,11 +103,19 @@
             </div>
             <div class="form-group">
               <label>API Key</label>
-              <input v-model="newProfile.api_key" type="password" placeholder="sk-..." />
+              <input v-model="newProfile.api_key" type="password" :placeholder="newProfile.has_api_key ? '已安全保存；留空保持不变' : 'sk-...'" />
             </div>
             <div class="form-group">
               <label>模型名称</label>
               <input v-model="newProfile.model" placeholder="gpt-4o / deepseek-chat / ..." />
+            </div>
+            <div class="form-group">
+              <label>供应商</label>
+              <input v-model="newProfile.provider" placeholder="deepseek / openai / ..." />
+            </div>
+            <div class="form-group">
+              <label>共享凭据 ID</label>
+              <input v-model="newProfile.credential_id" placeholder="如 deepseek" />
             </div>
             <div class="form-group">
               <label>协议</label>
@@ -121,13 +131,34 @@
               <input v-model.number="newProfile.context_window" type="number" min="4096" step="1024" />
             </div>
             <div class="form-group">
+              <label>供应商输出硬上限</label>
+              <input v-model.number="newProfile.output_token_limit" type="number" min="1" step="1024" />
+            </div>
+            <div class="form-group">
+              <label>推荐响应 token</label>
+              <input v-model.number="newProfile.max_output_tokens" type="number" min="1" step="1024" />
+            </div>
+            <div class="form-group">
+              <label>温度（留空由供应商决定）</label>
+              <input v-model.number="newProfile.temperature" type="number" min="0" max="2" step="0.1" />
+            </div>
+            <div class="form-group">
               <label>Reasoning 档位</label>
               <select v-model="newProfile.reasoning_level">
                 <option value="off">off</option>
                 <option value="low">low</option>
                 <option value="medium">medium</option>
                 <option value="high">high</option>
+                <option value="max">max</option>
               </select>
+            </div>
+            <div class="form-group">
+              <label>Agent 预算（turn / tools / 秒）</label>
+              <div class="setting-controls">
+                <input v-model.number="newProfile.agent_budget.max_turns" type="number" min="1" max="100" />
+                <input v-model.number="newProfile.agent_budget.max_tool_calls" type="number" min="0" max="200" />
+                <input v-model.number="newProfile.agent_budget.max_seconds" type="number" min="1" max="86400" />
+              </div>
             </div>
             <div class="form-group">
               <label>能力覆盖</label>
@@ -224,7 +255,7 @@
       <!-- ═══ Settings tab ═══ -->
       <div v-if="tab === 'settings'" class="modal-body">
         <div class="section-desc">
-          面向内存取证场景调整推理参数：低温度、较长上下文、有限历史和可追踪压缩记忆。
+          这些参数直接作用于当前 Agent Runtime。推荐使用 Profile 预设，并由 token checkpoint 管理长对话。
         </div>
 
         <div class="add-section">
@@ -233,17 +264,18 @@
           <div class="setting-row">
             <label class="setting-label">最大响应 token 数</label>
             <div class="setting-controls">
+              <select v-model="aiMaxTokensMode">
+                <option value="auto">Profile 推荐值</option>
+                <option value="custom">自定义</option>
+                <option value="max">供应商最大值</option>
+              </select>
               <input
+                v-if="aiMaxTokensMode === 'custom'"
                 v-model.number="aiSettings.ai_max_tokens"
                 type="number"
                 min="1"
-                :disabled="aiMaxTokensIsMax"
                 placeholder="如 4096"
               />
-              <label class="setting-inline-toggle">
-                <input type="checkbox" v-model="aiMaxTokensIsMax" />
-                <span>max</span>
-              </label>
             </div>
           </div>
 
@@ -253,11 +285,12 @@
               <input v-model.number="aiSettings.ai_temperature" type="number" min="0" max="2" step="0.1" />
             </div>
           </div>
+          <div class="setting-hint" v-if="temperatureHint">{{ temperatureHint }}</div>
 
           <div class="setting-row">
-            <label class="setting-label">最大历史轮数</label>
+            <label class="setting-label">插件上下文字符预算</label>
             <div class="setting-controls">
-              <input v-model.number="aiSettings.ai_max_history" type="number" min="1" step="1" />
+              <input v-model.number="aiSettings.ai_context_max_chars" type="number" min="1000" step="1000" />
             </div>
           </div>
 
@@ -279,24 +312,21 @@
           </div>
 
           <div class="setting-row">
-            <label class="setting-label">压缩记忆</label>
+            <label class="setting-label">输出预留 token</label>
             <div class="setting-controls">
-              <label class="setting-inline-toggle">
-                <input type="checkbox" v-model="aiSettings.ai_memory_enabled" />
-                <span>启用</span>
-              </label>
+              <input v-model.number="aiSettings.ai_context_reserve_tokens" type="number" min="1024" step="1024" />
             </div>
           </div>
 
-          <div class="setting-row" v-if="aiSettings.ai_memory_enabled">
-            <label class="setting-label">压缩记忆最大字符数</label>
+          <div class="setting-row">
+            <label class="setting-label">最近上下文 token</label>
             <div class="setting-controls">
-              <input v-model.number="aiSettings.ai_memory_max_chars" type="number" min="500" step="100" />
+              <input v-model.number="aiSettings.ai_context_recent_tokens" type="number" min="1024" step="1024" />
             </div>
           </div>
 
           <div class="setting-hint" v-if="aiLimitHint">{{ aiLimitHint }}</div>
-          <div class="setting-hint warning" v-if="aiMaxTokensIsMax || aiContextRowsIsMax">
+          <div class="setting-hint warning" v-if="aiMaxTokensMode === 'max' || aiContextRowsIsMax">
             已启用 max，可能显著增加响应时延与成本。
           </div>
 
@@ -336,26 +366,32 @@ const editingProfileId = ref('')
 const profileStatus = ref({ type: '', text: '' })
 const profileTesting = ref(false)
 const aiSettings = ref({
-  ai_max_tokens: 4096,
+  ai_max_tokens: 8192,
   ai_temperature: 0.1,
-  ai_max_history: 12,
   ai_context_max_rows: 500,
-  ai_memory_enabled: true,
-  ai_memory_max_chars: 10000,
+  ai_context_max_chars: 60000,
+  ai_context_reserve_tokens: 32768,
+  ai_context_recent_tokens: 64000,
   model_token_limit: null,
   current_model: '',
 })
-const aiMaxTokensIsMax = ref(false)
+const aiMaxTokensMode = ref('auto')
 const aiContextRowsIsMax = ref(false)
 
 const newProfile = ref({
   name: '',
+  provider: '',
+  credential_id: '',
   base_url: '',
   api_key: '',
   model: '',
   protocol: 'openai_chat',
   context_window: 65536,
+  output_token_limit: 4096,
+  max_output_tokens: 4096,
+  temperature: null,
   reasoning_level: 'off',
+  agent_budget: { max_turns: 12, max_tool_calls: 20, max_seconds: 1800 },
   capabilities: { tools: true, reasoning: true, thinking_summary: true, usage: true },
 })
 const newPrompt = ref({ name: '', content: '' })
@@ -373,6 +409,11 @@ const aiLimitHint = computed(() => {
   if (!limit) return `${model}: 未配置上限映射，max 将使用 provider 默认限制`
   return `${model}: max token 上限约 ${limit.toLocaleString()}`
 })
+const temperatureHint = computed(() =>
+  aiSettings.value.current_model === 'deepseek-v4-pro'
+    ? 'DeepSeek V4 Pro 的思考模式会忽略 temperature，以 reasoning effort 为准。'
+    : ''
+)
 
 async function loadData() {
   try {
@@ -397,15 +438,17 @@ async function loadData() {
       activeProfileId.value = null
     }
     const s = settingsData.settings || {}
-    aiMaxTokensIsMax.value = s.ai_max_tokens === 'max'
+    aiMaxTokensMode.value = ['auto', 'max'].includes(s.ai_max_tokens)
+      ? s.ai_max_tokens
+      : 'custom'
     aiContextRowsIsMax.value = s.ai_context_max_rows === 'max'
     aiSettings.value = {
-      ai_max_tokens: s.ai_max_tokens === 'max' ? 4096 : (s.ai_max_tokens || 4096),
+      ai_max_tokens: typeof s.ai_max_tokens === 'number' ? s.ai_max_tokens : 8192,
       ai_temperature: s.ai_temperature ?? 0.1,
-      ai_max_history: s.ai_max_history || 12,
       ai_context_max_rows: s.ai_context_max_rows === 'max' ? 500 : (s.ai_context_max_rows || 500),
-      ai_memory_enabled: s.ai_memory_enabled !== false,
-      ai_memory_max_chars: s.ai_memory_max_chars || 10000,
+      ai_context_max_chars: s.ai_context_max_chars || 60000,
+      ai_context_reserve_tokens: s.ai_context_reserve_tokens || 32768,
+      ai_context_recent_tokens: s.ai_context_recent_tokens || 64000,
       model_token_limit: s.model_token_limit ?? null,
       current_model: s.current_model || cfgData.model || '',
     }
@@ -427,26 +470,30 @@ function applyCatalog(index) {
 
 async function saveSettings() {
   const payload = {
-    ai_max_tokens: aiMaxTokensIsMax.value ? 'max' : Number(aiSettings.value.ai_max_tokens || 4096),
+    ai_max_tokens: aiMaxTokensMode.value === 'custom'
+      ? Number(aiSettings.value.ai_max_tokens || 8192)
+      : aiMaxTokensMode.value,
     ai_temperature: Number(aiSettings.value.ai_temperature ?? 0.1),
-    ai_max_history: Number(aiSettings.value.ai_max_history || 12),
     ai_context_max_rows: aiContextRowsIsMax.value ? 'max' : Number(aiSettings.value.ai_context_max_rows || 500),
-    ai_memory_enabled: !!aiSettings.value.ai_memory_enabled,
-    ai_memory_max_chars: Number(aiSettings.value.ai_memory_max_chars || 10000),
+    ai_context_max_chars: Number(aiSettings.value.ai_context_max_chars || 60000),
+    ai_context_reserve_tokens: Number(aiSettings.value.ai_context_reserve_tokens || 32768),
+    ai_context_recent_tokens: Number(aiSettings.value.ai_context_recent_tokens || 64000),
   }
   try {
     const data = await saveAiSettings(payload)
     const s = data.settings || {}
-    aiMaxTokensIsMax.value = s.ai_max_tokens === 'max'
+    aiMaxTokensMode.value = ['auto', 'max'].includes(s.ai_max_tokens)
+      ? s.ai_max_tokens
+      : 'custom'
     aiContextRowsIsMax.value = s.ai_context_max_rows === 'max'
     aiSettings.value = {
       ...aiSettings.value,
-      ai_max_tokens: s.ai_max_tokens === 'max' ? aiSettings.value.ai_max_tokens : s.ai_max_tokens,
+      ai_max_tokens: typeof s.ai_max_tokens === 'number' ? s.ai_max_tokens : aiSettings.value.ai_max_tokens,
       ai_temperature: s.ai_temperature,
-      ai_max_history: s.ai_max_history,
       ai_context_max_rows: s.ai_context_max_rows === 'max' ? aiSettings.value.ai_context_max_rows : s.ai_context_max_rows,
-      ai_memory_enabled: s.ai_memory_enabled !== false,
-      ai_memory_max_chars: s.ai_memory_max_chars || aiSettings.value.ai_memory_max_chars,
+      ai_context_max_chars: s.ai_context_max_chars || aiSettings.value.ai_context_max_chars,
+      ai_context_reserve_tokens: s.ai_context_reserve_tokens || aiSettings.value.ai_context_reserve_tokens,
+      ai_context_recent_tokens: s.ai_context_recent_tokens || aiSettings.value.ai_context_recent_tokens,
       model_token_limit: s.model_token_limit ?? aiSettings.value.model_token_limit,
       current_model: s.current_model || aiSettings.value.current_model,
     }
@@ -484,12 +531,22 @@ function startEditProfile(profile) {
   newProfile.value = {
     id: profile.id || '',
     name: profile.name || '',
+    provider: profile.provider || '',
+    credential_id: profile.credential_id || profile.id || '',
     base_url: profile.base_url || '',
     api_key: profile.api_key || '',
+    has_api_key: !!profile.has_api_key,
     model: profile.model || '',
     protocol: profile.protocol || 'openai_chat',
     context_window: profile.context_window || 65536,
+    output_token_limit: profile.output_token_limit || 4096,
+    max_output_tokens: profile.max_output_tokens || 4096,
+    temperature: profile.temperature ?? null,
     reasoning_level: profile.reasoning_level || 'off',
+    agent_budget: {
+      max_turns: 12, max_tool_calls: 20, max_seconds: 1800,
+      ...(profile.agent_budget || {}),
+    },
     capabilities: {
       tools: true, reasoning: true, thinking_summary: true, usage: true,
       ...(profile.capabilities || {}),
@@ -500,9 +557,11 @@ function startEditProfile(profile) {
 function cancelEditProfile() {
   editingProfileId.value = ''
   newProfile.value = {
-    name: '', base_url: '', api_key: '', model: '',
+    name: '', provider: '', credential_id: '', base_url: '', api_key: '', model: '',
     protocol: 'openai_chat', context_window: 65536,
+    output_token_limit: 4096, max_output_tokens: 4096, temperature: null,
     reasoning_level: 'off',
+    agent_budget: { max_turns: 12, max_tool_calls: 20, max_seconds: 1800 },
     capabilities: { tools: true, reasoning: true, thinking_summary: true, usage: true },
   }
 }
@@ -512,7 +571,7 @@ async function testConnection() {
   profileTesting.value = true
   profileStatus.value = { type: '', text: '' }
   try {
-    const data = await testAiProfile(newProfile.value)
+    const data = await testAiProfile(profilePayload(newProfile.value))
     profileStatus.value = {
       type: data.ok ? 'success' : 'error',
       text: data.ok ? `连接成功：${data.protocol} / ${data.model}` : '模型未返回文本。',
@@ -524,9 +583,21 @@ async function testConnection() {
   }
 }
 
+function profilePayload(profile) {
+  return {
+    ...profile,
+    temperature: profile.temperature === '' ? null : profile.temperature,
+    agent_budget: {
+      max_turns: Number(profile.agent_budget?.max_turns || 12),
+      max_tool_calls: Number(profile.agent_budget?.max_tool_calls ?? 20),
+      max_seconds: Number(profile.agent_budget?.max_seconds || 1800),
+    },
+  }
+}
+
 async function saveProfile() {
   if (!canSaveProfile.value) return
-  const draft = { ...newProfile.value }
+  const draft = profilePayload(newProfile.value)
   const targetId = editingProfileId.value || ''
   const nextProfiles = [...profiles.value]
 

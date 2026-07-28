@@ -20,7 +20,7 @@ from .models import (
 )
 from .providers import ADAPTERS
 from .runs import RunManager
-from .storage import ConversationStore, CredentialStore
+from .storage import ConversationStore, CredentialStore, ProviderStateStore
 from .tools import ResultHandleStore, ToolDefinition, ToolExecutionContext, ToolRegistry
 
 
@@ -32,6 +32,7 @@ BUILTIN_MODEL_CATALOG = [
         "name": "OpenAI GPT-5.6 Sol",
         "base_url": "https://api.openai.com/v1",
         "model": "gpt-5.6-sol",
+        "provider": "openai",
         "protocol": "openai_responses",
         "context_window": 1_050_000,
         "reasoning_level": "medium",
@@ -40,6 +41,7 @@ BUILTIN_MODEL_CATALOG = [
         "name": "Anthropic Claude Opus 5",
         "base_url": "https://api.anthropic.com",
         "model": "claude-opus-5",
+        "provider": "anthropic",
         "protocol": "anthropic_messages",
         "context_window": 1_000_000,
         "reasoning_level": "medium",
@@ -48,17 +50,38 @@ BUILTIN_MODEL_CATALOG = [
         "name": "Google Gemini 2.5 Flash",
         "base_url": "",
         "model": "gemini-2.5-flash",
+        "provider": "google",
         "protocol": "google_genai",
         "context_window": 1_048_576,
         "reasoning_level": "medium",
     },
     {
-        "name": "DeepSeek V4 Pro",
+        "name": "DeepSeek V4 Flash · 快速",
         "base_url": "https://api.deepseek.com",
-        "model": "deepseek-v4-pro",
+        "model": "deepseek-v4-flash",
+        "provider": "deepseek",
+        "credential_id": "deepseek",
         "protocol": "openai_chat",
         "context_window": 1_000_000,
-        "reasoning_level": "medium",
+        "output_token_limit": 384_000,
+        "max_output_tokens": 8_192,
+        "temperature": 0.1,
+        "reasoning_level": "off",
+        "agent_budget": {"max_turns": 8, "max_tool_calls": 12, "max_seconds": 900},
+    },
+    {
+        "name": "DeepSeek V4 Pro · 深度分析",
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-v4-pro",
+        "provider": "deepseek",
+        "credential_id": "deepseek",
+        "protocol": "openai_chat",
+        "context_window": 1_000_000,
+        "output_token_limit": 384_000,
+        "max_output_tokens": 16_384,
+        "temperature": None,
+        "reasoning_level": "high",
+        "agent_budget": {"max_turns": 12, "max_tool_calls": 20, "max_seconds": 1800},
     },
 ]
 
@@ -77,16 +100,83 @@ def infer_protocol(profile: dict[str, Any]) -> str:
     return "openai_chat"
 
 
+def infer_provider(profile: dict[str, Any]) -> str:
+    explicit = str(profile.get("provider") or "").strip().lower()
+    if explicit:
+        return explicit
+    combined = " ".join(str(profile.get(key, "")) for key in ("name", "base_url", "model")).lower()
+    for provider in ("deepseek", "anthropic", "google", "openai", "ollama"):
+        if provider in combined or (provider == "google" and "gemini" in combined):
+            return provider
+    return "openai_compatible"
+
+
+def _catalog_defaults(profile: dict[str, Any]) -> dict[str, Any]:
+    model = str(profile.get("model") or "").strip().lower()
+    return next(
+        (dict(item) for item in BUILTIN_MODEL_CATALOG if str(item.get("model", "")).lower() == model),
+        {},
+    )
+
+
+def _normalize_agent_budget(value: Any, fallback: dict[str, int] | None = None) -> dict[str, int]:
+    raw = value if isinstance(value, dict) else {}
+    defaults = fallback or {"max_turns": 12, "max_tool_calls": 20, "max_seconds": 1800}
+    limits = {
+        "max_turns": (1, 100),
+        "max_tool_calls": (0, 200),
+        "max_seconds": (1, 86400),
+    }
+    result: dict[str, int] = {}
+    for key, (minimum, maximum) in limits.items():
+        try:
+            parsed = int(raw.get(key, defaults[key]))
+        except (TypeError, ValueError):
+            parsed = defaults[key]
+        result[key] = max(minimum, min(maximum, parsed))
+    return result
+
+
 def normalize_profile(profile: dict[str, Any]) -> dict[str, Any]:
-    normalized = dict(profile)
+    source = dict(profile)
+    defaults = _catalog_defaults(source)
+    normalized = {**defaults, **source}
+    normalized["provider"] = infer_provider(normalized)
     normalized["protocol"] = infer_protocol(normalized)
+    normalized["credential_id"] = str(
+        normalized.get("credential_id") or normalized.get("id") or normalized["provider"]
+    )
     try:
         normalized["context_window"] = max(4096, int(normalized.get("context_window") or 65_536))
     except (TypeError, ValueError):
         normalized["context_window"] = 65_536
-    normalized["context_window_estimated"] = "context_window" not in profile
+    normalized["context_window_estimated"] = "context_window" not in source and not defaults
+    try:
+        normalized["output_token_limit"] = max(
+            1, int(normalized.get("output_token_limit") or normalized.get("max_output_tokens") or 4096)
+        )
+    except (TypeError, ValueError):
+        normalized["output_token_limit"] = 4096
+    try:
+        normalized["max_output_tokens"] = min(
+            normalized["output_token_limit"],
+            max(1, int(normalized.get("max_output_tokens") or 4096)),
+        )
+    except (TypeError, ValueError):
+        normalized["max_output_tokens"] = min(4096, normalized["output_token_limit"])
+    if "temperature" in normalized and normalized["temperature"] is not None:
+        try:
+            normalized["temperature"] = max(0.0, min(2.0, float(normalized["temperature"])))
+        except (TypeError, ValueError):
+            normalized["temperature"] = None
     reasoning = str(normalized.get("reasoning_level") or "off").lower()
-    normalized["reasoning_level"] = reasoning if reasoning in {"off", "low", "medium", "high"} else "off"
+    normalized["reasoning_level"] = (
+        reasoning if reasoning in {"off", "low", "medium", "high", "max"} else "off"
+    )
+    normalized["agent_budget"] = _normalize_agent_budget(
+        normalized.get("agent_budget"),
+        defaults.get("agent_budget") if defaults else None,
+    )
     capabilities = dict(normalized.get("capabilities") or {})
     capabilities.setdefault("tools", True)
     capabilities.setdefault("streaming", True)
@@ -105,7 +195,13 @@ class AgentRuntime:
         self.credentials = CredentialStore(self.root / "credentials.json")
         self.credentials.migrate_profiles(self.root / "profiles.json")
         self._migrate_config_credentials()
-        self.context = ContextManager(self.conversations)
+        self._migrate_shared_credentials()
+        self.context = ContextManager(
+            self.conversations,
+            default_reserve=32_768,
+            default_recent=64_000,
+        )
+        self.provider_states = ProviderStateStore(self.root / "provider_state")
         self.evidence = EvidenceStore(self.root / "evidence")
         self.results = ResultHandleStore(self.root / "tool_results")
         self.tools = ToolRegistry()
@@ -117,6 +213,7 @@ class AgentRuntime:
             context=self.context,
             tools=self.tools,
             adapter_factory=self._adapter,
+            provider_states=self.provider_states,
             evidence_recorder=self._record_evidence,
         )
 
@@ -149,6 +246,20 @@ class AgentRuntime:
             changed = True
         if changed:
             self.credentials.save(current)
+
+    def _migrate_shared_credentials(self) -> None:
+        """Copy legacy per-profile secrets to a shared provider credential."""
+        current = self.credentials.load()
+        if current.get("deepseek"):
+            return
+        for raw in self.credentials.migrate_profiles(self.root / "profiles.json"):
+            if infer_provider(raw) != "deepseek":
+                continue
+            legacy = current.get(str(raw.get("id") or ""))
+            if legacy:
+                current["deepseek"] = legacy
+                self.credentials.save(current)
+                return
 
     def _reconcile_interrupted_runs(self) -> None:
         """Materialize crash-interrupted model/tool state without replaying it."""
@@ -273,8 +384,8 @@ class AgentRuntime:
                 "context_window_estimated": True,
             }
         normalized = normalize_profile(raw)
-        profile_id = str(normalized.get("id") or "config")
-        key = self.credentials.load().get(profile_id)
+        credential_id = str(normalized.get("credential_id") or normalized.get("id") or "config")
+        key = self.credentials.load().get(credential_id)
         if not key:
             key = str(raw.get("api_key") or "")
         if not key:
@@ -291,11 +402,19 @@ class AgentRuntime:
         profile = self.active_profile()
         ai = get_ai_service()
         settings = ai.get_ai_settings()
-        max_tokens = settings.get("ai_max_tokens", 4096)
-        try:
-            max_output = max(1, int(max_tokens))
-        except (TypeError, ValueError):
-            max_output = 4096
+        max_tokens = settings.get("ai_max_tokens", "auto")
+        output_limit = int(profile.get("output_token_limit") or 4096)
+        if isinstance(max_tokens, str) and max_tokens.lower() == "auto":
+            max_output = int(profile.get("max_output_tokens") or 4096)
+        elif isinstance(max_tokens, str) and max_tokens.lower() == "max":
+            max_output = output_limit
+        else:
+            try:
+                max_output = max(1, int(max_tokens))
+            except (TypeError, ValueError):
+                max_output = int(profile.get("max_output_tokens") or 4096)
+        max_output = min(output_limit, max_output)
+        self._apply_context_settings(settings)
         capabilities = dict(profile.get("capabilities") or {})
         declarations = (
             []
@@ -317,7 +436,29 @@ class AgentRuntime:
             tools=declarations,
             context_window=profile["context_window"],
             thinking_summary=capabilities.get("thinking_summary", True),
+            provider_family=str(profile.get("provider") or ""),
+            temperature=(
+                profile.get("temperature")
+                if "temperature" in profile
+                else settings.get("ai_temperature", 0.1)
+            ),
         )
+
+    def _apply_context_settings(self, settings: dict[str, Any] | None = None) -> None:
+        if settings is None:
+            from web.backend.services.ai_service import get_ai_service
+
+            settings = get_ai_service().get_ai_settings()
+        try:
+            self.context.default_reserve = max(
+                1024, int(settings.get("ai_context_reserve_tokens", 32_768))
+            )
+            self.context.default_recent = max(
+                1024, int(settings.get("ai_context_recent_tokens", 64_000))
+            )
+        except (TypeError, ValueError):
+            self.context.default_reserve = 32_768
+            self.context.default_recent = 64_000
 
     def _adapter(self, snapshot: TurnSnapshot):
         profile = self.active_profile()
@@ -342,9 +483,9 @@ class AgentRuntime:
         engine_id: str = "vol3",
         mode: str = "agent",
         include_context: bool = True,
-        max_turns: int = 12,
-        max_tool_calls: int = 20,
-        max_seconds: int = 1800,
+        max_turns: int | None = None,
+        max_tool_calls: int | None = None,
+        max_seconds: int | None = None,
     ) -> dict[str, Any]:
         if not message.strip():
             raise ValueError("message cannot be empty")
@@ -355,10 +496,18 @@ class AgentRuntime:
             conversation_id,
             UserMessage(content=message.strip(), context=forensic_context),
         )
+        defaults = self.active_profile().get("agent_budget") or {}
         budget = RunBudget(
-            max_turns=max(1, min(100, int(max_turns))),
-            max_tool_calls=max(0, min(200, int(max_tool_calls))),
-            max_seconds=max(1, min(24 * 3600, int(max_seconds))),
+            max_turns=max(1, min(100, int(
+                defaults.get("max_turns", 12) if max_turns is None else max_turns
+            ))),
+            max_tool_calls=max(0, min(200, int(
+                defaults.get("max_tool_calls", 20)
+                if max_tool_calls is None else max_tool_calls
+            ))),
+            max_seconds=max(1, min(24 * 3600, int(
+                defaults.get("max_seconds", 1800) if max_seconds is None else max_seconds
+            ))),
         )
 
         async def execute(emit, cancel_event):
@@ -421,6 +570,7 @@ class AgentRuntime:
         return _format_plugin_context(payload)
 
     def context_stats(self, conversation_id: str) -> dict[str, Any]:
+        self._apply_context_settings()
         profile = self.active_profile()
         plan = self.context.inspect(conversation_id, profile["context_window"])
         return {
@@ -433,6 +583,7 @@ class AgentRuntime:
         }
 
     async def compact(self, conversation_id: str) -> dict[str, Any]:
+        self._apply_context_settings()
         profile = self.active_profile()
         plan = await self.context.compact(conversation_id, profile["context_window"])
         return plan.stats()
@@ -442,7 +593,9 @@ class AgentRuntime:
         for raw in profiles:
             profile = normalize_profile(raw)
             profile.pop("api_key", None)
-            profile.update(self.credentials.masked(str(profile.get("id") or "")))
+            profile.update(self.credentials.masked(str(
+                profile.get("credential_id") or profile.get("id") or ""
+            )))
             result.append(profile)
         return result
 

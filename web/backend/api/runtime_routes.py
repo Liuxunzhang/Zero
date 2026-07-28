@@ -18,9 +18,9 @@ class CreateRunRequest(BaseModel):
     engine_id: str = "vol3"
     mode: str = "agent"
     include_context: bool = True
-    max_turns: int = Field(12, ge=1, le=100)
-    max_tool_calls: int = Field(20, ge=0, le=200)
-    max_seconds: int = Field(1800, ge=1, le=86400)
+    max_turns: int | None = Field(None, ge=1, le=100)
+    max_tool_calls: int | None = Field(None, ge=0, le=200)
+    max_seconds: int | None = Field(None, ge=1, le=86400)
 
 
 class CompactRequest(BaseModel):

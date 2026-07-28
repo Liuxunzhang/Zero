@@ -38,14 +38,16 @@ _MEMORY_STATS_FILE = _AI_DATA_DIR / "memory_stats.json"
 _LEGACY_PROMPTS_FILE = _PROJECT_ROOT / ".zero_ai_prompts.json"
 _DEFAULT_SETTINGS = {
     "persist_to_config_py": False,
-    "active_profile_id": None,
+    "active_profile_id": "deepseek-v4-flash",
     "active_prompt_id": "default",
-    "ai_max_tokens": 4096,
+    "ai_max_tokens": "auto",
     "ai_temperature": 0.1,
     "ai_max_history": 12,
     "ai_context_max_rows": 500,
     "ai_context_max_chars": 60000,
-    "ai_memory_enabled": True,
+    "ai_context_reserve_tokens": 32768,
+    "ai_context_recent_tokens": 64000,
+    "ai_memory_enabled": False,
     "ai_memory_max_chars": 10000,
     "ai_memory_retrieval_top_k": 10,
     "ai_memory_retrieval_max_chars": 6000,
@@ -53,6 +55,8 @@ _DEFAULT_SETTINGS = {
 }
 
 _MODEL_TOKEN_LIMITS = {
+    "deepseek-v4-flash": 384000,
+    "deepseek-v4-pro": 384000,
     "minimax-m2.5": 262144,
     "kimi/kimi-k2.5": 262144,
     "glm-5": 202752,
@@ -502,6 +506,8 @@ def _load_ai_settings() -> dict:
                     "ai_max_history": raw.get("ai_max_history", _DEFAULT_SETTINGS["ai_max_history"]),
                     "ai_context_max_rows": raw.get("ai_context_max_rows", _DEFAULT_SETTINGS["ai_context_max_rows"]),
                     "ai_context_max_chars": raw.get("ai_context_max_chars", _DEFAULT_SETTINGS["ai_context_max_chars"]),
+                    "ai_context_reserve_tokens": raw.get("ai_context_reserve_tokens", _DEFAULT_SETTINGS["ai_context_reserve_tokens"]),
+                    "ai_context_recent_tokens": raw.get("ai_context_recent_tokens", _DEFAULT_SETTINGS["ai_context_recent_tokens"]),
                     "ai_memory_enabled": bool(raw.get("ai_memory_enabled", _DEFAULT_SETTINGS["ai_memory_enabled"])),
                     "ai_memory_max_chars": raw.get("ai_memory_max_chars", _DEFAULT_SETTINGS["ai_memory_max_chars"]),
                     "ai_memory_retrieval_top_k": raw.get("ai_memory_retrieval_top_k", _DEFAULT_SETTINGS["ai_memory_retrieval_top_k"]),
@@ -524,6 +530,8 @@ def _save_ai_settings(settings: dict) -> None:
         "ai_max_history": settings.get("ai_max_history", _DEFAULT_SETTINGS["ai_max_history"]),
         "ai_context_max_rows": settings.get("ai_context_max_rows", _DEFAULT_SETTINGS["ai_context_max_rows"]),
         "ai_context_max_chars": settings.get("ai_context_max_chars", _DEFAULT_SETTINGS["ai_context_max_chars"]),
+        "ai_context_reserve_tokens": settings.get("ai_context_reserve_tokens", _DEFAULT_SETTINGS["ai_context_reserve_tokens"]),
+        "ai_context_recent_tokens": settings.get("ai_context_recent_tokens", _DEFAULT_SETTINGS["ai_context_recent_tokens"]),
         "ai_memory_enabled": bool(settings.get("ai_memory_enabled", _DEFAULT_SETTINGS["ai_memory_enabled"])),
         "ai_memory_max_chars": settings.get("ai_memory_max_chars", _DEFAULT_SETTINGS["ai_memory_max_chars"]),
         "ai_memory_retrieval_top_k": settings.get("ai_memory_retrieval_top_k", _DEFAULT_SETTINGS["ai_memory_retrieval_top_k"]),
@@ -619,8 +627,21 @@ def _normalize_profiles(profiles: list[dict]) -> list[dict]:
             key: profile.get(key, "")
             for key in ("id", "name", "base_url", "api_key", "model")
         }
-        for key in ("protocol", "context_window", "reasoning_level", "capabilities"):
-            if key in profile and profile.get(key) not in (None, ""):
+        for key in (
+            "provider",
+            "credential_id",
+            "protocol",
+            "context_window",
+            "output_token_limit",
+            "max_output_tokens",
+            "temperature",
+            "reasoning_level",
+            "agent_budget",
+            "capabilities",
+        ):
+            if key == "temperature" and key in profile:
+                item[key] = profile[key]
+            elif key in profile and profile.get(key) not in (None, ""):
                 item[key] = profile[key]
         normalized.append(item)
     return normalized
@@ -752,11 +773,13 @@ class AiService:
         self._persist_to_config_py: bool = False
         # Active prompt id
         self._active_prompt_id: str = "default"
-        self._ai_max_tokens: int | str = 4096
+        self._ai_max_tokens: int | str = _DEFAULT_SETTINGS["ai_max_tokens"]
         self._ai_temperature: float = _DEFAULT_SETTINGS["ai_temperature"]
         self._ai_max_history: int = 20
         self._ai_context_max_rows: int | str = _DEFAULT_SETTINGS["ai_context_max_rows"]
         self._ai_context_max_chars: int = _DEFAULT_SETTINGS["ai_context_max_chars"]
+        self._ai_context_reserve_tokens: int = _DEFAULT_SETTINGS["ai_context_reserve_tokens"]
+        self._ai_context_recent_tokens: int = _DEFAULT_SETTINGS["ai_context_recent_tokens"]
         self._ai_memory_enabled: bool = True
         self._ai_memory_max_chars: int = _DEFAULT_SETTINGS["ai_memory_max_chars"]
         self._ai_memory_retrieval_top_k: int = _DEFAULT_SETTINGS["ai_memory_retrieval_top_k"]
@@ -771,8 +794,8 @@ class AiService:
         self._load_runtime_state()
 
     def _normalize_int_or_max(self, value, fallback: int, min_value: int = 1) -> int | str:
-        if isinstance(value, str) and value.strip().lower() == "max":
-            return "max"
+        if isinstance(value, str) and value.strip().lower() in {"auto", "max"}:
+            return value.strip().lower()
         try:
             return max(min_value, int(value))
         except (TypeError, ValueError):
@@ -792,12 +815,18 @@ class AiService:
         return _MODEL_TOKEN_LIMITS.get(key)
 
     def _resolve_max_tokens(self, model: str) -> Optional[int]:
+        if self._ai_max_tokens == "auto":
+            return None
         if self._ai_max_tokens == "max":
             return self._model_token_limit(model)
         try:
             return max(1, int(self._ai_max_tokens))
         except (TypeError, ValueError):
-            return max(1, int(getattr(config, "AI_MAX_TOKENS", 4096)))
+            fallback = getattr(config, "AI_MAX_TOKENS", 4096)
+            try:
+                return max(1, int(fallback))
+            except (TypeError, ValueError):
+                return None
 
     def _resolve_context_max_rows(self) -> int | str:
         return self._ai_context_max_rows
@@ -904,11 +933,13 @@ class AiService:
         self._persist_to_config_py = bool(settings.get("persist_to_config_py", False))
         self._active_prompt_id = settings.get("active_prompt_id") or "default"
 
-        fallback_max_tokens = int(getattr(config, "AI_MAX_TOKENS", _DEFAULT_SETTINGS["ai_max_tokens"]))
+        fallback_max_tokens = getattr(config, "AI_MAX_TOKENS", _DEFAULT_SETTINGS["ai_max_tokens"])
         fallback_temperature = float(getattr(config, "AI_TEMPERATURE", _DEFAULT_SETTINGS["ai_temperature"]))
         fallback_max_history = int(getattr(config, "AI_MAX_HISTORY", _DEFAULT_SETTINGS["ai_max_history"]))
         fallback_context_rows = int(getattr(config, "AI_CONTEXT_MAX_ROWS", _DEFAULT_SETTINGS["ai_context_max_rows"]))
         fallback_context_chars = int(_DEFAULT_SETTINGS["ai_context_max_chars"])
+        fallback_context_reserve = int(_DEFAULT_SETTINGS["ai_context_reserve_tokens"])
+        fallback_context_recent = int(_DEFAULT_SETTINGS["ai_context_recent_tokens"])
         fallback_memory_enabled = bool(_DEFAULT_SETTINGS["ai_memory_enabled"])
         fallback_memory_max_chars = int(_DEFAULT_SETTINGS["ai_memory_max_chars"])
         fallback_memory_top_k = int(_DEFAULT_SETTINGS["ai_memory_retrieval_top_k"])
@@ -921,6 +952,8 @@ class AiService:
             self._ai_max_history = max(1, int(self._normalize_int_or_max(settings.get("ai_max_history"), fallback_max_history)))
             self._ai_context_max_rows = self._normalize_int_or_max(settings.get("ai_context_max_rows"), fallback_context_rows)
             self._ai_context_max_chars = max(1000, int(settings.get("ai_context_max_chars", fallback_context_chars)))
+            self._ai_context_reserve_tokens = max(1024, int(settings.get("ai_context_reserve_tokens", fallback_context_reserve)))
+            self._ai_context_recent_tokens = max(1024, int(settings.get("ai_context_recent_tokens", fallback_context_recent)))
             self._ai_memory_enabled = bool(settings.get("ai_memory_enabled", fallback_memory_enabled))
             self._ai_memory_max_chars = max(500, int(settings.get("ai_memory_max_chars", fallback_memory_max_chars)))
             self._ai_memory_retrieval_top_k = max(1, int(settings.get("ai_memory_retrieval_top_k", fallback_memory_top_k)))
@@ -932,6 +965,8 @@ class AiService:
             self._ai_max_history = max(1, fallback_max_history)
             self._ai_context_max_rows = max(1, fallback_context_rows)
             self._ai_context_max_chars = fallback_context_chars
+            self._ai_context_reserve_tokens = fallback_context_reserve
+            self._ai_context_recent_tokens = fallback_context_recent
             self._ai_memory_enabled = fallback_memory_enabled
             self._ai_memory_max_chars = fallback_memory_max_chars
             self._ai_memory_retrieval_top_k = fallback_memory_top_k
@@ -960,6 +995,8 @@ class AiService:
             "ai_max_history": self._ai_max_history,
             "ai_context_max_rows": self._ai_context_max_rows,
             "ai_context_max_chars": self._ai_context_max_chars,
+            "ai_context_reserve_tokens": self._ai_context_reserve_tokens,
+            "ai_context_recent_tokens": self._ai_context_recent_tokens,
             "ai_memory_enabled": self._ai_memory_enabled,
             "ai_memory_max_chars": self._ai_memory_max_chars,
             "ai_memory_retrieval_top_k": self._ai_memory_retrieval_top_k,
@@ -975,7 +1012,9 @@ class AiService:
 
     def save_ai_settings(self, payload: dict) -> dict:
         if "ai_max_tokens" in payload:
-            self._ai_max_tokens = self._normalize_int_or_max(payload.get("ai_max_tokens"), 4096)
+            self._ai_max_tokens = self._normalize_int_or_max(
+                payload.get("ai_max_tokens"), _DEFAULT_SETTINGS["ai_max_tokens"]
+            )
         if "ai_temperature" in payload:
             self._ai_temperature = self._normalize_temperature(payload.get("ai_temperature"), _DEFAULT_SETTINGS["ai_temperature"])
         if "ai_max_history" in payload:
@@ -987,6 +1026,16 @@ class AiService:
                 self._ai_context_max_chars = max(1000, int(payload.get("ai_context_max_chars")))
             except (TypeError, ValueError):
                 self._ai_context_max_chars = _DEFAULT_SETTINGS["ai_context_max_chars"]
+        if "ai_context_reserve_tokens" in payload:
+            try:
+                self._ai_context_reserve_tokens = max(1024, int(payload.get("ai_context_reserve_tokens")))
+            except (TypeError, ValueError):
+                self._ai_context_reserve_tokens = _DEFAULT_SETTINGS["ai_context_reserve_tokens"]
+        if "ai_context_recent_tokens" in payload:
+            try:
+                self._ai_context_recent_tokens = max(1024, int(payload.get("ai_context_recent_tokens")))
+            except (TypeError, ValueError):
+                self._ai_context_recent_tokens = _DEFAULT_SETTINGS["ai_context_recent_tokens"]
         if "ai_memory_enabled" in payload:
             self._ai_memory_enabled = bool(payload.get("ai_memory_enabled"))
         if "ai_memory_max_chars" in payload:
@@ -1016,6 +1065,8 @@ class AiService:
         settings["ai_max_history"] = self._ai_max_history
         settings["ai_context_max_rows"] = self._ai_context_max_rows
         settings["ai_context_max_chars"] = self._ai_context_max_chars
+        settings["ai_context_reserve_tokens"] = self._ai_context_reserve_tokens
+        settings["ai_context_recent_tokens"] = self._ai_context_recent_tokens
         settings["ai_memory_enabled"] = self._ai_memory_enabled
         settings["ai_memory_max_chars"] = self._ai_memory_max_chars
         settings["ai_memory_retrieval_top_k"] = self._ai_memory_retrieval_top_k

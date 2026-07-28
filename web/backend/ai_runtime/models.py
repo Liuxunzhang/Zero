@@ -158,6 +158,7 @@ class ProviderEvent:
         "thinking_summary_delta",
         "tool_call_delta",
         "tool_call",
+        "provider_state",
         "usage",
         "message_end",
         "error",
@@ -176,6 +177,8 @@ class TurnSnapshot:
     tools: tuple[dict[str, Any], ...]
     context_window: int
     thinking_summary: bool = True
+    provider_family: str = ""
+    temperature: float | None = None
 
     @classmethod
     def create(cls, **values: Any) -> "TurnSnapshot":

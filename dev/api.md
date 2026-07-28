@@ -430,7 +430,16 @@ Request:
 
 使用指定协议执行最小流式连接测试。Profile 支持
 `openai_responses`、`openai_chat`、`anthropic_messages`、`google_genai`，
-以及 `context_window`、`reasoning_level=off|low|medium|high` 和能力覆盖项。
+以及：
+
+- `provider`、`credential_id`：供应商标识和可跨 Profile 共享的安全凭据 ID。
+- `context_window`、`output_token_limit`、`max_output_tokens`。
+- `temperature`、`reasoning_level=off|low|medium|high|max`。
+- `agent_budget={max_turns,max_tool_calls,max_seconds}` 和能力覆盖项。
+
+设置中的 `ai_max_tokens` 接受 `auto`、`max` 或正整数。创建 Run 时三个预算字段
+均可省略；省略后使用活动 Profile 的 `agent_budget`。Profile/设置接口永不返回
+明文密钥。
 
 `POST /api/ai/chat` 保留兼容，但内部创建同一种后台 run。
 

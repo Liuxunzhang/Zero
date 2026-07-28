@@ -20,7 +20,7 @@ from .models import (
     Usage,
 )
 from .providers.base import ContextOverflowError, ProviderAdapter, ProviderRequest, ProviderTransientError
-from .storage import ConversationStore
+from .storage import ConversationStore, ProviderStateStore
 from .tools import ToolExecutionContext, ToolRegistry
 
 
@@ -91,6 +91,7 @@ class AgentLoop:
         context: ContextManager,
         tools: ToolRegistry,
         adapter_factory: AdapterFactory,
+        provider_states: ProviderStateStore | None = None,
         evidence_recorder: EvidenceRecorder | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
@@ -98,6 +99,7 @@ class AgentLoop:
         self.context = context
         self.tools = tools
         self.adapter_factory = adapter_factory
+        self.provider_states = provider_states
         self.evidence_recorder = evidence_recorder
         self.sleep = sleep
 
@@ -158,10 +160,21 @@ class AgentLoop:
                         "结论概览、已执行动作、关键证据及来源、假设、未决问题。"
                     )))
                 try:
-                    assistant, calls = await self._model_turn(
+                    provider_state = (
+                        self.provider_states.for_messages(
+                            conversation_id,
+                            [message.message_id for message in messages],
+                            provider_family=snapshot.provider_family,
+                            model=snapshot.model,
+                        )
+                        if self.provider_states
+                        else {}
+                    )
+                    assistant, calls, continuation_state = await self._model_turn(
                         snapshot=snapshot,
                         messages=messages,
                         emit=emit,
+                        provider_state=provider_state,
                         context_overflow_retry=lambda window=snapshot.context_window: self.context.compact(
                             conversation_id, window
                         ),
@@ -188,6 +201,14 @@ class AgentLoop:
                     self.conversations.append_message(conversation_id, exc.assistant)
                     raise exc.original
                 self.conversations.append_message(conversation_id, assistant)
+                if self.provider_states and calls and continuation_state:
+                    self.provider_states.set(
+                        conversation_id,
+                        assistant.message_id,
+                        provider_family=snapshot.provider_family,
+                        model=snapshot.model,
+                        state=continuation_state,
+                    )
                 await emit("message_end", {
                     "message": {
                         "message_id": assistant.message_id,
@@ -284,20 +305,26 @@ class AgentLoop:
         snapshot: TurnSnapshot,
         messages: list[Any],
         emit: Emit,
+        provider_state: dict[str, dict[str, Any]],
         context_overflow_retry: Callable[[], Awaitable[Any]],
-    ) -> tuple[AssistantMessage, list[ToolCallBlock]]:
+    ) -> tuple[AssistantMessage, list[ToolCallBlock], dict[str, Any]]:
         text_parts: list[str] = []
         summary_parts: list[str] = []
         calls: list[ToolCallBlock] = []
         usage = Usage()
         stop_reason = ""
         request_id = ""
+        continuation_state: dict[str, Any] = {}
         overflow_retried = False
         attempts = 0
         while True:
             adapter = self.adapter_factory(snapshot)
             try:
-                async for event in adapter.stream(ProviderRequest(snapshot=snapshot, messages=messages)):
+                async for event in adapter.stream(ProviderRequest(
+                    snapshot=snapshot,
+                    messages=messages,
+                    metadata={"provider_state": provider_state},
+                )):
                     await self._forward_provider_event(event, emit)
                     if event.type == "text_delta":
                         text_parts.append(str(event.data.get("text", "")))
@@ -311,6 +338,8 @@ class AgentLoop:
                             raw_arguments=str(event.data.get("raw_arguments", "")),
                             complete=bool(event.data.get("complete", True)),
                         ))
+                    elif event.type == "provider_state":
+                        continuation_state.update(dict(event.data or {}))
                     elif event.type == "usage":
                         usage = usage.merge(Usage.from_mapping(event.data))
                     elif event.type == "message_end":
@@ -351,6 +380,7 @@ class AgentLoop:
                 text_parts.clear()
                 summary_parts.clear()
                 calls.clear()
+                continuation_state.clear()
                 await emit("compaction", {**plan.stats(), "reason": "context_overflow_retry"})
             except ProviderTransientError as exc:
                 if attempts >= 3:
@@ -372,6 +402,7 @@ class AgentLoop:
                 text_parts.clear()
                 summary_parts.clear()
                 calls.clear()
+                continuation_state.clear()
             except Exception as exc:
                 partial = AssistantMessage(
                     content=[TextBlock(text="".join(text_parts))] if text_parts else [],
@@ -397,7 +428,7 @@ class AgentLoop:
             model=snapshot.model,
             request_id=request_id,
             usage=usage,
-        ), calls
+        ), calls, continuation_state
 
     @staticmethod
     async def _forward_provider_event(event: ProviderEvent, emit: Emit) -> None:

@@ -20,7 +20,13 @@ from web.backend.ai_runtime.models import ProviderEvent
 from web.backend.ai_runtime.providers.google_genai import GoogleGenAIAdapter
 from web.backend.ai_runtime.providers.openai_chat import OpenAIChatAdapter
 from web.backend.ai_runtime.providers.openai_responses import OpenAIResponsesAdapter
-from web.backend.ai_runtime.storage import ConversationStore, CredentialStore, EventStore
+from web.backend.ai_runtime.service import normalize_profile
+from web.backend.ai_runtime.storage import (
+    ConversationStore,
+    CredentialStore,
+    EventStore,
+    ProviderStateStore,
+)
 from web.backend.ai_runtime.tools import (
     ResultHandleStore,
     ToolDefinition,
@@ -92,6 +98,119 @@ def test_openai_chat_contract_text_tool_usage():
     assert call.data["name"] == "list_plugins"
     assert call.data["complete"] is True
     assert next(event for event in events if event.type == "usage").data["input_tokens"] == 10
+
+
+def test_deepseek_profiles_use_documented_balanced_defaults():
+    flash = normalize_profile({"model": "deepseek-v4-flash"})
+    pro = normalize_profile({"model": "deepseek-v4-pro"})
+
+    assert flash["provider"] == pro["provider"] == "deepseek"
+    assert flash["credential_id"] == pro["credential_id"] == "deepseek"
+    assert flash["context_window"] == pro["context_window"] == 1_000_000
+    assert flash["output_token_limit"] == pro["output_token_limit"] == 384_000
+    assert flash["max_output_tokens"] == 8_192
+    assert flash["reasoning_level"] == "off"
+    assert pro["max_output_tokens"] == 16_384
+    assert pro["reasoning_level"] == "high"
+
+
+def test_deepseek_thinking_parameters_and_tool_state_round_trip():
+    captured = {}
+    tool_fn = SimpleNamespace(name="list_plugins", arguments="{}")
+    tool = SimpleNamespace(index=0, id="abc", function=tool_fn)
+    chunks = [
+        SimpleNamespace(
+            id="req",
+            usage=None,
+            choices=[SimpleNamespace(
+                delta=SimpleNamespace(
+                    content=None,
+                    reasoning_content="private reasoning",
+                    reasoning_summary=None,
+                    tool_calls=[tool],
+                ),
+                finish_reason="tool_calls",
+            )],
+        ),
+    ]
+
+    class Client:
+        class Completions:
+            async def create(self, **kwargs):
+                captured.update(kwargs)
+                return AsyncItems(chunks)
+
+        chat = SimpleNamespace(completions=Completions())
+
+    previous = AssistantMessage(
+        message_id="previous",
+        content=[ToolCallBlock(tool_call_id="old", name="list_plugins", arguments={})],
+    )
+    snap = TurnSnapshot.create(
+        provider="openai_chat",
+        provider_family="deepseek",
+        model="deepseek-v4-pro",
+        protocol="openai_chat",
+        system_prompt="system",
+        reasoning_level="high",
+        max_output_tokens=16_384,
+        tools=(),
+        context_window=1_000_000,
+        temperature=None,
+    )
+    request = ProviderRequest(
+        snap,
+        [previous],
+        metadata={"provider_state": {
+            "previous": {"reasoning_content": "prior private reasoning"},
+        }},
+    )
+
+    async def run():
+        return [event async for event in OpenAIChatAdapter(client=Client()).stream(request)]
+
+    events = asyncio.run(run())
+    assert captured["extra_body"] == {"thinking": {"type": "enabled"}}
+    assert captured["reasoning_effort"] == "high"
+    assert "temperature" not in captured
+    assert captured["messages"][1]["reasoning_content"] == "prior private reasoning"
+    state = next(event for event in events if event.type == "provider_state")
+    assert state.data["reasoning_content"] == "private reasoning"
+
+
+def test_deepseek_flash_disables_thinking_and_uses_temperature():
+    captured = {}
+
+    class Client:
+        class Completions:
+            async def create(self, **kwargs):
+                captured.update(kwargs)
+                return AsyncItems([])
+
+        chat = SimpleNamespace(completions=Completions())
+
+    snap = TurnSnapshot.create(
+        provider="openai_chat",
+        provider_family="deepseek",
+        model="deepseek-v4-flash",
+        protocol="openai_chat",
+        system_prompt="system",
+        reasoning_level="off",
+        max_output_tokens=8_192,
+        tools=(),
+        context_window=1_000_000,
+        temperature=0.1,
+    )
+
+    async def run():
+        return [event async for event in OpenAIChatAdapter(client=Client()).stream(
+            ProviderRequest(snap, [UserMessage("hello")])
+        )]
+
+    asyncio.run(run())
+    assert captured["extra_body"] == {"thinking": {"type": "disabled"}}
+    assert captured["temperature"] == 0.1
+    assert "reasoning_effort" not in captured
 
 
 def test_openai_responses_contract_summary_and_tool():
@@ -310,6 +429,30 @@ def test_credentials_are_mode_0600_and_evidence_requires_source(tmp_path):
         raise AssertionError("evidence without provenance must be rejected")
     evidence.add("image", "conv", "fact", {"result_id": "res_1"})
     assert evidence.list("image", "conv")[0]["content"] == "fact"
+
+
+def test_provider_state_is_private_and_provider_scoped(tmp_path):
+    states = ProviderStateStore(tmp_path / "provider_state")
+    states.set(
+        "conversation",
+        "message",
+        provider_family="deepseek",
+        model="deepseek-v4-pro",
+        state={"reasoning_content": "private"},
+    )
+    assert os.stat(states._path("conversation")).st_mode & 0o777 == 0o600
+    assert states.for_messages(
+        "conversation",
+        ["message"],
+        provider_family="deepseek",
+        model="deepseek-v4-pro",
+    ) == {"message": {"reasoning_content": "private"}}
+    assert states.for_messages(
+        "conversation",
+        ["message"],
+        provider_family="openai",
+        model="gpt-5",
+    ) == {}
 
 
 def test_event_store_after_seq_is_idempotent(tmp_path):

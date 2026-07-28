@@ -22,7 +22,11 @@ def _user_content(message: UserMessage) -> str:
     return f"{message.content}\n\n<current_forensic_context>\n{message.context}\n</current_forensic_context>"
 
 
-def openai_chat_messages(messages: list[Message], system: str = "") -> list[dict[str, Any]]:
+def openai_chat_messages(
+    messages: list[Message],
+    system: str = "",
+    provider_state: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     result: list[dict[str, Any]] = []
     if system:
         result.append({"role": "system", "content": system})
@@ -42,6 +46,10 @@ def openai_chat_messages(messages: list[Message], system: str = "") -> list[dict
                 text = (text + "\n\n[思考摘要]\n" + "\n".join(summaries)).strip()
             calls = [b for b in message.content if isinstance(b, ToolCallBlock) and b.complete]
             item: dict[str, Any] = {"role": "assistant", "content": text or None}
+            state = (provider_state or {}).get(message.message_id) or {}
+            reasoning_content = state.get("reasoning_content")
+            if reasoning_content:
+                item["reasoning_content"] = str(reasoning_content)
             if calls:
                 item["tool_calls"] = [
                     {

@@ -546,9 +546,15 @@ class ProfileModel(BaseModel):
     base_url: str
     api_key: str = ""
     model: str
+    provider: str = ""
+    credential_id: str = ""
     protocol: str = "openai_chat"
-    context_window: int = 65536
-    reasoning_level: str = "off"
+    context_window: int | None = None
+    output_token_limit: int | None = None
+    max_output_tokens: int | None = None
+    temperature: Optional[float] = None
+    reasoning_level: str = ""
+    agent_budget: dict[str, int] | None = None
     capabilities: dict[str, bool] = Field(default_factory=dict)
 
 
@@ -584,6 +590,8 @@ class AiSettingsRequest(BaseModel):
     ai_max_history: int | None = None
     ai_context_max_rows: int | str | None = None
     ai_context_max_chars: int | None = None
+    ai_context_reserve_tokens: int | None = None
+    ai_context_recent_tokens: int | None = None
     ai_memory_enabled: bool | None = None
     ai_memory_max_chars: int | None = None
     ai_memory_retrieval_top_k: int | None = None
@@ -1340,16 +1348,20 @@ async def save_profiles(req: SaveProfilesRequest):
     existing_credentials = runtime.credentials.load()
     profiles = []
     for p in req.profiles:
-        d = p.model_dump()
+        d = p.model_dump(exclude_unset=True)
         if not d.get("id"):
             d["id"] = str(uuid.uuid4())[:8]
+        credential_id = str(d.get("credential_id") or d["id"])
         if d.get("api_key"):
-            runtime.credentials.set(d["id"], d["api_key"])
+            runtime.credentials.set(credential_id, d["api_key"])
         d.pop("api_key", None)
         d = normalize_profile(d)
         profiles.append(d)
     get_ai_service().save_profiles(profiles)
-    retained_ids = {str(profile.get("id") or "") for profile in profiles}
+    retained_ids = {
+        str(profile.get("credential_id") or profile.get("id") or "")
+        for profile in profiles
+    }
     for profile_id in set(existing_credentials) - retained_ids:
         runtime.credentials.set(profile_id, "")
     return {
@@ -1362,9 +1374,11 @@ async def save_profiles(req: SaveProfilesRequest):
 @router.post("/profiles/active")
 async def set_active_profile(req: SetActiveProfileRequest):
     if req.profile:
-        profile = req.profile.model_dump()
+        profile = req.profile.model_dump(exclude_unset=True)
+        credential_id = str(profile.get("credential_id") or profile.get("id") or "")
         if profile.get("api_key"):
-            get_runtime().credentials.set(profile["id"], profile["api_key"])
+            if credential_id:
+                get_runtime().credentials.set(credential_id, profile["api_key"])
         profile.pop("api_key", None)
         get_ai_service().set_active_profile(normalize_profile(profile))
     else:
@@ -1381,10 +1395,11 @@ async def get_active_profile():
 
 @router.post("/profiles/test")
 async def test_profile_connection(req: TestProfileRequest):
-    profile = normalize_profile(req.profile.model_dump())
+    profile = normalize_profile(req.profile.model_dump(exclude_unset=True))
     key = str(req.profile.api_key or "")
-    if not key and profile.get("id"):
-        key = get_runtime().credentials.load().get(str(profile["id"]), "")
+    if not key:
+        credential_id = str(profile.get("credential_id") or profile.get("id") or "")
+        key = get_runtime().credentials.load().get(credential_id, "")
     adapter = ADAPTERS[profile["protocol"]](
         api_key=key,
         base_url=str(profile.get("base_url") or ""),
@@ -1394,10 +1409,12 @@ async def test_profile_connection(req: TestProfileRequest):
         model=str(profile.get("model") or ""),
         protocol=profile["protocol"],
         system_prompt="Reply with OK.",
-        reasoning_level="off",
-        max_output_tokens=8,
+        reasoning_level=profile["reasoning_level"],
+        max_output_tokens=min(256, profile["max_output_tokens"]),
         tools=[],
         context_window=profile["context_window"],
+        provider_family=profile["provider"],
+        temperature=profile.get("temperature"),
     )
     received_text = False
     try:
@@ -1414,6 +1431,15 @@ async def test_profile_connection(req: TestProfileRequest):
         "ok": received_text,
         "protocol": profile["protocol"],
         "model": profile.get("model", ""),
+        "effective": {
+            "provider": profile["provider"],
+            "context_window": profile["context_window"],
+            "max_output_tokens": profile["max_output_tokens"],
+            "output_token_limit": profile["output_token_limit"],
+            "reasoning_level": profile["reasoning_level"],
+            "temperature": profile.get("temperature"),
+            "agent_budget": profile["agent_budget"],
+        },
     }
 
 
@@ -1578,8 +1604,10 @@ async def rename_conversation(conv_id: str, req: RenameConversationRequest):
 @router.delete("/conversations/{conv_id}")
 async def delete_conversation(conv_id: str):
     """Delete a conversation and its messages."""
-    if not get_runtime().conversations.delete(conv_id):
+    runtime = get_runtime()
+    if not runtime.conversations.delete(conv_id):
         raise HTTPException(404, f"Conversation {conv_id!r} not found")
+    runtime.provider_states.delete(conv_id)
     return {"ok": True}
 
 
