@@ -1,11 +1,11 @@
 # Zero
 
-Zero 是一个面向内存取证的 Volatility 3 Web 工作台。它把镜像加载、插件运行、结果过滤、符号表管理和 AI 辅助分析放在同一个浏览器界面里，目标是让一次内存镜像排查从“能跑插件”变成“能持续分析”。
+Zero 是一个面向内存取证的多引擎 Web 工作台。它把镜像加载、Volatility 3 / YARA-X 扫描、结果过滤、规则与符号管理和 AI 辅助分析放在同一个浏览器界面里。
 
 AI Runtime 的分层、会话、checkpoint、工具和重连设计见
 [`dev/ai-runtime.md`](dev/ai-runtime.md)，接口见 [`dev/api.md`](dev/api.md)。
 
-当前版本专注于 Web UI 和 Volatility 3，不包含 Volatility 2、TUI 和测试目录。
+当前内置 Volatility 3 与 YARA-X 1.19.0，不包含 MemProcFS、Volatility 2 或 TUI。
 
 ## 适合什么场景
 
@@ -18,6 +18,8 @@ AI Runtime 的分层、会话、checkpoint、工具和重连设计见
 ## 功能概览
 
 - Volatility 3 插件分类、搜索、运行和取消
+- YARA-X 规则包扫描、ZIP 安全导入、多文件编辑、不可变版本与 GitHub 规则市场
+- 引擎级镜像、任务、结果、缓存与 Findings 隔离；Volatility 3 保持默认
 - 内存镜像路径输入与 `dumps/` 目录下拉选择
 - 表格过滤、列名补全、操作符补全、排序、分页和导出
 - 插件参数弹窗，自动识别必填参数
@@ -29,7 +31,7 @@ AI Runtime 的分层、会话、checkpoint、工具和重连设计见
 ## 环境要求
 
 - Linux 或 macOS
-- Python 3.8+
+- Python 3.10+
 - Node.js 18+
 - curl
 - npm
@@ -141,6 +143,41 @@ python scripts/clear_stale_cache.py --all
 4. 搜索并运行 Volatility 3 插件。
 5. 使用表格过滤、排序、分页和导出定位证据。
 6. 将结果发送给取证分析助手继续分析。
+
+## YARA-X 规则中心
+
+从左上角引擎选择器切换到 **YARA-X**，再打开“规则中心”：
+
+- **已安装**：启停、编辑、导出或删除规则包；一个包对应一个
+  `package.<package_id>` 扫描插件。
+- **ZIP 导入**：先预览安全解压与整包编译诊断，再确认安装；编译失败的包可保留为
+  禁用草稿。
+- **规则编辑器**：目录树、多标签、YARA 高亮、服务端草稿、结构化诊断、修订冲突保护，
+  以及“提交并激活”不可变版本。
+- **版本历史**：查看内容摘要并从历史创建恢复版本。
+- **在线市场**：内置 YARA Forge Core / Extended / Full、signature-base 和
+  ReversingLabs；自定义源只接受 GitHub `owner/repo`、ref 和包内子目录。
+
+规则包可包含 `zero-yara.json`：
+
+```json
+{
+  "schema_version": 1,
+  "name": "Incident rules",
+  "version": "1.0.0",
+  "description": "Local hunt rules",
+  "license": "Apache-2.0",
+  "homepage": "https://github.com/example/rules",
+  "entrypoints": ["main.yar"],
+  "globals": {
+    "tenant": {"type": "string", "default": "default"}
+  }
+}
+```
+
+Include 只能指向当前包根目录内的相对路径；绝对路径、`..`、符号链接、硬链接、循环
+include 和大小写冲突都会被拒绝。YARA-X 默认扫描超时 300 秒、每 Pattern 1000 个匹配、
+最多 100000 行，并关闭 fast-scan；这些选项可在系统设置的 YARA-X 页面调整。
 
 ## 过滤搜索
 

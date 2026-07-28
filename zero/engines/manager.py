@@ -110,6 +110,8 @@ class EngineManager:
                 "current_plugin": status.get("current_plugin"),
                 "available": status.get("available", True),
                 "initialized": registration.loaded,
+                "os_family": status.get("os_family", "linux"),
+                "system_type": status.get("os_family", "linux"),
             })
         return result
 
@@ -213,7 +215,7 @@ class EngineManager:
 # ---------------------------------------------------------------------------
 
 def _build_manager() -> EngineManager:
-    """Instantiate and register the Volatility 3 engine."""
+    """Instantiate and register built-in engines."""
     mgr = EngineManager()
 
     def _make_vol3() -> EngineBase:
@@ -225,6 +227,22 @@ def _build_manager() -> EngineManager:
         "Volatility 3",
         _make_vol3,
         status={"available": True, "os_family": "linux"},
+    )
+
+    def _make_yarax() -> EngineBase:
+        from zero.engines.yarax_engine import YaraXEngine
+        return YaraXEngine()
+
+    try:
+        import importlib.util
+        yarax_available = importlib.util.find_spec("yara_x") is not None
+    except Exception:
+        yarax_available = False
+    mgr.register_factory(
+        "yarax",
+        "YARA-X",
+        _make_yarax,
+        status={"available": yarax_available, "os_family": "all"},
     )
     return mgr
 

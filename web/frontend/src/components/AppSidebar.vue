@@ -11,7 +11,20 @@
           <img class="sidebar-logo-icon" src="/favicon.svg" alt="Zero" />
           <span v-if="sidebarExpanded" class="sidebar-logo-text">Zero</span>
         </div>
-        <span v-if="sidebarExpanded" class="sidebar-engine-pill">Volatility 3</span>
+        <select
+          v-if="sidebarExpanded"
+          class="sidebar-engine-select"
+          :value="store.selectedEngine"
+          aria-label="取证引擎"
+          @change="store.switchEngine($event.target.value)"
+        >
+          <option
+            v-for="engine in store.availableEngines"
+            :key="engine.engine_id"
+            :value="engine.engine_id"
+            :disabled="engine.available === false"
+          >{{ engine.display_name }}</option>
+        </select>
       </div>
     </div>
 
@@ -23,7 +36,7 @@
             {{ store.imageLoaded ? '镜像已加载' : '未加载镜像' }} · {{ store.pluginCount }} 插件
           </span>
         </div>
-        <div class="os-switch">
+        <div v-if="store.selectedEngine === 'vol3'" class="os-switch">
           <button
             class="os-btn"
             :class="{ 'active-linux': store.osFamily === 'linux' }"
@@ -35,6 +48,15 @@
             @click="switchOS('windows')"
           >Windows</button>
         </div>
+        <button
+          v-else
+          class="rule-center-entry"
+          type="button"
+          @click="window.dispatchEvent(new CustomEvent('zero:open-rule-center'))"
+        >
+          <AppIcon name="package" :size="13" />
+          打开规则中心
+        </button>
       </div>
 
     <div class="sidebar-search">
@@ -327,6 +349,34 @@ async function reloadPlugins() {
   font-size: 11px;
   font-weight: 700;
   white-space: nowrap;
+}
+
+.sidebar-engine-select {
+  min-width: 0;
+  max-width: 132px;
+  height: 28px;
+  padding: 0 24px 0 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--accent-bright);
+  font: 700 11px var(--font-sans);
+  cursor: pointer;
+}
+
+.rule-center-entry {
+  width: 100%;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border: 1px solid var(--accent-dim);
+  border-radius: 9px;
+  color: var(--accent-bright);
+  background: var(--accent-glow);
+  cursor: pointer;
+  font-weight: 650;
 }
 
 .sidebar-platform-strip {

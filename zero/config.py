@@ -63,6 +63,14 @@ TERMINATE_GRACE_SECONDS = 2.0  # 终止插件进程时，先 terminate 再 kill 
 HARD_INTERRUPT_MODE = True  # 是否启用硬中断（插件在独立进程中执行）
 WORKER_START_METHOD = "spawn" if sys.platform == "darwin" else "fork"  # 插件进程启动方式：fork / spawn / forkserver
 
+# YARA-X 设置
+YARAX_DATA_DIR = ".zero/yarax"
+YARAX_SCAN_TIMEOUT_SECONDS = 300
+YARAX_MAX_MATCHES_PER_PATTERN = 1000
+YARAX_MAX_RESULT_ROWS = 100000
+YARAX_RELAXED_REGEX = False
+YARAX_MARKET_TTL_SECONDS = 6 * 3600
+
 # 性能设置
 # 单次导出的行数软上限（表格本身始终服务端分页）。设为 0 或 None 表示不限制。
 MAX_TABLE_ROWS = 10000

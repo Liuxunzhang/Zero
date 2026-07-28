@@ -89,6 +89,17 @@
           <span class="ai-toggle-text">系统</span>
         </button>
         <button
+          v-if="store.selectedEngine === 'yarax'"
+          class="ai-toggle-btn"
+          :class="{ active: showRuleCenter }"
+          @click="showRuleCenter = true"
+          title="YARA-X 规则中心"
+        >
+          <AppIcon class="ai-toggle-icon" name="package" />
+          <span class="ai-toggle-text">规则</span>
+        </button>
+        <button
+          v-if="store.selectedEngine === 'vol3'"
           class="ai-toggle-btn"
           @click="store.showArgsPanel = !store.showArgsPanel"
           title="参数配置"
@@ -124,6 +135,7 @@
           <span class="ai-toggle-text">助手</span>
         </button>
         <button
+          v-if="store.selectedEngine === 'vol3'"
           class="ai-toggle-btn"
           :class="{ active: showSymbolManager }"
           @click="showSymbolManager = true"
@@ -260,6 +272,12 @@
       @saved="onSystemSettingsSaved"
     />
 
+    <RuleCenterModal
+      v-if="showRuleCenter"
+      @close="showRuleCenter = false"
+      @packages-changed="store.fetchPlugins('all')"
+    />
+
     <NotepadPanel
       :show="showNotepad"
       @close="showNotepad = false"
@@ -319,13 +337,18 @@ const LogPanel = defineAsyncComponent(() => import('./components/LogPanel.vue'))
 const SystemSettingsModal = defineAsyncComponent(
   () => import('./components/SystemSettingsModal.vue'),
 )
+const RuleCenterModal = defineAsyncComponent(() => import('./components/RuleCenterModal.vue'))
 
 const store = useAppStore()
 const findingsStore = useFindingsStore()
 const localImagePath = ref('')
 
 // Findings are stored per image; follow whatever image is active.
-watch(() => store.imagePath, (p) => findingsStore.setImage(p || ''), { immediate: true })
+watch(
+  () => [store.selectedEngine, store.imagePath],
+  ([engine, path]) => findingsStore.setImage(path || '', engine),
+  { immediate: true },
+)
 const currentTheme = ref('dark')
 const showDropdown = ref(false)
 const showAiPanel = ref(false)
@@ -333,6 +356,7 @@ const showAiConfig = ref(false)
 const showSymbolManager = ref(false)
 const showLogPanel = ref(false)
 const showSystemSettings = ref(false)
+const showRuleCenter = ref(false)
 const showNotepad = ref(false)
 const showFindings = ref(false)
 const showTokenMenu = ref(false)
@@ -646,6 +670,14 @@ function handleClickOutside(e) {
   }
 }
 
+function openRuleCenter() {
+  showRuleCenter.value = true
+}
+
+watch(() => store.imagePath, (path) => {
+  localImagePath.value = path || ''
+})
+
 onMounted(async () => {
   // Restore saved theme (the index.html inline script already applied a
   // resolved value pre-mount; this syncs component state and re-applies).
@@ -660,6 +692,7 @@ onMounted(async () => {
   document.addEventListener('click', onDocClickToken)
   document.addEventListener('keydown', onGlobalKeydown)
   window.addEventListener('zero:send-to-ai', handleSendToAiEvent)
+  window.addEventListener('zero:open-rule-center', openRuleCenter)
 
   const savedWidth = Number(localStorage.getItem(AI_PANEL_WIDTH_KEY))
   if (Number.isFinite(savedWidth) && savedWidth > 0) {
@@ -689,6 +722,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('click', onDocClickToken)
   document.removeEventListener('keydown', onGlobalKeydown)
   window.removeEventListener('zero:send-to-ai', handleSendToAiEvent)
+  window.removeEventListener('zero:open-rule-center', openRuleCenter)
   stopAiResize()
   _stopFloatDrag()
   _stopFloatResize()

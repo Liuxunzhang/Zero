@@ -45,6 +45,8 @@ function makeEngineState() {
     profile: "",
     suggestedProfiles: [],
     available: true,
+    resultStatus: "idle",
+    resultTruncated: false,
   }
 }
 
@@ -79,6 +81,7 @@ export const useAppStore = defineStore("app", () => {
   const sortDesc      = computed(() => es.value.sortDesc)
   const progress      = computed({ get: () => es.value.progress, set: v => { es.value.progress = v } })
   const profile       = computed({ get: () => es.value.profile, set: v => { es.value.profile = v } })
+  const resultTruncated = computed(() => es.value.resultTruncated)
   const hasData = computed(() => es.value.columns.length > 0 && es.value.rows.length > 0)
   const visibleRows = computed(() => es.value.rows.length)
   const hasFilter = computed(() => Boolean(String(es.value.filterText || "").trim()))
@@ -292,6 +295,8 @@ export const useAppStore = defineStore("app", () => {
       st.currentPlugin = ""
       st.runningPlugin = ""
       st.pluginBusy = false
+      st.resultTruncated = false
+      st.resultStatus = "idle"
       await fetchEngineSettings(engineId)
       pushMessage("[" + engineId + "] 镜像已加载: " + path, "success")
       loadedPath = st.imagePath || path
@@ -313,6 +318,24 @@ export const useAppStore = defineStore("app", () => {
       const data = await getPlugins(os, engineId)
       st.categories = data.categories || {}
     } catch (e) { pushMessage("获取插件列表失败: " + e.message, "error") }
+  }
+
+  async function switchEngine(engineId) {
+    if (!engineStates[engineId] || engineId === selectedEngine.value) return
+    selectedEngine.value = engineId
+    const st = engineStates[engineId]
+    try {
+      const status = await getImageStatus(engineId)
+      st.imagePath = status.path || ""
+      st.imageLoaded = Boolean(status.loaded)
+      st.currentPlugin = status.current_plugin || st.currentPlugin || ""
+      st.pluginBusy = Boolean(status.plugin_busy)
+      st.osFamily = engineId === "yarax" ? "all" : (status.os_family || st.osFamily || "linux")
+      await fetchPlugins(st.osFamily)
+      if (st.currentPlugin) await fetchResults()
+    } catch (e) {
+      pushMessage("[" + engineId + "] 切换引擎失败: " + e.message, "error")
+    }
   }
 
   async function fetchEngineSettings(engineId = selectedEngine.value) {
@@ -357,6 +380,12 @@ export const useAppStore = defineStore("app", () => {
       st.totalRows = data.total || 0
       st.totalPages = data.total_pages || 1
       st.currentPlugin = data.current_plugin || st.runningPlugin || st.currentPlugin
+      st.resultStatus = data.status || "success"
+      const wasTruncated = st.resultTruncated
+      st.resultTruncated = Boolean(data.truncated)
+      if (st.resultTruncated && !wasTruncated) {
+        pushMessage("[" + engineId + "] 结果超过行数上限，仅保留前 " + st.totalRows + " 行", "warning")
+      }
     } catch (e) {
       if (e?.code === "ERR_CANCELED" || e?.name === "CanceledError") return
       pushMessage("获取结果失败: " + e.message, "error")
@@ -728,6 +757,8 @@ export const useAppStore = defineStore("app", () => {
     st.runningPlugin = pluginName
     st.page = 1
     st.pluginBusy = true
+    st.resultTruncated = false
+    st.resultStatus = "running"
     st.progress = 0
     pushMessage(
       "[" + engineId + "] " + (force ? "强制重跑: " : "运行插件: ") + pluginName + "...",
@@ -777,13 +808,13 @@ export const useAppStore = defineStore("app", () => {
   }
 
   return {
-    availableEngines, selectedEngine, engineStates,
+    availableEngines, selectedEngine, engineStates, switchEngine,
     fetchEngineList,
     imagePath, imageLoaded, osFamily,
     categories, currentPlugin, runningPlugin, pluginBusy,
     columns, rows, totalRows, page, pageSize, totalPages,
     filterText, sortColumn, sortDesc, profile,
-    messages, progress, hasData, hasFilter, hasSort, visibleRows, pluginCount,
+    messages, progress, hasData, hasFilter, hasSort, visibleRows, pluginCount, resultTruncated,
     initBusy, backendReady, initError,
     loadImage, imageLoadBusy,
     symbolDownloadBusy, symbolDownloadProgress, symbolDownloadStage,
