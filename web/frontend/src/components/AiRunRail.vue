@@ -1,40 +1,73 @@
 <template>
-  <section class="run-rail" :class="{ active: streaming }" aria-label="智能体运行阶段">
-    <div class="run-rail-head">
+  <section
+    class="run-rail"
+    :class="{ active: streaming, collapsed }"
+    aria-label="智能体运行阶段"
+  >
+    <button
+      v-if="collapsed"
+      type="button"
+      class="run-rail-compact"
+      title="展开证据链"
+      @click="$emit('update:collapsed', false)"
+    >
+      <span class="compact-label"><i :class="stateClass"></i>证据链</span>
+      <span class="compact-line" aria-hidden="true">
+        <i :style="{ width: `${progressPercent}%` }"></i>
+      </span>
+      <strong>{{ phaseLabel }}</strong>
+      <span class="compact-metrics">{{ turnLabel }} 轮 · {{ toolLabel }} 工具</span>
+      <AppIcon name="chevron-down" :size="12" />
+    </button>
+    <template v-else>
+      <div class="run-rail-head">
       <div>
         <span class="run-rail-kicker">EVIDENCE RUN</span>
         <strong>{{ phaseLabel }}</strong>
       </div>
-      <span class="run-rail-state" :class="stateClass">
-        <i></i>{{ stateLabel }}
-      </span>
-    </div>
-    <ol class="run-rail-stages">
-      <li
-        v-for="(stage, index) in stages"
-        :key="stage.key"
-        :class="{ complete: index < phaseIndex, current: index === phaseIndex }"
-      >
-        <span class="run-rail-node">{{ index + 1 }}</span>
-        <span>{{ stage.label }}</span>
-      </li>
-    </ol>
-    <div class="run-rail-metrics">
-      <span><b>{{ contextLabel }}</b> 上下文</span>
-      <span><b>{{ turnLabel }}</b> 轮次</span>
-      <span><b>{{ toolLabel }}</b> 工具</span>
-      <span v-if="continuations"><b>{{ continuations }}</b> 次续写</span>
-    </div>
+        <div class="run-rail-head-actions">
+          <span class="run-rail-state" :class="stateClass">
+            <i></i>{{ stateLabel }}
+          </span>
+          <button
+            type="button"
+            class="run-rail-toggle"
+            title="将证据链收起为一条线"
+            @click="$emit('update:collapsed', true)"
+          ><AppIcon name="chevron-up" :size="12" /></button>
+        </div>
+      </div>
+      <ol class="run-rail-stages">
+        <li
+          v-for="(stage, index) in stages"
+          :key="stage.key"
+          :class="{ complete: index < phaseIndex, current: index === phaseIndex }"
+        >
+          <span class="run-rail-node">{{ index + 1 }}</span>
+          <span>{{ stage.label }}</span>
+        </li>
+      </ol>
+      <div class="run-rail-metrics">
+        <span><b>{{ contextLabel }}</b> 上下文</span>
+        <span><b>{{ turnLabel }}</b> 轮次</span>
+        <span><b>{{ toolLabel }}</b> 工具</span>
+        <span v-if="continuations"><b>{{ continuations }}</b> 次续写</span>
+      </div>
+    </template>
   </section>
 </template>
 
 <script setup>
 import { computed } from 'vue'
+import AppIcon from './AppIcon.vue'
 
 const props = defineProps({
   run: { type: Object, required: true },
   streaming: { type: Boolean, default: false },
+  collapsed: { type: Boolean, default: false },
 })
+
+defineEmits(['update:collapsed'])
 
 const stages = [
   { key: 'context', label: '装载证据' },
@@ -96,6 +129,7 @@ const turnLabel = computed(() => {
 
 const toolLabel = computed(() => `${completeTools.value}/${tools.value.length || 0}`)
 const continuations = computed(() => Number(props.run.continuations || 0))
+const progressPercent = computed(() => Math.max(8, Math.round(((phaseIndex.value + 1) / stages.length) * 100)))
 </script>
 
 <style scoped>
@@ -112,6 +146,81 @@ const continuations = computed(() => Number(props.run.continuations || 0))
   --rail-accent: #39c6c8;
 }
 
+.run-rail.collapsed {
+  height: 31px;
+  padding: 0;
+}
+
+.run-rail-compact {
+  width: 100%;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.run-rail-compact:hover {
+  background: color-mix(in srgb, var(--rail-accent) 6%, transparent);
+}
+
+.compact-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  color: var(--text-secondary);
+  font: 650 9px/1 var(--font-mono, monospace);
+}
+
+.compact-label i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.compact-label i.running { background: #39c6c8; }
+.compact-label i.complete { background: var(--text-success, #46c780); }
+.compact-label i.warning { background: var(--text-warning, #e5a84b); }
+
+.compact-line {
+  position: relative;
+  width: 46px;
+  height: 1px;
+  flex: none;
+  overflow: hidden;
+  background: var(--border);
+}
+
+.compact-line i {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--rail-accent);
+}
+
+.run-rail-compact strong {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 550;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.compact-metrics {
+  flex: none;
+  font: 500 8px/1 var(--font-mono, monospace);
+  white-space: nowrap;
+}
+
 .run-rail-head,
 .run-rail-metrics,
 .run-rail-stages {
@@ -122,6 +231,29 @@ const continuations = computed(() => Number(props.run.continuations || 0))
 .run-rail-head {
   justify-content: space-between;
   gap: 12px;
+}
+
+.run-rail-head-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.run-rail-toggle {
+  width: 23px;
+  height: 23px;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--border-subtle);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.run-rail-toggle:hover {
+  border-color: var(--rail-accent);
+  color: var(--text-primary);
 }
 
 .run-rail-head > div {
@@ -249,6 +381,8 @@ const continuations = computed(() => Number(props.run.continuations || 0))
 @media (max-width: 420px) {
   .run-rail-kicker { display: none; }
   .run-rail-metrics { gap: 8px; overflow-x: auto; }
+  .compact-line,
+  .compact-metrics { display: none; }
 }
 
 @media (prefers-reduced-motion: reduce) {

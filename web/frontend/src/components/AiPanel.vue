@@ -15,6 +15,14 @@
         <span class="ai-panel-model" v-if="modelLabel">{{ modelLabel }}</span>
       </div>
       <div class="ai-panel-actions" ref="actionsEl">
+        <button
+          class="ai-header-btn"
+          :class="{ active: focusMode }"
+          @click.stop="toggleFocusMode"
+          :title="focusMode ? '展开控制区和证据链' : '专注聊天：收起控制区和证据链'"
+        >
+          <AppIcon :name="focusMode ? 'chevron-down' : 'chevron-up'" />
+        </button>
         <button class="ai-header-btn" @click="$emit('open-config')" title="取证助手设置">
           <AppIcon name="settings" />
         </button>
@@ -109,42 +117,67 @@
       </div>
     </div>
 
-    <div class="ai-control-deck">
-      <div class="ai-prompt-bar">
-        <span class="ai-prompt-bar-label">分析策略</span>
-        <select class="ai-prompt-select" v-model="activePromptId" @change="onPromptChange">
-          <option v-for="p in prompts" :key="p.id" :value="p.id">
-            {{ p.name }}{{ p.builtin ? '' : ' (自定义)' }}
-          </option>
-        </select>
-        <button
-          class="ai-quick-max-btn"
-          :class="{ active: tokenIsMax }"
-          :disabled="quickUpdating"
-          @click="toggleTokenMax"
-          title="切换响应输出上限"
-        >输出 {{ tokenIsMax ? 'MAX' : (tokenIsAuto ? 'AUTO' : '自定义') }}</button>
-        <button
-          class="ai-quick-max-btn"
-          :class="{ active: rowsIsMax }"
-          :disabled="quickUpdating"
-          @click="toggleRowsMax"
-          title="切换插件上下文上限"
-        >证据 {{ rowsIsMax ? 'MAX' : '默认' }}</button>
-      </div>
-      <div class="ai-agent-strip">
-        <span
-          v-for="item in agentContextItems"
-          :key="item.label"
-          class="ai-agent-pill"
-          :class="{ muted: item.muted }"
-        >
-          <span class="ai-agent-pill-label">{{ item.label }}</span>
-          <span class="ai-agent-pill-value">{{ item.value }}</span>
-        </span>
-      </div>
+    <div class="ai-control-deck" :class="{ collapsed: contextDeckCollapsed }">
+      <button
+        v-if="contextDeckCollapsed"
+        type="button"
+        class="ai-control-deck-compact"
+        title="展开分析上下文"
+        @click="contextDeckCollapsed = false"
+      >
+        <span class="compact-deck-label">分析上下文</span>
+        <strong>{{ activePromptName }}</strong>
+        <span>{{ modelName || '未配置模型' }}</span>
+        <span>{{ store.currentPlugin || '未选择插件' }}</span>
+        <AppIcon name="chevron-down" :size="12" />
+      </button>
+      <template v-else>
+        <div class="ai-prompt-bar">
+          <span class="ai-prompt-bar-label">分析策略</span>
+          <select class="ai-prompt-select" v-model="activePromptId" @change="onPromptChange">
+            <option v-for="p in prompts" :key="p.id" :value="p.id">
+              {{ p.name }}{{ p.builtin ? '' : ' (自定义)' }}
+            </option>
+          </select>
+          <button
+            class="ai-quick-max-btn"
+            :class="{ active: tokenIsMax }"
+            :disabled="quickUpdating"
+            @click="toggleTokenMax"
+            title="切换响应输出上限"
+          >输出 {{ tokenIsMax ? 'MAX' : (tokenIsAuto ? 'AUTO' : '自定义') }}</button>
+          <button
+            class="ai-quick-max-btn"
+            :class="{ active: rowsIsMax }"
+            :disabled="quickUpdating"
+            @click="toggleRowsMax"
+            title="切换插件上下文上限"
+          >证据 {{ rowsIsMax ? 'MAX' : '默认' }}</button>
+          <button
+            type="button"
+            class="ai-deck-collapse-btn"
+            title="收起分析上下文"
+            @click="contextDeckCollapsed = true"
+          ><AppIcon name="chevron-up" :size="12" /></button>
+        </div>
+        <div class="ai-agent-strip">
+          <span
+            v-for="item in agentContextItems"
+            :key="item.label"
+            class="ai-agent-pill"
+            :class="{ muted: item.muted }"
+          >
+            <span class="ai-agent-pill-label">{{ item.label }}</span>
+            <span class="ai-agent-pill-value">{{ item.value }}</span>
+          </span>
+        </div>
+      </template>
     </div>
-    <AiRunRail :run="aiRun.current" :streaming="streaming" />
+    <AiRunRail
+      :run="aiRun.current"
+      :streaming="streaming"
+      v-model:collapsed="evidenceRailCollapsed"
+    />
 
     <!-- Messages -->
     <div class="ai-messages" ref="messagesEl">
@@ -223,21 +256,34 @@
             >{{ copiedId === idx ? '已复制' : '复制' }}</button>
           </div>
           <!-- Agent tool call / result cards -->
-          <div v-if="msg.role === 'tool'" class="ai-tool-card" :class="{ 'ai-tool-error': msg.toolError, 'ai-tool-running': msg.toolRunning, 'ai-tool-done': !msg.toolRunning && !msg.toolError }">
-            <div class="ai-tool-header">
+          <div
+            v-if="msg.role === 'tool'"
+            class="ai-tool-card"
+            :class="{
+              'ai-tool-error': msg.toolError,
+              'ai-tool-running': msg.toolRunning,
+              'ai-tool-done': !msg.toolRunning && !msg.toolError,
+              collapsed: !msg.toolExpanded,
+            }"
+          >
+            <button type="button" class="ai-tool-header ai-tool-toggle" @click="msg.toolExpanded = !msg.toolExpanded">
               <span class="ai-tool-icon"><AppIcon :name="msg.toolRunning ? 'wrench' : msg.toolError ? 'x-circle' : 'check-circle'" :size="13" /></span>
               <code class="ai-tool-name">{{ msg.toolName }}</code>
+              <span class="ai-tool-compact-summary">{{ toolCompactSummary(msg) }}</span>
+              <AppIcon :name="msg.toolExpanded ? 'chevron-up' : 'chevron-down'" :size="12" />
+            </button>
+            <div v-if="msg.toolExpanded" class="ai-tool-details">
+              <div v-if="msg.toolArgs && Object.keys(msg.toolArgs).length" class="ai-tool-args">{{ formatToolArgs(msg.toolArgs) }}</div>
+              <div v-if="msg.toolProgress?.message" class="ai-tool-summary">{{ msg.toolProgress.message }}</div>
+              <div v-if="msg.toolProgress?.percent != null" class="ai-tool-summary">进度 {{ msg.toolProgress.percent }}%</div>
+              <div v-if="msg.toolSummary" class="ai-tool-summary">{{ msg.toolSummary }}</div>
+              <div v-if="msg.details?.result_id" class="ai-tool-args">
+                result_id={{ msg.details.result_id }}
+                <span v-if="msg.details.total != null"> · {{ msg.details.total }} 行</span>
+                <button class="ai-copy-btn" @click.stop="openToolResult(msg.details.result_id, 1)">查看结果</button>
+              </div>
+              <div v-if="msg.toolError" class="ai-tool-err">{{ msg.toolError }}</div>
             </div>
-            <div v-if="msg.toolArgs && Object.keys(msg.toolArgs).length" class="ai-tool-args">{{ formatToolArgs(msg.toolArgs) }}</div>
-            <div v-if="msg.toolProgress?.message" class="ai-tool-summary">{{ msg.toolProgress.message }}</div>
-            <div v-if="msg.toolProgress?.percent != null" class="ai-tool-summary">进度 {{ msg.toolProgress.percent }}%</div>
-            <div v-if="msg.toolSummary" class="ai-tool-summary">{{ msg.toolSummary }}</div>
-            <div v-if="msg.details?.result_id" class="ai-tool-args">
-              result_id={{ msg.details.result_id }}
-              <span v-if="msg.details.total != null"> · {{ msg.details.total }} 行</span>
-              <button class="ai-copy-btn" @click="openToolResult(msg.details.result_id, 1)">查看结果</button>
-            </div>
-            <div v-if="msg.toolError" class="ai-tool-err">{{ msg.toolError }}</div>
           </div>
         </div>
       </div>
@@ -360,6 +406,21 @@ const props = defineProps({
 
 const store = useAppStore()
 const aiRun = useAiRunStore()
+const AI_LAYOUT_KEY = 'zero-ai-panel-layout-v1'
+
+function loadLayoutPreference() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(AI_LAYOUT_KEY) || '{}')
+    return {
+      context: saved.context !== false,
+      evidence: saved.evidence !== false,
+    }
+  } catch {
+    return { context: true, evidence: true }
+  }
+}
+
+const initialLayout = loadLayoutPreference()
 
 // State
 const chatMessages = ref([])
@@ -373,6 +434,8 @@ const modelName = ref('')
 const apiName = ref('')
 const messagesEl = ref(null)
 const inputEl = ref(null)
+const contextDeckCollapsed = ref(initialLayout.context)
+const evidenceRailCollapsed = ref(initialLayout.evidence)
 
 // Prompt selector
 const prompts = ref([])
@@ -396,6 +459,7 @@ const renamingId = ref(null)
 const renameText = ref('')
 const showRunPanel = computed(() => activeDropdown.value === 'run')
 const showHistory = computed(() => activeDropdown.value === 'history')
+const focusMode = computed(() => contextDeckCollapsed.value && evidenceRailCollapsed.value)
 
 let currentAbort = null
 
@@ -609,6 +673,12 @@ function sendQuick(text) {
   sendMessage()
 }
 
+function toggleFocusMode() {
+  const next = !focusMode.value
+  contextDeckCollapsed.value = next
+  evidenceRailCollapsed.value = next
+}
+
 function handleRunEvent(event) {
   const payload = event.data || {}
   if (event.type === 'text_delta') {
@@ -624,6 +694,7 @@ function handleRunEvent(event) {
       toolProgress: {},
       toolSummary: '',
       toolError: '',
+      toolExpanded: true,
     })
     toolCallIndex.value[payload.tool_call_id] = idx
     scrollToBottom()
@@ -638,8 +709,13 @@ function handleRunEvent(event) {
       const message = chatMessages.value[idx]
       message.toolRunning = false
       message.details = payload.details || {}
-      if (payload.is_error) message.toolError = payload.content || 'Unknown error'
-      else message.toolSummary = payload.content || ''
+      if (payload.is_error) {
+        message.toolError = payload.content || 'Unknown error'
+        message.toolExpanded = true
+      } else {
+        message.toolSummary = payload.content || ''
+        message.toolExpanded = false
+      }
     }
     scrollToBottom()
   }
@@ -725,6 +801,17 @@ function formatToolArgs(args) {
     }
   }
   return parts.join(', ')
+}
+
+function toolCompactSummary(message) {
+  if (message.toolRunning) {
+    if (message.toolProgress?.percent != null) return `${message.toolProgress.percent}%`
+    return message.toolProgress?.message || '执行中'
+  }
+  if (message.toolError) return '执行失败'
+  if (message.details?.total != null) return `${message.details.total} 行证据`
+  if (message.details?.result_id) return '结果已保存'
+  return message.toolSummary ? String(message.toolSummary).replace(/\s+/g, ' ').slice(0, 48) : '执行完成'
 }
 
 async function openToolResult(resultId, page = 1) {
@@ -893,6 +980,7 @@ async function selectConversation(conv) {
       details: m.details,
       stopReason: m.stopReason,
       status: m.status,
+      toolExpanded: Boolean(m.toolError),
     }))
     toolCallIndex.value = {}
     errorText.value = ''
@@ -1023,6 +1111,14 @@ watch(() => props.open, (val) => {
   } else {
     activeDropdown.value = ''
     cancelRename()
+  }
+})
+
+watch([contextDeckCollapsed, evidenceRailCollapsed], ([context, evidence]) => {
+  try {
+    localStorage.setItem(AI_LAYOUT_KEY, JSON.stringify({ context, evidence }))
+  } catch {
+    // Layout persistence is optional in private browsing contexts.
   }
 })
 </script>
@@ -1559,11 +1655,79 @@ watch(() => props.open, (val) => {
   background: color-mix(in srgb, var(--bg-secondary) 96%, black 4%);
 }
 
+.ai-control-deck.collapsed {
+  height: 31px;
+}
+
+.ai-control-deck-compact {
+  width: 100%;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  text-align: left;
+}
+
+.ai-control-deck-compact:hover {
+  background: color-mix(in srgb, #39c6c8 6%, transparent);
+}
+
+.compact-deck-label {
+  flex: none;
+  color: #39c6c8;
+  font: 700 8px/1 var(--font-mono, monospace);
+  letter-spacing: .08em;
+}
+
+.ai-control-deck-compact strong,
+.ai-control-deck-compact > span:not(.compact-deck-label) {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-control-deck-compact strong {
+  flex: 1;
+  color: var(--text-secondary);
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.ai-control-deck-compact > span:not(.compact-deck-label) {
+  max-width: 90px;
+  flex: none;
+  font: 500 8px/1 var(--font-mono, monospace);
+}
+
 .ai-prompt-bar {
   gap: 6px;
   padding: 7px 12px 5px;
   border: 0;
   background: transparent;
+}
+
+.ai-deck-collapse-btn {
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border: 1px solid var(--border-subtle);
+  border-radius: 5px;
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.ai-deck-collapse-btn:hover {
+  border-color: #39c6c8;
+  color: var(--text-primary);
 }
 
 .ai-prompt-bar-label {
@@ -1849,6 +2013,50 @@ watch(() => props.open, (val) => {
   background: var(--bg-secondary);
 }
 
+.ai-tool-card.collapsed {
+  padding: 0;
+}
+
+.ai-tool-toggle {
+  width: 100%;
+  min-width: 0;
+  min-height: 32px;
+  margin: 0;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ai-tool-toggle:hover {
+  background: color-mix(in srgb, var(--accent) 5%, transparent);
+}
+
+.ai-tool-toggle .ai-tool-name {
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-tool-compact-summary {
+  min-width: 0;
+  overflow: hidden;
+  flex: 1;
+  color: var(--text-muted);
+  font-size: 9px;
+  font-weight: 400;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-tool-details {
+  padding: 0 2px 2px;
+}
+
 .ai-input-area {
   padding: 9px 12px 10px;
   border-top-color: var(--border-subtle);
@@ -1964,6 +2172,10 @@ watch(() => props.open, (val) => {
 
   .ai-context-current {
     max-width: 44%;
+  }
+
+  .ai-control-deck-compact > span:not(.compact-deck-label) {
+    display: none;
   }
 }
 
