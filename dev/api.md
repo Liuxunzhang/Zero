@@ -364,3 +364,72 @@ Request:
 ```
 
 `use_gh_proxy` 默认为 `false`。设为 `true` 时，服务使用固定格式 `https://gh-proxy.com/https://raw.githubusercontent.com/...` 下载选中的符号文件。
+
+## AI Agent Runtime v1
+
+所有运行事件均为可重连 SSE。事件 envelope：
+
+```json
+{
+  "version": 1,
+  "seq": 42,
+  "run_id": "run_...",
+  "conversation_id": "abc123",
+  "timestamp": "2026-07-28T05:00:00Z",
+  "type": "text_delta",
+  "data": {"text": "证据"}
+}
+```
+
+客户端必须按 `seq` 幂等归并，断线后使用最后一个已处理序号续接。
+
+### POST `/api/ai/conversations/{id}/runs`
+
+创建后台运行，立即返回 `run_id`。默认预算为 12 turns、20 次工具调用、1800 秒。
+
+```json
+{
+  "message": "排查当前镜像中的可疑进程",
+  "engine_id": "vol3",
+  "mode": "agent",
+  "max_turns": 12,
+  "max_tool_calls": 20,
+  "max_seconds": 1800
+}
+```
+
+### GET `/api/ai/runs/{id}/events?after_seq=N`
+
+读取历史事件并继续等待新事件。事件类型包括 `run_start`、`turn_start`、
+`context`、`text_delta`、`thinking_summary_delta`、`tool_start`、
+`tool_progress`、`tool_end`、`retry`、`compaction`、`usage`、
+`budget_exhausted`、`turn_end` 和 `run_end`。
+
+### GET `/api/ai/runs/{id}`
+
+查询运行状态、最新序号和 turn/工具/时间预算。
+
+### POST `/api/ai/runs/{id}/cancel`
+
+先中止服务端 SDK 请求并调用对应 engine 的 `cancel_plugin`，再由客户端关闭 SSE。
+
+### POST `/api/ai/conversations/{id}/compact`
+
+手动创建 checkpoint。原始 typed JSONL 历史不会删除。
+
+### GET `/api/ai/conversations/{id}/context`
+
+返回上下文窗口、reserve、阈值、估算 token、占用率和 checkpoint 数量。
+
+### GET `/api/ai/tool-results/{result_id}`
+
+按 `conversation_id` 查询不透明结果句柄。支持 `filter`、`sort_column`、
+`sort_desc`、逗号分隔的 `columns`、`page` 和最多 200 的 `page_size`。
+
+### POST `/api/ai/profiles/test`
+
+使用指定协议执行最小流式连接测试。Profile 支持
+`openai_responses`、`openai_chat`、`anthropic_messages`、`google_genai`，
+以及 `context_window`、`reasoning_level=off|low|medium|high` 和能力覆盖项。
+
+`POST /api/ai/chat` 保留兼容，但内部创建同一种后台 run。

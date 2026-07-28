@@ -4,6 +4,7 @@ import hmac
 import logging
 import os
 import sys
+from contextlib import asynccontextmanager
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -27,8 +28,10 @@ load_runtime_settings()
 from web.backend.api.routes import router as api_router
 from web.backend.api.websocket import router as ws_router
 from web.backend.api.ai_routes import router as ai_router
+from web.backend.api.runtime_routes import router as ai_runtime_router
 from web.backend.api.symbol_routes import router as symbol_router
 from web.backend.api.settings_routes import router as settings_router
+from web.backend.ai_runtime.service import get_runtime
 
 _LOG_FORMAT = "%(asctime)s %(name)s %(levelname)s %(message)s"
 
@@ -69,7 +72,16 @@ def _configure_logging() -> None:
 
 _configure_logging()
 
-app = FastAPI(title="Zero Web", version="0.1.0")
+
+@asynccontextmanager
+async def _lifespan(_app: FastAPI):
+    # Performs legacy migration, event retention cleanup and interrupted-run
+    # recovery without issuing any provider request.
+    get_runtime()
+    yield
+
+
+app = FastAPI(title="Zero Web", version="0.1.0", lifespan=_lifespan)
 
 # CORS — allow Vite dev server during development
 app.add_middleware(
@@ -133,6 +145,7 @@ app.add_middleware(_ApiTokenMiddleware)
 app.include_router(api_router)
 app.include_router(ws_router)
 app.include_router(ai_router)
+app.include_router(ai_runtime_router)
 app.include_router(symbol_router)
 app.include_router(settings_router)
 

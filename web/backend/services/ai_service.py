@@ -567,7 +567,13 @@ def _save_profiles_to_config(profiles: list[dict]) -> None:
         else:
             lines = ["AI_PROFILES = ["]
             for p in profiles:
-                entry = {k: p.get(k, "") for k in ("id", "name", "base_url", "model")}
+                entry = {
+                    k: p.get(k, "")
+                    for k in (
+                        "id", "name", "base_url", "model", "protocol",
+                        "context_window", "reasoning_level", "capabilities",
+                    )
+                }
                 entry["api_key"] = ""
                 lines.append(f"    {json.dumps(entry, ensure_ascii=False)},")
             lines.append("]")
@@ -594,11 +600,19 @@ def _save_profiles_to_config(profiles: list[dict]) -> None:
 
 
 def _normalize_profiles(profiles: list[dict]) -> list[dict]:
-    return [
-        {k: p.get(k, "") for k in ("id", "name", "base_url", "api_key", "model")}
-        for p in profiles
-        if isinstance(p, dict)
-    ]
+    normalized = []
+    for profile in profiles:
+        if not isinstance(profile, dict):
+            continue
+        item = {
+            key: profile.get(key, "")
+            for key in ("id", "name", "base_url", "api_key", "model")
+        }
+        for key in ("protocol", "context_window", "reasoning_level", "capabilities"):
+            if key in profile and profile.get(key) not in (None, ""):
+                item[key] = profile[key]
+        normalized.append(item)
+    return normalized
 
 
 def _load_profiles_from_json() -> list[dict]:

@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from web.backend.services.ai_service import (
     AGENT_DENIED_PLUGINS,
@@ -23,6 +23,21 @@ from web.backend.services.ai_service import (
 from web.backend.services.tool_markup import strip_dsml_tool_markup
 from web.backend.services.vol_service import get_service
 from web.backend.services import conversation_store as conv_store
+from web.backend.ai_runtime.models import (
+    AssistantMessage as RuntimeAssistantMessage,
+    TextBlock as RuntimeTextBlock,
+    ToolCallBlock as RuntimeToolCallBlock,
+    ToolResultMessage as RuntimeToolResultMessage,
+    UserMessage as RuntimeUserMessage,
+)
+from web.backend.ai_runtime.service import (
+    BUILTIN_MODEL_CATALOG,
+    get_runtime,
+    normalize_profile,
+)
+from web.backend.ai_runtime.models import TurnSnapshot, UserMessage
+from web.backend.ai_runtime.providers import ADAPTERS
+from web.backend.ai_runtime.providers.base import ProviderRequest
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +68,7 @@ _AGENT_PLUGIN_ARG_ALIASES = {
     "ignore_case": "ignore-case",
     "kernel-module": "kernel_module",
 }
+_AGENT_COMPAT_PSEUDO_ARGS = {"ignore-case"}
 _AGENT_PLUGIN_ALIASES = {
     # Linux Volatility does not provide NetScan/NetStat.  These are the
     # equivalent installed socket plugins commonly requested by models trained
@@ -317,7 +333,14 @@ def _extract_agent_plugin_args(
                     "请改用专用 dump 工具。"
                 )
             continue
-        if key not in allowed_names or raw_value in (None, ""):
+        if raw_value in (None, ""):
+            continue
+        if key not in allowed_names and key not in _AGENT_COMPAT_PSEUDO_ARGS:
+            raise ValueError(
+                f"插件参数 '{raw_key}' 未在 {plugin_metadata and '已安装插件' or '安全白名单'}"
+                "的参数 schema 中声明。"
+            )
+        if key in _AGENT_COMPAT_PSEUDO_ARGS and key not in allowed_names:
             continue
         arg_type = str(definitions.get(key, {}).get("arg_type") or "")
         kwargs[key] = _coerce_plugin_arg(key, raw_value, arg_type)
@@ -523,6 +546,10 @@ class ProfileModel(BaseModel):
     base_url: str
     api_key: str = ""
     model: str
+    protocol: str = "openai_chat"
+    context_window: int = 65536
+    reasoning_level: str = "off"
+    capabilities: dict[str, bool] = Field(default_factory=dict)
 
 
 class SaveProfilesRequest(BaseModel):
@@ -531,6 +558,10 @@ class SaveProfilesRequest(BaseModel):
 
 class SetActiveProfileRequest(BaseModel):
     profile: Optional[ProfileModel] = None   # None = use config.py
+
+
+class TestProfileRequest(BaseModel):
+    profile: ProfileModel
 
 
 class PromptModel(BaseModel):
@@ -567,6 +598,7 @@ async def _execute_agent_tool(
     tool_args: dict[str, Any],
     engine_id: str,
     os_family: str = "linux",
+    progress_callback: Any = None,
 ) -> dict[str, Any]:
     """Execute a tool requested by the AI agent.
 
@@ -577,6 +609,16 @@ async def _execute_agent_tool(
     svc = get_service()
     mgr = svc._manager
     loop = asyncio.get_event_loop()
+
+    def _mgr_run(plugin_name: str, **kwargs: Any) -> tuple:
+        if progress_callback is not None:
+            return mgr.run_plugin(
+                engine_id,
+                plugin_name,
+                progress_callback,
+                **kwargs,
+            )
+        return mgr.run_plugin(engine_id, plugin_name, **kwargs)
 
     # ── list_plugins ──────────────────────────────────────────────
     if tool_name == "list_plugins":
@@ -710,7 +752,7 @@ async def _execute_agent_tool(
                     )
 
                     def _discover(name=discovery_plugin) -> tuple:
-                        return mgr.run_plugin(engine_id, name)
+                        return _mgr_run(name)
 
                     discovery_columns, discovery_rows = await loop.run_in_executor(
                         None,
@@ -759,7 +801,7 @@ async def _execute_agent_tool(
             }
 
         def _run() -> tuple:
-            return mgr.run_plugin(engine_id, plugin_name, **kwargs)
+            return _mgr_run(plugin_name, **kwargs)
 
         columns, rows = await loop.run_in_executor(None, _run)
         total = len(rows)
@@ -823,7 +865,7 @@ async def _execute_agent_tool(
             pslist_plugin = f"{os_family}.pslist.PsList"
 
             def _run_pslist() -> tuple:
-                return mgr.run_plugin(engine_id, pslist_plugin)
+                return _mgr_run(pslist_plugin)
 
             columns, rows = await loop.run_in_executor(None, _run_pslist)
             discovery_plugin = pslist_plugin
@@ -833,7 +875,7 @@ async def _execute_agent_tool(
                 psscan_plugin = f"{os_family}.psscan.PsScan"
 
                 def _run_psscan() -> tuple:
-                    return mgr.run_plugin(engine_id, psscan_plugin)
+                    return _mgr_run(psscan_plugin)
 
                 columns, rows = await loop.run_in_executor(None, _run_psscan)
                 discovery_plugin = psscan_plugin
@@ -853,8 +895,7 @@ async def _execute_agent_tool(
             pid = int(match["pid"])
 
             def _dump_one(pid=pid) -> tuple:
-                return mgr.run_plugin(
-                    engine_id,
+                return _mgr_run(
                     dump_plugin,
                     pid=pid,
                     dump=True,
@@ -931,7 +972,7 @@ async def _execute_agent_tool(
                 process_matches = [{"pid": parsed_pid, "name": raw_name or str(parsed_pid)}]
         elif kernel_module:
             def _run_modules() -> tuple:
-                return mgr.run_plugin(engine_id, "windows.modules.Modules")
+                return _mgr_run("windows.modules.Modules")
 
             columns, rows = await loop.run_in_executor(None, _run_modules)
             discovery_plugins.append("windows.modules.Modules")
@@ -947,7 +988,7 @@ async def _execute_agent_tool(
                     raise ValueError("process_name is required when pid is not provided")
 
                 def _run_pslist() -> tuple:
-                    return mgr.run_plugin(engine_id, "windows.pslist.PsList")
+                    return _mgr_run("windows.pslist.PsList")
 
                 columns, rows = await loop.run_in_executor(None, _run_pslist)
                 discovery_plugins.append("windows.pslist.PsList")
@@ -955,7 +996,7 @@ async def _execute_agent_tool(
 
                 if not process_matches:
                     def _run_psscan() -> tuple:
-                        return mgr.run_plugin(engine_id, "windows.psscan.PsScan")
+                        return _mgr_run("windows.psscan.PsScan")
 
                     columns, rows = await loop.run_in_executor(None, _run_psscan)
                     discovery_plugins.append("windows.psscan.PsScan")
@@ -968,7 +1009,7 @@ async def _execute_agent_tool(
                 pid = int(proc["pid"])
 
                 def _run_dlllist(pid=pid) -> tuple:
-                    return mgr.run_plugin(engine_id, "windows.dlllist.DllList", pid=pid)
+                    return _mgr_run("windows.dlllist.DllList", pid=pid)
 
                 columns, rows = await loop.run_in_executor(None, _run_dlllist)
                 if "windows.dlllist.DllList" not in discovery_plugins:
@@ -1000,7 +1041,7 @@ async def _execute_agent_tool(
                 kwargs["pid"] = int(match["pid"])
 
             def _dump_one(kwargs=kwargs) -> tuple:
-                return mgr.run_plugin(engine_id, "windows.pedump.PEDump", **kwargs)
+                return _mgr_run("windows.pedump.PEDump", **kwargs)
 
             columns, rows = await loop.run_in_executor(None, _dump_one)
             dump_results.append({
@@ -1097,76 +1138,92 @@ async def _sse_stream(
 
 @router.post("/chat")
 async def ai_chat(req: ChatRequest):
+    """Compatibility stream backed by the persistent Agent Runtime."""
     message = req.message.strip()
     if not message:
         raise HTTPException(400, "Message cannot be empty")
 
-    ai = get_ai_service()
-    cfg = ai.get_config_info()
-    if not cfg["has_api_key"]:
+    runtime = get_runtime()
+    profile = runtime.active_profile()
+    local_gateway = any(
+        value in str(profile.get("base_url") or "").lower()
+        for value in ("localhost", "127.0.0.1", "ollama")
+    )
+    if not profile.get("api_key") and not local_gateway:
         raise HTTPException(
             400,
             "未配置 AI API Key。请通过设置面板或 config.py 进行配置。",
         )
 
-    plugin_context = None
-    svc = get_service()
-    if req.include_context:
-        ai_settings = cfg.get("ai_settings", {}) if isinstance(cfg, dict) else {}
-        limit = ai_settings.get("ai_context_max_rows", 200)
-        engine_id = str(req.engine or "vol3")
-        if isinstance(limit, str) and limit.strip().lower() == "max":
-            plugin_context = svc.get_current_result_context(engine_id=engine_id)
-        else:
-            try:
-                plugin_context = svc.get_current_result_context(
-                    max_rows=int(limit), engine_id=engine_id
-                )
-            except (TypeError, ValueError):
-                plugin_context = svc.get_current_result_context(max_rows=200, engine_id=engine_id)
-
-    # Resolve or create the conversation to save into.
+    engine_id = str(req.engine or "vol3")
     conv_id = req.conversation_id
-    if conv_id and not conv_store.get_conversation(conv_id):
-        conv_id = None          # stale id — treat as new
+    if conv_id and not runtime.conversations.get(conv_id):
+        conv_id = None
     if not conv_id:
-        meta = conv_store.create_conversation(engine=req.engine)
+        meta = runtime.create_conversation(engine_id=engine_id)
         conv_id = meta["id"]
 
-    engine_id = str(req.engine or "vol3")
+    try:
+        run = runtime.create_run(
+            conv_id,
+            message=message,
+            engine_id=engine_id,
+            mode=req.mode,
+            include_context=req.include_context,
+        )
+    except ValueError as exc:
+        raise HTTPException(409 if "pinned" in str(exc) else 400, str(exc))
 
-    # Detect the loaded image's OS family so the agent and system prompt
-    # know whether to use linux.* or windows.* plugins.
-    requested_os = str(req.os_family or "").strip().lower()
-    if requested_os in {"linux", "windows"}:
-        os_family = requested_os
-    else:
+    async def compatibility_stream():
         try:
-            img_status = svc._manager.get_image_status(engine_id)
-        except Exception:
-            img_status = {}
-        os_family = str(img_status.get("os_family", "linux") or "linux")
-
-    # Build the agent tool executor (lazy — only invoked when the AI
-    # actually calls a tool).
-    async def _tool_executor(
-        tool_name: str,
-        tool_args: dict[str, Any],
-        _engine_id: str,
-    ) -> dict[str, Any]:
-        return await _execute_agent_tool(tool_name, tool_args, _engine_id, os_family=os_family)
-
-    tool_exec = _tool_executor if req.mode == "agent" else None
+            async for event in runtime.runs.subscribe(run["run_id"]):
+                event_type = event.get("type")
+                data = event.get("data") or {}
+                if event_type == "text_delta":
+                    payload = {"type": "chunk", "content": data.get("text", "")}
+                elif event_type == "tool_start":
+                    payload = {
+                        "type": "tool_call",
+                        "tool_call_id": data.get("tool_call_id"),
+                        "tool_name": data.get("tool_name"),
+                        "arguments": data.get("arguments") or {},
+                    }
+                elif event_type == "tool_progress":
+                    payload = {
+                        "type": "tool_progress",
+                        "tool_call_id": data.get("tool_call_id"),
+                        **data,
+                    }
+                elif event_type == "tool_end":
+                    payload = {
+                        "type": "tool_result",
+                        "tool_call_id": data.get("tool_call_id"),
+                        "tool_name": data.get("tool_name"),
+                        "ok": not data.get("is_error"),
+                        "summary": data.get("content", "") if not data.get("is_error") else "",
+                        "error": data.get("content", "") if data.get("is_error") else "",
+                        "details": data.get("details") or {},
+                    }
+                elif event_type == "run_end":
+                    status = data.get("status")
+                    if status == "failed":
+                        payload = {"type": "error", "content": data.get("error", "运行失败")}
+                    else:
+                        payload = {
+                            "type": "done",
+                            "content": "",
+                            "conversation_id": conv_id,
+                            "run_id": run["run_id"],
+                            "status": status,
+                        }
+                else:
+                    continue
+                yield f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+        except Exception as exc:
+            yield f"data: {json.dumps({'type': 'error', 'content': str(exc)}, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
-        _sse_stream(
-            message,
-            plugin_context,
-            conv_id,
-            tool_executor=tool_exec,
-            engine_id=engine_id,
-            os_family=os_family,
-        ),
+        compatibility_stream(),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
@@ -1207,7 +1264,17 @@ async def get_ai_memory_stats():
 
 @router.get("/config")
 async def ai_config():
-    return get_ai_service().get_config_info()
+    config_info = get_ai_service().get_config_info()
+    profile = get_runtime().active_profile()
+    config_info.update({
+        "protocol": profile["protocol"],
+        "context_window": profile["context_window"],
+        "context_window_estimated": profile.get("context_window_estimated", False),
+        "reasoning_level": profile["reasoning_level"],
+        "capabilities": profile["capabilities"],
+        "has_api_key": bool(profile.get("api_key")),
+    })
+    return config_info
 
 
 @router.get("/persist-config")
@@ -1237,25 +1304,48 @@ async def save_ai_settings(req: AiSettingsRequest):
 
 @router.get("/profiles")
 async def list_profiles():
-    return {"profiles": get_ai_service().get_profiles()}
+    runtime = get_runtime()
+    return {"profiles": runtime.public_profiles(get_ai_service().get_profiles())}
+
+
+@router.get("/profiles/catalog")
+async def model_catalog():
+    return {"models": BUILTIN_MODEL_CATALOG}
 
 
 @router.post("/profiles")
 async def save_profiles(req: SaveProfilesRequest):
+    runtime = get_runtime()
+    existing_credentials = runtime.credentials.load()
     profiles = []
     for p in req.profiles:
         d = p.model_dump()
         if not d.get("id"):
             d["id"] = str(uuid.uuid4())[:8]
+        if d.get("api_key"):
+            runtime.credentials.set(d["id"], d["api_key"])
+        d.pop("api_key", None)
+        d = normalize_profile(d)
         profiles.append(d)
     get_ai_service().save_profiles(profiles)
-    return {"ok": True, "count": len(profiles), "profiles": profiles}
+    retained_ids = {str(profile.get("id") or "") for profile in profiles}
+    for profile_id in set(existing_credentials) - retained_ids:
+        runtime.credentials.set(profile_id, "")
+    return {
+        "ok": True,
+        "count": len(profiles),
+        "profiles": runtime.public_profiles(profiles),
+    }
 
 
 @router.post("/profiles/active")
 async def set_active_profile(req: SetActiveProfileRequest):
     if req.profile:
-        get_ai_service().set_active_profile(req.profile.model_dump())
+        profile = req.profile.model_dump()
+        if profile.get("api_key"):
+            get_runtime().credentials.set(profile["id"], profile["api_key"])
+        profile.pop("api_key", None)
+        get_ai_service().set_active_profile(normalize_profile(profile))
     else:
         get_ai_service().set_active_profile(None)
     return {"ok": True, "config": get_ai_service().get_config_info()}
@@ -1264,7 +1354,46 @@ async def set_active_profile(req: SetActiveProfileRequest):
 @router.get("/profiles/active")
 async def get_active_profile():
     p = get_ai_service().get_active_profile()
-    return {"profile": p}
+    public = get_runtime().public_profiles([p])[0] if p else None
+    return {"profile": public}
+
+
+@router.post("/profiles/test")
+async def test_profile_connection(req: TestProfileRequest):
+    profile = normalize_profile(req.profile.model_dump())
+    key = str(req.profile.api_key or "")
+    if not key and profile.get("id"):
+        key = get_runtime().credentials.load().get(str(profile["id"]), "")
+    adapter = ADAPTERS[profile["protocol"]](
+        api_key=key,
+        base_url=str(profile.get("base_url") or ""),
+    )
+    snapshot = TurnSnapshot.create(
+        provider=str(profile.get("name") or profile["protocol"]),
+        model=str(profile.get("model") or ""),
+        protocol=profile["protocol"],
+        system_prompt="Reply with OK.",
+        reasoning_level="off",
+        max_output_tokens=8,
+        tools=[],
+        context_window=profile["context_window"],
+    )
+    received_text = False
+    try:
+        async for event in adapter.stream(
+            ProviderRequest(snapshot=snapshot, messages=[UserMessage("OK")])
+        ):
+            if event.type == "text_delta" and event.data.get("text"):
+                received_text = True
+    except Exception as exc:
+        raise HTTPException(400, f"连接测试失败: {exc}")
+    finally:
+        await adapter.close()
+    return {
+        "ok": received_text,
+        "protocol": profile["protocol"],
+        "model": profile.get("model", ""),
+    }
 
 
 # ── Prompts ────────────────────────────────────────────────────────
@@ -1336,39 +1465,90 @@ class CreateConversationRequest(BaseModel):
 @router.get("/conversations")
 async def list_conversations():
     """Return all saved conversations, newest first."""
-    return {"conversations": conv_store.list_conversations()}
+    return {"conversations": get_runtime().conversations.list()}
 
 
 @router.post("/conversations")
 async def create_conversation(req: CreateConversationRequest):
     """Explicitly create a new empty conversation."""
-    meta = conv_store.create_conversation(title=req.title, engine=req.engine)
+    meta = get_runtime().create_conversation(title=req.title, engine_id=req.engine)
     return {"ok": True, "conversation": meta}
 
 
 @router.get("/conversations/{conv_id}")
 async def get_conversation(conv_id: str):
     """Return full message transcript for a conversation."""
-    meta = conv_store.get_conversation(conv_id)
+    runtime = get_runtime()
+    meta = runtime.conversations.get(conv_id)
     if not meta:
         raise HTTPException(404, f"Conversation {conv_id!r} not found")
-    messages = conv_store.get_messages(conv_id)
-    messages = [
-        {
-            **message,
-            "content": strip_dsml_tool_markup(message.get("content") or ""),
-        }
-        if message.get("role") == "assistant"
-        else message
-        for message in messages
-    ]
+    messages = []
+    for message in runtime.conversations.messages(conv_id):
+        if isinstance(message, RuntimeUserMessage):
+            messages.append({
+                "role": "user",
+                "content": message.content,
+                "ts": message.created_at,
+            })
+        elif isinstance(message, RuntimeAssistantMessage):
+            text = "".join(
+                block.text
+                for block in message.content
+                if isinstance(block, RuntimeTextBlock)
+            )
+            if text:
+                messages.append({
+                    "role": "assistant",
+                    "content": strip_dsml_tool_markup(text),
+                    "ts": message.created_at,
+                    "status": message.status,
+                })
+            for block in message.content:
+                if isinstance(block, RuntimeToolCallBlock):
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": block.tool_call_id,
+                        "toolName": block.name,
+                        "toolArgs": block.arguments,
+                        "toolRunning": False,
+                        "toolSummary": "",
+                        "toolError": "",
+                        "ts": message.created_at,
+                    })
+        elif isinstance(message, RuntimeToolResultMessage):
+            matched = next(
+                (
+                    item
+                    for item in reversed(messages)
+                    if item.get("role") == "tool"
+                    and item.get("tool_call_id") == message.tool_call_id
+                ),
+                None,
+            )
+            if matched:
+                if message.is_error:
+                    matched["toolError"] = message.content
+                else:
+                    matched["toolSummary"] = message.content
+                matched["details"] = message.details
+            else:
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": message.tool_call_id,
+                    "toolName": message.details.get("tool_name", ""),
+                    "toolArgs": {},
+                    "toolSummary": "" if message.is_error else message.content,
+                    "toolError": message.content if message.is_error else "",
+                    "details": message.details,
+                    "ts": message.created_at,
+                })
     return {"conversation": meta, "messages": messages}
 
 
 @router.patch("/conversations/{conv_id}")
 async def rename_conversation(conv_id: str, req: RenameConversationRequest):
     """Rename a conversation."""
-    meta = conv_store.rename_conversation(conv_id, req.title)
+    meta = get_runtime().conversations.update_meta(conv_id, title=req.title.strip() or "新对话")
     if not meta:
         raise HTTPException(404, f"Conversation {conv_id!r} not found")
     return {"ok": True, "conversation": meta}
@@ -1377,7 +1557,7 @@ async def rename_conversation(conv_id: str, req: RenameConversationRequest):
 @router.delete("/conversations/{conv_id}")
 async def delete_conversation(conv_id: str):
     """Delete a conversation and its messages."""
-    if not conv_store.delete_conversation(conv_id):
+    if not get_runtime().conversations.delete(conv_id):
         raise HTTPException(404, f"Conversation {conv_id!r} not found")
     return {"ok": True}
 
@@ -1386,27 +1566,9 @@ async def delete_conversation(conv_id: str):
 async def load_conversation(conv_id: str):
     """Load a saved conversation into the ai_service in-memory history
     so subsequent /chat calls continue from that point."""
-    meta = conv_store.get_conversation(conv_id)
+    runtime = get_runtime()
+    meta = runtime.conversations.get(conv_id)
     if not meta:
         raise HTTPException(404, f"Conversation {conv_id!r} not found")
-    messages = conv_store.get_messages(conv_id)
-    ai = get_ai_service()
-    ai.clear_history(conv_id)
-    for msg in messages:
-        if msg.get("role") in ("user", "assistant", "tool"):
-            clean_msg = {"role": msg["role"]}
-            if "content" in msg:
-                content = msg["content"]
-                if msg.get("role") == "assistant":
-                    content = strip_dsml_tool_markup(content)
-                clean_msg["content"] = content
-            if msg.get("role") == "tool":
-                clean_msg.update({
-                    "tool_call_id": msg.get("tool_call_id"),
-                    "toolName": msg.get("toolName"),
-                    "toolArgs": msg.get("toolArgs"),
-                    "toolSummary": msg.get("toolSummary"),
-                    "toolError": msg.get("toolError"),
-                })
-            ai.append_history(conv_id, clean_msg)
+    messages = runtime.conversations.messages(conv_id)
     return {"ok": True, "loaded": len(messages), "conversation": meta}

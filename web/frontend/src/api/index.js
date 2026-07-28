@@ -24,7 +24,7 @@ export function setApiToken(token) {
   return value
 }
 
-function authHeaders() {
+export function authHeaders() {
   const token = getApiToken()
   if (!token) return {}
   return {
@@ -436,6 +436,10 @@ export function getAiProfiles() {
   return api.get('/api/ai/profiles')
 }
 
+export function getAiModelCatalog() {
+  return api.get('/api/ai/profiles/catalog')
+}
+
 export function saveAiProfiles(profiles) {
   return api.post('/api/ai/profiles', { profiles })
 }
@@ -446,6 +450,10 @@ export function setActiveProfile(profile) {
 
 export function getActiveProfile() {
   return api.get('/api/ai/profiles/active')
+}
+
+export function testAiProfile(profile) {
+  return api.post('/api/ai/profiles/test', { profile })
 }
 
 /* ── AI Prompts ────────────────────────────────────── */
@@ -496,6 +504,32 @@ export function deleteConversation(convId) {
 
 export function loadConversation(convId) {
   return api.post(`/api/ai/conversations/${convId}/load`)
+}
+
+/* ── Agent Runtime v1 ───────────────────────────────── */
+
+export function createAiRun(convId, payload) {
+  return api.post(`/api/ai/conversations/${convId}/runs`, payload)
+}
+
+export function getAiRun(runId) {
+  return api.get(`/api/ai/runs/${runId}`)
+}
+
+export function cancelAiRun(runId) {
+  return api.post(`/api/ai/runs/${runId}/cancel`)
+}
+
+export function getConversationContext(convId) {
+  return api.get(`/api/ai/conversations/${convId}/context`)
+}
+
+export function compactConversation(convId) {
+  return api.post(`/api/ai/conversations/${convId}/compact`, {})
+}
+
+export function queryAiToolResult(resultId, params) {
+  return api.get(`/api/ai/tool-results/${resultId}`, { params })
 }
 
 export default api

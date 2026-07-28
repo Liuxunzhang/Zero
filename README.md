@@ -2,6 +2,9 @@
 
 Zero 是一个面向内存取证的 Volatility 3 Web 工作台。它把镜像加载、插件运行、结果过滤、符号表管理和 AI 辅助分析放在同一个浏览器界面里，目标是让一次内存镜像排查从“能跑插件”变成“能持续分析”。
 
+AI Runtime 的分层、会话、checkpoint、工具和重连设计见
+[`dev/ai-runtime.md`](dev/ai-runtime.md)，接口见 [`dev/api.md`](dev/api.md)。
+
 当前版本专注于 Web UI 和 Volatility 3，不包含 Volatility 2、TUI 和测试目录。
 
 ## 适合什么场景
