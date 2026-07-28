@@ -27,6 +27,7 @@ import {
   getAiProfiles,
   getAiPrompts,
   getAiSettings,
+  setActiveProfile,
 } from '../api'
 import AiConfigModal from './AiConfigModal.vue'
 
@@ -77,13 +78,41 @@ describe('AI configuration modal', () => {
     })
     await flushPromises()
 
-    expect(wrapper.text()).toContain('8,192 输出')
-    expect(wrapper.text()).toContain('off 推理')
+    expect(wrapper.text()).toContain('8.2K响应')
+    expect(wrapper.text()).toContain('FLASH / FAST')
 
-    await wrapper.findAll('button').find((button) => button.text() === '推理参数').trigger('click')
-    expect(wrapper.text()).toContain('Profile 推荐值')
+    await wrapper.findAll('button').find((button) => button.text().includes('运行参数')).trigger('click')
+    expect(wrapper.text()).toContain('Profile 自动')
     expect(wrapper.text()).toContain('输出预留 token')
     expect(wrapper.text()).not.toContain('最大历史轮数')
     expect(wrapper.text()).not.toContain('压缩记忆')
+  })
+
+  it('switches profiles from the model card and shows when it takes effect', async () => {
+    const pro = {
+      ...flash,
+      id: 'deepseek-v4-pro',
+      name: 'DeepSeek V4 Pro · 深度分析',
+      model: 'deepseek-v4-pro',
+      reasoning_level: 'high',
+      max_output_tokens: 16_384,
+    }
+    getAiProfiles.mockResolvedValue({ profiles: [flash, pro] })
+    setActiveProfile.mockResolvedValue({ ok: true })
+
+    const wrapper = mount(AiConfigModal, {
+      global: {
+        stubs: { AppIcon: true },
+      },
+    })
+    await flushPromises()
+
+    const proCard = wrapper.findAll('.model-card').find(card => card.text().includes('V4 Pro'))
+    await proCard.find('.model-select').trigger('click')
+    await flushPromises()
+
+    expect(setActiveProfile).toHaveBeenCalledWith(pro)
+    expect(proCard.classes()).toContain('active')
+    expect(wrapper.text()).toContain('从下一次运行生效')
   })
 })
