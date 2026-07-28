@@ -272,8 +272,8 @@ async def list_images(refresh: bool = Query(False)):
 
 @router.get("/plugins/{os_family}")
 async def list_plugins(os_family: str, engine: str = Query("vol3")):
-    if os_family not in ("linux", "windows"):
-        raise HTTPException(400, "os_family must be 'linux' or 'windows'")
+    if os_family not in ("linux", "windows", "all"):
+        raise HTTPException(400, "os_family must be 'linux', 'windows', or 'all'")
     try:
         categories = get_service().get_plugin_categories(os_family, engine_id=engine)
     except ValueError as e:

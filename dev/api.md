@@ -364,3 +364,30 @@ Request:
 ```
 
 `use_gh_proxy` 默认为 `false`。设为 `true` 时，服务使用固定格式 `https://gh-proxy.com/https://raw.githubusercontent.com/...` 下载选中的符号文件。
+
+## YARA-X
+
+所有规则中心接口使用 `/api/yarax` 前缀，并受同一个共享 API Token 保护。
+
+| 方法 | 路径 | 用途 |
+|---|---|---|
+| GET / POST | `/api/yarax/packages` | 列表 / 创建本地草稿包 |
+| PATCH / DELETE | `/api/yarax/packages/{id}` | 启停 / 删除 |
+| GET | `/api/yarax/packages/{id}/export` | 导出活动版本 ZIP |
+| POST | `/api/yarax/import/preview` | multipart ZIP 安全预览，返回 30 分钟 token |
+| POST | `/api/yarax/import/confirm` | 一次性 token 确认安装或保留草稿 |
+| GET / POST | `/api/yarax/packages/{id}/draft` | 获取 / 从活动版本创建草稿 |
+| GET / PUT / DELETE | `/api/yarax/packages/{id}/draft/file` | 草稿文件读取、保存、删除 |
+| POST | `/api/yarax/packages/{id}/draft/rename` | 文件重命名 |
+| POST | `/api/yarax/packages/{id}/validate` | 整包 include 图与 YARA-X 编译校验 |
+| POST | `/api/yarax/packages/{id}/commit` | 提交不可变版本并激活 |
+| GET | `/api/yarax/packages/{id}/versions` | 版本历史 |
+| POST | `/api/yarax/packages/{id}/versions/{version}/restore` | 创建恢复版本 |
+| POST | `/api/yarax/packages/{id}/versions/{version}/rollback` | 原子切回已有版本 |
+| GET / POST | `/api/yarax/market`, `/api/yarax/market/sources` | 市场目录 / 自定义 GitHub 源 |
+| POST | `/api/yarax/market/{source}/install` | 下载、校验并原子安装 |
+| GET / POST | `/api/yarax/packages/{id}/updates`, `/upgrade` | 检查更新 / 确认升级 |
+
+草稿文件写入必须携带 `base_revision`，更新已有文件还应携带 `file_sha`。并发修改返回
+HTTP `409`。编译诊断统一包含 `severity`、`code`、`message`、`file`、`line`、
+`column` 和 `span`。

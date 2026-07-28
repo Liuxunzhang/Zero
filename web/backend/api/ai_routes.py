@@ -574,6 +574,8 @@ async def _execute_agent_tool(
     (``"windows"`` or ``"linux"``) so that ``list_plugins`` defaults
     correctly and ``run_plugin`` can prepend the right prefix.
     """
+    if engine_id != "vol3" and tool_name in {"dump_process", "dump_pe"}:
+        raise ValueError(f"Tool {tool_name} is only available for the Volatility 3 engine")
     svc = get_service()
     mgr = svc._manager
     loop = asyncio.get_event_loop()
@@ -594,7 +596,10 @@ async def _execute_agent_tool(
         for cat, plugins in (categories or {}).items():
             plugin_strs = []
             for p in plugins:
-                full_p = p if p.startswith(f"{os_family}.") else f"{os_family}.{p}"
+                full_p = (
+                    p if engine_id != "vol3" or p.startswith(f"{os_family}.")
+                    else f"{os_family}.{p}"
+                )
                 metadata = metadata_getter(full_p) if callable(metadata_getter) else {}
                 metadata = metadata or {}
                 block_reason = _agent_plugin_block_reason(full_p, metadata)
@@ -657,12 +662,28 @@ async def _execute_agent_tool(
             None,
             lambda: mgr.list_plugins(engine_id, os_family),
         )
-        installed_plugins = _flatten_plugin_catalog(categories, os_family)
-        plugin_name, injected_args, resolution = _resolve_agent_plugin_name(
-            plugin_name,
-            installed_plugins,
-            os_family,
-        )
+        if engine_id == "vol3":
+            installed_plugins = _flatten_plugin_catalog(categories, os_family)
+            plugin_name, injected_args, resolution = _resolve_agent_plugin_name(
+                plugin_name,
+                installed_plugins,
+                os_family,
+            )
+        else:
+            installed_plugins = [
+                str(item)
+                for values in (categories or {}).values()
+                for item in (values or [])
+            ]
+            exact = next(
+                (item for item in installed_plugins if item.casefold() == plugin_name.casefold()),
+                None,
+            )
+            if exact is None:
+                raise ValueError(
+                    f"插件 '{plugin_name}' 未安装；请先调用 list_plugins 并复制精确名称。"
+                )
+            plugin_name, injected_args, resolution = exact, {}, "exact"
         if resolution != "exact":
             logger.info(
                 "Resolved AI agent plugin name %s -> %s (%s)",

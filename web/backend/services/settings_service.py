@@ -281,6 +281,54 @@ _SPECS = (
         1000,
         "行",
     ),
+    SettingSpec(
+        "yarax_scan_timeout_seconds",
+        "YARAX_SCAN_TIMEOUT_SECONDS",
+        "yarax",
+        "YARA-X 扫描超时",
+        "单次 YARA-X 文件扫描的最大执行时间。",
+        "integer",
+        300,
+        1,
+        86400,
+        30,
+        "秒",
+    ),
+    SettingSpec(
+        "yarax_max_matches_per_pattern",
+        "YARAX_MAX_MATCHES_PER_PATTERN",
+        "yarax",
+        "单 Pattern 匹配上限",
+        "每条字符串 Pattern 最多保留的匹配实例数。",
+        "integer",
+        1000,
+        1,
+        1000000,
+        100,
+        "项",
+    ),
+    SettingSpec(
+        "yarax_max_result_rows",
+        "YARAX_MAX_RESULT_ROWS",
+        "yarax",
+        "YARA-X 结果行上限",
+        "超过上限时保留前 N 行并明确标记结果已截断。",
+        "integer",
+        100000,
+        1,
+        50000000,
+        1000,
+        "行",
+    ),
+    SettingSpec(
+        "yarax_relaxed_regex",
+        "YARAX_RELAXED_REGEX",
+        "yarax",
+        "宽松正则语法",
+        "允许兼容传统 YARA 的宽松正则；默认关闭并使用严格语法。",
+        "boolean",
+        False,
+    ),
 )
 
 _SPEC_BY_KEY = {spec.key: spec for spec in _SPECS}
@@ -299,6 +347,11 @@ _CATEGORIES = (
         "id": "cache",
         "label": "结果与缓存",
         "description": "平衡重复分析速度、内存占用、磁盘缓存和导出规模。",
+    },
+    {
+        "id": "yarax",
+        "label": "YARA-X",
+        "description": "控制规则编译兼容性、扫描超时和结果规模。",
     },
 )
 
@@ -403,6 +456,7 @@ def _apply_live_settings() -> None:
         manager = manager_module._MANAGER
         if manager is not None:
             manager.apply_runtime_settings("vol3")
+            manager.apply_runtime_settings("yarax")
     except Exception:
         logger.warning("Could not apply runtime settings to the live Vol3 engine", exc_info=True)
 

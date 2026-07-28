@@ -64,6 +64,9 @@
       <span class="statusbar-chip">
         每页 {{ store.pageSize }}
       </span>
+      <span v-if="store.resultTruncated" class="statusbar-chip truncated" title="结果达到服务端行数上限">
+        已截断
+      </span>
     </div>
 
     <div v-if="store.pluginBusy" class="statusbar-running">

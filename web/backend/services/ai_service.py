@@ -293,6 +293,17 @@ _AGENT_TOOLS: list[dict] = [
     },
 ]
 
+
+def _agent_tools_for_engine(engine_id: str) -> list[dict]:
+    """Do not expose Volatility-only extraction tools to other engines."""
+    if engine_id == "vol3":
+        return _AGENT_TOOLS
+    allowed = {"run_plugin", "list_plugins"}
+    return [
+        tool for tool in _AGENT_TOOLS
+        if tool.get("function", {}).get("name") in allowed
+    ]
+
 # ── Built-in prompt library ────────────────────────────────────────
 
 _BUILTIN_PROMPTS: list[dict] = [
@@ -1452,7 +1463,7 @@ class AiService:
                 if max_tokens is not None:
                     req["max_tokens"] = max_tokens
                 if agent_mode:
-                    req["tools"] = _AGENT_TOOLS
+                    req["tools"] = _agent_tools_for_engine(engine_id)
                     req["tool_choice"] = "auto"
 
                 stream = await client.chat.completions.create(

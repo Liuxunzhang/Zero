@@ -47,7 +47,9 @@ async def plugin_ws(websocket: WebSocket):
                 continue
 
             action = msg.get("action")
-            engine_id: str = str(msg.get("engine", "vol3") or "vol3").strip() or "vol3"
+            engine_id: str = str(
+                msg.get("engine_id", msg.get("engine", "vol3")) or "vol3"
+            ).strip() or "vol3"
 
             if action == "run":
                 plugin_name = msg.get("plugin", "").strip()
@@ -55,7 +57,11 @@ async def plugin_ws(websocket: WebSocket):
                     await websocket.send_json({"type": "error", "data": "Missing plugin name", "engine": engine_id})
                     continue
                 os_family = str(msg.get("os_family") or "").strip().lower()
-                if os_family in {"linux", "windows"} and not plugin_name.startswith(("linux.", "windows.")):
+                if (
+                    engine_id == "vol3"
+                    and os_family in {"linux", "windows"}
+                    and not plugin_name.startswith(("linux.", "windows."))
+                ):
                     plugin_name = f"{os_family}.{plugin_name}"
 
                 if not svc.is_plugin_available(plugin_name, engine_id=engine_id):
@@ -71,7 +77,10 @@ async def plugin_ws(websocket: WebSocket):
                 # Extract plugin kwargs: everything except control fields.
                 # Includes profile, dump_dir, pid, offset, base, key, regex, etc.
                 # force / use_cache control result-cache reuse (not plugin args).
-                _CONTROL = {"action", "plugin", "engine", "os_family", "force", "use_cache"}
+                _CONTROL = {
+                    "action", "plugin", "engine", "engine_id", "os_family",
+                    "force", "use_cache",
+                }
                 plugin_kwargs = {
                     k: v for k, v in msg.items()
                     if k not in _CONTROL and v is not None and v != ""
@@ -133,7 +142,11 @@ async def plugin_ws(websocket: WebSocket):
                         "engine": engine_id,
                     })
                 except Exception as exc:
-                    await websocket.send_json({"type": "error", "data": str(exc), "engine": engine_id})
+                    await websocket.send_json({
+                        "type": "error", "data": str(exc),
+                        "status": getattr(exc, "code", "plugin_error"),
+                        "engine": engine_id,
+                    })
 
                 await websocket.send_json({"type": "status", "data": "idle", "engine": engine_id})
 

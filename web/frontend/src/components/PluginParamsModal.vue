@@ -239,7 +239,8 @@ function confirm() {
   for (const arg of props.args) {
     const v = form[arg.name]
     if (arg.arg_type === 'bool') {
-      if (v) params[arg.name] = true
+      if (props.engineId === 'yarax') params[arg.name] = Boolean(v)
+      else if (v) params[arg.name] = true
     } else if (v !== '' && v !== undefined && v !== null) {
       params[arg.name] = v
     }

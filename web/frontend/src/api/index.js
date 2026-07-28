@@ -52,7 +52,9 @@ api.interceptors.response.use(
     if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') {
       return Promise.reject(err)
     }
-    const msg = err.response?.data?.detail || err.message || 'Network error'
+    const detail = err.response?.data?.detail
+    const msg = (detail && typeof detail === 'object' ? detail.message : detail)
+      || err.message || 'Network error'
     return Promise.reject(new Error(msg))
   },
 )
@@ -176,6 +178,121 @@ export function clearCache(plugin = null, engine = 'vol3') {
 
 export function cancelPlugin(engine = 'vol3') {
   return api.delete('/api/plugin/cancel', { params: { engine } })
+}
+
+/* ── YARA-X rule centre ───────────────────────────── */
+
+export function listYaraPackages() {
+  return api.get('/api/yarax/packages')
+}
+
+export function createYaraPackage(payload) {
+  return api.post('/api/yarax/packages', payload)
+}
+
+export function setYaraPackageEnabled(packageId, enabled) {
+  return api.patch(`/api/yarax/packages/${encodeURIComponent(packageId)}`, { enabled })
+}
+
+export function deleteYaraPackage(packageId) {
+  return api.delete(`/api/yarax/packages/${encodeURIComponent(packageId)}`)
+}
+
+export function exportYaraPackageUrl(packageId) {
+  return `/api/yarax/packages/${encodeURIComponent(packageId)}/export`
+}
+
+export function previewYaraZip(file, entrypoints = []) {
+  const form = new FormData()
+  form.append('file', file)
+  const params = new URLSearchParams()
+  for (const entry of entrypoints) params.append('entrypoint', entry)
+  return api.post(`/api/yarax/import/preview?${params}`, form, {
+    timeout: 0,
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
+
+export function confirmYaraZip(payload) {
+  return api.post('/api/yarax/import/confirm', payload)
+}
+
+export function getYaraDraft(packageId) {
+  return api.get(`/api/yarax/packages/${encodeURIComponent(packageId)}/draft`)
+}
+
+export function ensureYaraDraft(packageId) {
+  return api.post(`/api/yarax/packages/${encodeURIComponent(packageId)}/draft`)
+}
+
+export function getYaraDraftFile(packageId, path) {
+  return api.get(`/api/yarax/packages/${encodeURIComponent(packageId)}/draft/file`, {
+    params: { path },
+  })
+}
+
+export function searchYaraDraft(packageId, query) {
+  return api.get(`/api/yarax/packages/${encodeURIComponent(packageId)}/draft/search`, {
+    params: { q: query },
+  })
+}
+
+export function saveYaraDraftFile(packageId, payload) {
+  return api.put(`/api/yarax/packages/${encodeURIComponent(packageId)}/draft/file`, payload)
+}
+
+export function deleteYaraDraftFile(packageId, path, baseRevision) {
+  return api.delete(`/api/yarax/packages/${encodeURIComponent(packageId)}/draft/file`, {
+    data: { path, base_revision: baseRevision },
+  })
+}
+
+export function renameYaraDraftFile(packageId, oldPath, newPath, baseRevision) {
+  return api.post(`/api/yarax/packages/${encodeURIComponent(packageId)}/draft/rename`, {
+    old_path: oldPath, new_path: newPath, base_revision: baseRevision,
+  })
+}
+
+export function validateYaraPackage(packageId, payload = {}) {
+  return api.post(`/api/yarax/packages/${encodeURIComponent(packageId)}/validate`, payload)
+}
+
+export function commitYaraPackage(packageId, payload = {}) {
+  return api.post(`/api/yarax/packages/${encodeURIComponent(packageId)}/commit`, payload)
+}
+
+export function getYaraVersions(packageId) {
+  return api.get(`/api/yarax/packages/${encodeURIComponent(packageId)}/versions`)
+}
+
+export function getYaraVersionDiff(packageId, versionId, otherVersionId = null) {
+  return api.get(`/api/yarax/packages/${encodeURIComponent(packageId)}/versions/${encodeURIComponent(versionId)}/diff`, {
+    params: { other_version_id: otherVersionId || undefined },
+  })
+}
+
+export function restoreYaraVersion(packageId, versionId) {
+  return api.post(`/api/yarax/packages/${encodeURIComponent(packageId)}/versions/${encodeURIComponent(versionId)}/restore`)
+}
+
+export function forkYaraPackage(packageId, name = null) {
+  return api.post(`/api/yarax/packages/${encodeURIComponent(packageId)}/fork`, {
+    name: name || undefined,
+  })
+}
+
+export function listYaraMarket() {
+  return api.get('/api/yarax/market')
+}
+
+export function addYaraMarketSource(payload) {
+  return api.post('/api/yarax/market/sources', payload)
+}
+
+export function installYaraMarketSource(sourceId, packageId = null) {
+  return api.post(`/api/yarax/market/${encodeURIComponent(sourceId)}/install`, {
+    package_id: packageId || undefined,
+  }, { timeout: 0 })
 }
 
 /* ── Symbol helpers ─────────────────────────────────── */

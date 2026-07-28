@@ -29,6 +29,7 @@ from web.backend.api.websocket import router as ws_router
 from web.backend.api.ai_routes import router as ai_router
 from web.backend.api.symbol_routes import router as symbol_router
 from web.backend.api.settings_routes import router as settings_router
+from web.backend.api.yarax_routes import router as yarax_router
 
 _LOG_FORMAT = "%(asctime)s %(name)s %(levelname)s %(message)s"
 
@@ -135,6 +136,7 @@ app.include_router(ws_router)
 app.include_router(ai_router)
 app.include_router(symbol_router)
 app.include_router(settings_router)
+app.include_router(yarax_router)
 
 # Serve built frontend in production (if dist/ exists).
 _dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
