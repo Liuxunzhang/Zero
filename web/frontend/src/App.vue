@@ -4,7 +4,7 @@
       :collapsed="pluginSidebarCollapsed"
       @update:collapsed="pluginSidebarCollapsed = $event"
     />
-    <div class="main-panel">
+    <div class="main-panel" :class="{ 'plugin-sidebar-hidden': pluginSidebarCollapsed }">
       <!-- Top bar -->
       <div class="topbar">
         <div class="topbar-image-group">
