@@ -1,5 +1,6 @@
 """SymbolService index caching, filtering and download guards (no network)."""
 
+import json
 import threading
 import time
 
@@ -7,7 +8,7 @@ import pytest
 
 from web.backend.services import symbol_service as svc_mod
 from web.backend.services.symbol_service import SymbolService, _parse_repo
-from zero.core.kernel_detector import LinuxKernelInfo
+from zero.core.kernel_detector import LinuxKernelInfo, detect_linux_kernel
 
 
 @pytest.fixture
@@ -15,6 +16,11 @@ def service(tmp_path, monkeypatch):
     """A SymbolService whose disk index and symbol root live under tmp_path."""
     monkeypatch.setattr(svc_mod, "_DISK_INDEX_DIR", tmp_path / "remote_index")
     monkeypatch.setattr(svc_mod, "_resolve_symbol_root", lambda: tmp_path / "symbols")
+    monkeypatch.setattr(
+        svc_mod,
+        "_resolve_image_kernel_cache_file",
+        lambda: tmp_path / "kernel_versions.json",
+    )
     return SymbolService()
 
 
@@ -216,7 +222,11 @@ def test_auto_download_uses_exact_detected_release(service, monkeypatch, tmp_pat
     assert out["kernel"]["distro"] == "ubuntu"
     assert out["candidates"] == [symbol_path]
     assert fetched == []
-    assert [event["stage"] for event in progress_events[:2]] == ["detecting", "matching"]
+    assert [event["stage"] for event in progress_events[:3]] == [
+        "checking_kernel_cache",
+        "detecting",
+        "matching",
+    ]
 
     out = service.auto_download_for_image(
         str(image),
@@ -228,6 +238,83 @@ def test_auto_download_uses_exact_detected_release(service, monkeypatch, tmp_pat
     download_events = [event for event in progress_events if event["stage"] == "downloading"]
     assert download_events
     assert download_events[-1]["percent"] == 100.0
+
+
+def test_detected_kernel_is_persisted_and_reused_before_symbol_check(
+    service, monkeypatch, tmp_path
+):
+    image = tmp_path / "memory.raw"
+    image.write_bytes(
+        b"Linux version 6.12.96+deb13-amd64 "
+        b"(debian-kernel@lists.debian.org) #1 SMP Debian\x00"
+    )
+    symbol_root = svc_mod._resolve_symbol_root()
+    symbol_root.mkdir(parents=True)
+    (symbol_root / "debian-6.12.96+deb13-amd64.json.xz").write_bytes(b"symbol")
+
+    first_events = []
+    first = service.auto_download_for_image(
+        str(image),
+        progress_callback=first_events.append,
+    )
+
+    assert first["status"] == "present"
+    assert first["kernel_source"] == "detected"
+    assert [event["stage"] for event in first_events] == [
+        "checking_kernel_cache",
+        "detecting",
+    ]
+    cache_payload = json.loads(
+        (tmp_path / "kernel_versions.json").read_text(encoding="utf-8")
+    )
+    cached = cache_payload["images"][str(image.resolve())]
+    assert cached["kernel"]["release"] == "6.12.96+deb13-amd64"
+    assert cached["identity"]["size"] == image.stat().st_size
+
+    def detector_must_not_run(*_args, **_kwargs):
+        raise AssertionError("persisted kernel must bypass the banner detector")
+
+    monkeypatch.setattr(svc_mod, "detect_linux_kernel", detector_must_not_run)
+    restarted_service = SymbolService()
+    second_events = []
+    second = restarted_service.auto_download_for_image(
+        str(image),
+        progress_callback=second_events.append,
+    )
+
+    assert second["status"] == "present"
+    assert second["kernel_source"] == "persisted"
+    assert second["kernel"]["release"] == "6.12.96+deb13-amd64"
+    assert second["local_matches"][0]["path"] == (
+        "debian-6.12.96+deb13-amd64.json.xz"
+    )
+    assert [event["stage"] for event in second_events] == [
+        "checking_kernel_cache",
+        "kernel_cache_hit",
+    ]
+
+
+def test_changed_image_does_not_reuse_persisted_kernel(service, monkeypatch, tmp_path):
+    image = tmp_path / "memory.raw"
+    image.write_bytes(b"Linux version 6.1.0-amd64 (Debian) #1 SMP\x00")
+    monkeypatch.setattr(service, "_ensure_remote_index", lambda _ref: None)
+
+    first = service.auto_download_for_image(str(image))
+    assert first["kernel_source"] == "detected"
+
+    image.write_bytes(b"changed image without a banner")
+    detector_calls = []
+
+    def tracked_detector(*args, **kwargs):
+        detector_calls.append(args[0])
+        return detect_linux_kernel(*args, **kwargs)
+
+    monkeypatch.setattr(svc_mod, "detect_linux_kernel", tracked_detector)
+    second = SymbolService().auto_download_for_image(str(image))
+
+    assert detector_calls == [str(image)]
+    assert second["status"] == "not_detected"
+    assert second["kernel_source"] == "detected"
 
 
 def test_auto_check_returns_local_match_without_remote_index(service, monkeypatch, tmp_path):

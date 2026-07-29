@@ -280,7 +280,7 @@ centos8_proxy
 
 ### 加载时检查 Linux 符号表
 
-默认情况下，加载 `vol3` 镜像后会流式扫描有效的 `Linux version ...` banner，并从全部候选中选择最可信的 kernel release；该检测不启动 Volatility，也不会把镜像整体读入内存。检测完成后先检查本地符号表，已存在则直接使用；缺失时弹窗提供“直接下载”“gh-proxy 下载”和“暂不下载”。下载阶段会显示圆形进度。
+默认情况下，加载 `vol3` 镜像后会先按镜像绝对路径、大小和修改时间读取已持久化的内核版本。命中时跳过大镜像 banner 扫描，直接检查对应符号表；未命中时才流式扫描有效的 `Linux version ...` banner，并从全部候选中选择最可信的 kernel release，识别成功后写入 `.zero/images/kernel_versions.json`。该检测不启动 Volatility，也不会把镜像整体读入内存。检测完成后先检查本地符号表，已存在则直接使用；缺失时弹窗提供“直接下载”“gh-proxy 下载”和“暂不下载”。下载阶段会显示圆形进度。
 
 - 只根据**完整 kernel release**匹配；候选过多时不会盲目批量下载。
 - 本地精确 release 匹配发生在远程索引请求之前；远程索引复用磁盘缓存。
@@ -291,6 +291,7 @@ centos8_proxy
 ```python
 AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD = True  # 设为 False 关闭加载后检查
 AUTO_SYMBOL_SCAN_MAX_BYTES = 0              # 0=扫描完整镜像
+IMAGE_KERNEL_CACHE_FILE = ".zero/images/kernel_versions.json"
 AUTO_SYMBOL_SCAN_CHUNK_BYTES = 4 * 1024 * 1024
 AUTO_SYMBOL_DOWNLOAD_MAX_CANDIDATES = 4
 ```

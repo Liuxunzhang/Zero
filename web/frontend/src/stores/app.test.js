@@ -124,10 +124,11 @@ describe('app store pagination & filter logic', () => {
     autoDownloadImageSymbols.mockImplementation(async (_path, onProgress) => {
       const loadLog = useAppStore().messages.find((message) => message.text.includes('镜像已加载'))
       expect(loadLog).toBeTruthy()
-      onProgress({ stage: 'detecting', percent: null })
+      onProgress({ stage: 'kernel_cache_hit', percent: null })
       return {
         enabled: true,
         status: 'present',
+        kernel_source: 'persisted',
         kernel: { release: '6.12.90+deb13.1-amd64' },
         local_matches: [{ path: 'debian-kernel.json.xz' }],
       }
@@ -138,7 +139,7 @@ describe('app store pagination & filter logic', () => {
 
     expect(s.messages.map((message) => message.text)).toEqual([
       '[vol3] 镜像已加载: /tmp/memory.raw',
-      '[vol3] 检测到 Linux 内核 6.12.90+deb13.1-amd64，匹配符号表已存在',
+      '[vol3] 已读取持久化 Linux 内核 6.12.90+deb13.1-amd64，匹配符号表已存在',
     ])
     expect(new Set(s.messages.map((message) => message.ts)).size).toBe(2)
     expect(s.symbolDownloadBusy).toBe(false)

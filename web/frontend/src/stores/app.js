@@ -124,22 +124,25 @@ export const useAppStore = defineStore("app", () => {
   function pushAutoSymbolMessage(result, engineId) {
     if (!result || result.enabled === false) return
     const release = result.kernel?.release || "未知版本"
+    const kernelAction = result.kernel_source === "persisted"
+      ? "已读取持久化 Linux 内核"
+      : "检测到 Linux 内核"
     const downloaded = Array.isArray(result.downloaded) ? result.downloaded.length : 0
     const skipped = Array.isArray(result.skipped) ? result.skipped.length : 0
     const prefix = "[" + engineId + "] "
 
     switch (result.status) {
       case "downloaded":
-        pushMessage(prefix + "检测到 Linux 内核 " + release + "，已下载 " + downloaded + " 个匹配符号表", "success")
+        pushMessage(prefix + kernelAction + " " + release + "，已下载 " + downloaded + " 个匹配符号表", "success")
         break
       case "present":
-        pushMessage(prefix + "检测到 Linux 内核 " + release + "，匹配符号表已存在", "info")
+        pushMessage(prefix + kernelAction + " " + release + "，匹配符号表已存在", "info")
         break
       case "partial":
         pushMessage(prefix + "内核 " + release + " 的符号表仅部分下载成功（下载 " + downloaded + "，已存在 " + skipped + "）", "warning")
         break
       case "no_match":
-        pushMessage(prefix + "检测到 Linux 内核 " + release + "，远程仓库未找到同 release 的符号表", "warning")
+        pushMessage(prefix + kernelAction + " " + release + "，远程仓库未找到同 release 的符号表", "warning")
         break
       case "ambiguous":
         pushMessage(prefix + "内核 " + release + " 的符号表候选过多，未下载；请在“符号”面板选择", "warning")
@@ -197,7 +200,7 @@ export const useAppStore = defineStore("app", () => {
     if (engineId !== "vol3") return
     symbolDownloadBusy.value = true
     symbolDownloadProgress.value = null
-    symbolDownloadStage.value = "detecting"
+    symbolDownloadStage.value = "checking_kernel_cache"
     let downloadAnnounced = false
     try {
       const progressHandler = (event) => {
@@ -226,11 +229,14 @@ export const useAppStore = defineStore("app", () => {
       const distro = analysis.kernel?.distro
         ? analysis.kernel.distro.charAt(0).toUpperCase() + analysis.kernel.distro.slice(1)
         : "Linux"
+      const kernelAction = analysis.kernel_source === "persisted"
+        ? "已读取持久化版本"
+        : "检测到"
       const candidates = Array.isArray(analysis.candidates) ? analysis.candidates : []
       const choice = await confirmAction({
         title: "下载匹配的 Linux 符号表？",
         message:
-          `检测到 ${distro} 内核 ${release}。本地未找到匹配符号表，` +
+          `${kernelAction} ${distro} 内核 ${release}。本地未找到匹配符号表，` +
           `远程仓库找到 ${candidates.length} 个候选。请选择下载方式。`,
         confirmText: "直接下载",
         alternateText: "gh-proxy 下载",
@@ -259,6 +265,7 @@ export const useAppStore = defineStore("app", () => {
         {
           ...downloadResult,
           kernel: analysis.kernel,
+          kernel_source: analysis.kernel_source,
         },
         engineId,
       )

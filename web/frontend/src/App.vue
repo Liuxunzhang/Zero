@@ -547,6 +547,8 @@ const symbolProgressOffset = computed(() => {
   return 56.55 * (1 - progress / 100)
 })
 const symbolDownloadTitle = computed(() => {
+  if (store.symbolDownloadStage === 'checking_kernel_cache') return '正在读取镜像内核版本'
+  if (store.symbolDownloadStage === 'kernel_cache_hit') return '已读取持久化内核版本'
   if (store.symbolDownloadStage === 'detecting') return '正在识别 Linux 内核'
   if (store.symbolDownloadStage === 'matching') return '正在匹配内核符号表'
   if (store.symbolDownloadProgress != null) {

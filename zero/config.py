@@ -39,6 +39,9 @@ AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD = True
 # 0 表示扫描完整镜像；正整数表示只扫描镜像前 N 字节。扫描所有候选可避免
 # 把内存中的旧发行版 banner 误判成当前内核。
 AUTO_SYMBOL_SCAN_MAX_BYTES = 0
+# 成功识别的“镜像身份 → 内核版本”会持久化到此文件。再次加载大小和修改时间
+# 未变化的同一镜像时会跳过完整 banner 扫描，直接检查本地/远程符号表。
+IMAGE_KERNEL_CACHE_FILE = ".zero/images/kernel_versions.json"
 # 检测器每次读取的块大小；始终是流式读取，不会把整个镜像载入内存。
 AUTO_SYMBOL_SCAN_CHUNK_BYTES = 4 * 1024 * 1024
 # 同一 release 的候选 ISF 超过该数量时不自动下载，避免下载不确定的符号表。

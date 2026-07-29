@@ -37,6 +37,11 @@ _API_BASE = "https://api.github.com"
 _LOCAL_INDEX_TTL_SECONDS = 10
 _ALLOWED_SUFFIXES = (".json", ".json.xz", ".json.gz", ".zip")
 _DISK_INDEX_DIR = _PROJECT_ROOT / ".zero" / "symbols" / "remote_index"
+_DEFAULT_IMAGE_KERNEL_CACHE_FILE = (
+    _PROJECT_ROOT / ".zero" / "images" / "kernel_versions.json"
+)
+_IMAGE_KERNEL_CACHE_VERSION = 1
+_IMAGE_KERNEL_CACHE_MAX_ENTRIES = 512
 
 # Soft TTL: serve memory/disk without network. Hard stale: still serve if refresh fails.
 _DEFAULT_INDEX_TTL_SECONDS = 6 * 3600
@@ -193,6 +198,17 @@ def _resolve_symbol_root() -> Path:
     return path
 
 
+def _resolve_image_kernel_cache_file() -> Path:
+    configured = str(
+        getattr(config, "IMAGE_KERNEL_CACHE_FILE", _DEFAULT_IMAGE_KERNEL_CACHE_FILE)
+        or _DEFAULT_IMAGE_KERNEL_CACHE_FILE
+    ).strip()
+    path = Path(configured).expanduser()
+    if not path.is_absolute():
+        path = (_PROJECT_ROOT / path).resolve()
+    return path
+
+
 def _os_hint(rel_path: str) -> str:
     lower = rel_path.lower().replace("\\", "/")
     if "windows" in lower:
@@ -282,6 +298,10 @@ class SymbolService:
         }
         self._local_cache_expires_at: float = 0.0
         self._local_cache_payload: Optional[dict] = None
+        # Kernel names are expensive to recover from multi-GB images.  Keep the
+        # image identity and parsed banner on disk so later loads can go
+        # straight to the local/remote symbol checks.
+        self._image_kernel_cache_lock = threading.Lock()
 
     def list_repos(self) -> dict:
         return {
@@ -389,6 +409,138 @@ class SymbolService:
         result.update(extra)
         return result
 
+    @staticmethod
+    def _image_identity(image_path: str | Path) -> tuple[str, dict[str, int]]:
+        path = Path(image_path).expanduser().resolve()
+        stat = path.stat()
+        return str(path), {
+            "size": int(stat.st_size),
+            "mtime_ns": int(stat.st_mtime_ns),
+        }
+
+    @staticmethod
+    def _kernel_from_cache_payload(payload: Any) -> Optional[LinuxKernelInfo]:
+        if not isinstance(payload, dict):
+            return None
+        try:
+            banner = str(payload["banner"])
+            release = str(payload["release"]).strip()
+            offset = int(payload["offset"])
+            distro = str(payload.get("distro") or "")
+            architecture = str(payload.get("architecture") or "")
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not banner.startswith("Linux version ") or not release or offset < 0:
+            return None
+        return LinuxKernelInfo(
+            banner=banner,
+            release=release,
+            offset=offset,
+            distro=distro,
+            architecture=architecture,
+        )
+
+    @staticmethod
+    def _empty_image_kernel_cache() -> dict:
+        return {
+            "version": _IMAGE_KERNEL_CACHE_VERSION,
+            "images": {},
+        }
+
+    def _read_image_kernel_cache_unlocked(self, cache_file: Path) -> dict:
+        try:
+            payload = json.loads(cache_file.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return self._empty_image_kernel_cache()
+        except (OSError, UnicodeError, json.JSONDecodeError) as e:
+            logger.warning("Ignore unreadable image kernel cache %s: %s", cache_file, e)
+            return self._empty_image_kernel_cache()
+        if (
+            not isinstance(payload, dict)
+            or payload.get("version") != _IMAGE_KERNEL_CACHE_VERSION
+            or not isinstance(payload.get("images"), dict)
+        ):
+            logger.warning("Ignore incompatible image kernel cache: %s", cache_file)
+            return self._empty_image_kernel_cache()
+        return payload
+
+    @staticmethod
+    def _write_image_kernel_cache_unlocked(cache_file: Path, payload: dict) -> None:
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        temporary = cache_file.with_name(
+            f".{cache_file.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        try:
+            temporary.write_text(
+                json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            try:
+                temporary.chmod(0o600)
+            except OSError:
+                pass
+            os.replace(temporary, cache_file)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+    def _load_cached_kernel(
+        self, image_path: str | Path
+    ) -> tuple[Optional[LinuxKernelInfo], Optional[dict]]:
+        resolved, identity = self._image_identity(image_path)
+        cache_file = _resolve_image_kernel_cache_file()
+        with self._image_kernel_cache_lock:
+            payload = self._read_image_kernel_cache_unlocked(cache_file)
+            record = payload["images"].get(resolved)
+        if not isinstance(record, dict) or record.get("identity") != identity:
+            return None, None
+        kernel = self._kernel_from_cache_payload(record.get("kernel"))
+        if kernel is None:
+            return None, None
+        scan = record.get("scan")
+        return kernel, dict(scan) if isinstance(scan, dict) else None
+
+    def _persist_image_kernel(
+        self,
+        image_path: str | Path,
+        kernel: LinuxKernelInfo,
+        scan: dict,
+    ) -> None:
+        try:
+            resolved, identity = self._image_identity(image_path)
+            cache_file = _resolve_image_kernel_cache_file()
+            with self._image_kernel_cache_lock:
+                payload = self._read_image_kernel_cache_unlocked(cache_file)
+                images = payload["images"]
+                images[resolved] = {
+                    "identity": identity,
+                    "kernel": kernel.as_dict(),
+                    "scan": dict(scan),
+                    "updated_at": int(time.time()),
+                }
+                if len(images) > _IMAGE_KERNEL_CACHE_MAX_ENTRIES:
+                    ordered = sorted(
+                        images,
+                        key=lambda key: int(
+                            (images.get(key) or {}).get("updated_at") or 0
+                        ),
+                        reverse=True,
+                    )
+                    payload["images"] = {
+                        key: images[key]
+                        for key in ordered[:_IMAGE_KERNEL_CACHE_MAX_ENTRIES]
+                    }
+                self._write_image_kernel_cache_unlocked(cache_file, payload)
+        except Exception as e:
+            # Persistence is an optimization and must never block image use.
+            logger.warning(
+                "Could not persist kernel name for image %s: %s",
+                image_path,
+                e,
+            )
+
     def auto_download_for_image(
         self,
         image_path: str,
@@ -410,40 +562,78 @@ class SymbolService:
 
         _notify_progress(
             progress_callback,
-            stage="detecting",
+            stage="checking_kernel_cache",
             percent=None,
-            message="正在识别 Linux 内核",
-        )
-        scan_limit = _config_int("AUTO_SYMBOL_SCAN_MAX_BYTES", 0)
-        chunk_bytes = _config_int(
-            "AUTO_SYMBOL_SCAN_CHUNK_BYTES",
-            _AUTO_SCAN_DEFAULT_CHUNK_BYTES,
-            minimum=4096,
+            message="正在读取已保存的镜像内核版本",
         )
         try:
-            detection = detect_linux_kernel(
-                image_path,
-                max_scan_bytes=scan_limit,
-                chunk_bytes=chunk_bytes,
-            )
+            kernel, cached_scan = self._load_cached_kernel(image_path)
         except Exception as e:
-            logger.warning("Linux kernel banner scan failed for %s: %s", image_path, e)
-            return self._auto_base_result(
-                enabled=True,
-                status="scan_failed",
-                reason=str(e),
-            )
+            logger.warning("Image kernel cache lookup failed for %s: %s", image_path, e)
+            kernel, cached_scan = None, None
 
-        scan = self._auto_scan_payload(detection)
-        kernel = detection.kernel
-        if kernel is None:
-            return self._auto_base_result(
-                enabled=True,
-                status="scan_limit_reached" if detection.limit_reached else "not_detected",
-                scan=scan,
+        if kernel is not None:
+            kernel_source = "persisted"
+            scan = cached_scan or {}
+            _notify_progress(
+                progress_callback,
+                stage="kernel_cache_hit",
+                percent=None,
+                message=f"已读取持久化内核版本 {kernel.release}",
+                kernel=kernel.as_dict(),
             )
+        else:
+            kernel_source = "detected"
+            _notify_progress(
+                progress_callback,
+                stage="detecting",
+                percent=None,
+                message="未找到已保存版本，正在识别 Linux 内核",
+            )
+            scan_limit = _config_int("AUTO_SYMBOL_SCAN_MAX_BYTES", 0)
+            chunk_bytes = _config_int(
+                "AUTO_SYMBOL_SCAN_CHUNK_BYTES",
+                _AUTO_SCAN_DEFAULT_CHUNK_BYTES,
+                minimum=4096,
+            )
+            try:
+                detection = detect_linux_kernel(
+                    image_path,
+                    max_scan_bytes=scan_limit,
+                    chunk_bytes=chunk_bytes,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Linux kernel banner scan failed for %s: %s", image_path, e
+                )
+                return self._auto_base_result(
+                    enabled=True,
+                    status="scan_failed",
+                    kernel_source=kernel_source,
+                    reason=str(e),
+                )
+
+            scan = self._auto_scan_payload(detection)
+            kernel = detection.kernel
+            if kernel is None:
+                return self._auto_base_result(
+                    enabled=True,
+                    status=(
+                        "scan_limit_reached"
+                        if detection.limit_reached
+                        else "not_detected"
+                    ),
+                    kernel_source=kernel_source,
+                    scan=scan,
+                )
+            self._persist_image_kernel(image_path, kernel, scan)
 
         kernel_payload = kernel.as_dict()
+        kernel_context = {
+            "kernel": kernel_payload,
+            "kernel_source": kernel_source,
+            "scan": scan,
+        }
 
         # Check every local ISF before querying GitHub.  Apart from avoiding an
         # unnecessary network request, this prevents the load workflow from
@@ -461,8 +651,7 @@ class SymbolService:
             return self._auto_base_result(
                 enabled=True,
                 status="present",
-                kernel=kernel_payload,
-                scan=scan,
+                **kernel_context,
                 local_matches=local_matches,
                 root=local_payload.get("root", ""),
             )
@@ -506,8 +695,7 @@ class SymbolService:
                 ambiguous_result = self._auto_base_result(
                     enabled=True,
                     status="ambiguous",
-                    kernel=kernel_payload,
-                    scan=scan,
+                    **kernel_context,
                     repo=ref.full,
                     candidate_count=len(paths),
                     candidates=paths[:max_candidates],
@@ -523,8 +711,7 @@ class SymbolService:
                 return self._auto_base_result(
                     enabled=True,
                     status="available",
-                    kernel=kernel_payload,
-                    scan=scan,
+                    **kernel_context,
                     repo=ref.full,
                     candidates=paths,
                 )
@@ -546,8 +733,7 @@ class SymbolService:
                 return self._auto_base_result(
                     enabled=True,
                     status="download_failed",
-                    kernel=kernel_payload,
-                    scan=scan,
+                    **kernel_context,
                     repo=ref.full,
                     candidates=paths,
                     reason=str(e),
@@ -576,8 +762,7 @@ class SymbolService:
             return self._auto_base_result(
                 enabled=True,
                 status=status,
-                kernel=kernel_payload,
-                scan=scan,
+                **kernel_context,
                 repo=ref.full,
                 candidates=paths,
                 downloaded=downloaded,
@@ -593,15 +778,13 @@ class SymbolService:
             return self._auto_base_result(
                 enabled=True,
                 status="remote_unavailable",
-                kernel=kernel_payload,
-                scan=scan,
+                **kernel_context,
                 reason="; ".join(index_errors[:3]),
             )
         return self._auto_base_result(
             enabled=True,
             status="no_match",
-            kernel=kernel_payload,
-            scan=scan,
+            **kernel_context,
         )
 
     def _resolve_repo(self, repo: str = "") -> _RepoRef:
