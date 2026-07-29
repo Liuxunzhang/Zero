@@ -140,7 +140,7 @@ const props = defineProps({
   pluginName: { type: String, default: '' },
   engineId: { type: String, default: 'vol3' },
   args: { type: Array, default: () => [] },
-  // Global args defaults (from ArgsPanel) — used to pre-fill form
+  // Global defaults from System Settings — used to pre-fill this run form.
   globalArgs: { type: Object, default: () => ({}) },
 })
 

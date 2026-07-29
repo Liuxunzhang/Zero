@@ -102,31 +102,16 @@
           <span class="ai-toggle-text">规则</span>
         </button>
         <button
-          v-if="store.selectedEngine === 'vol3'"
-          class="ai-toggle-btn"
-          @click="store.showArgsPanel = !store.showArgsPanel"
-          title="参数配置"
-        >
-          <AppIcon class="ai-toggle-icon" name="settings" />
-          <span class="ai-toggle-text">参数</span>
-        </button>
-        <button
-          class="ai-toggle-btn"
-          :class="{ active: showNotepad }"
-          @click="showNotepad = true"
-          title="取证记事本"
+          class="ai-toggle-btn topbar-casebook-btn"
+          :class="{ active: showCasebook }"
+          @click="showCasebook = true"
+          title="取证工作簿：发现与记事"
         >
           <AppIcon class="ai-toggle-icon" name="notebook" />
-          <span class="ai-toggle-text">记事</span>
-        </button>
-        <button
-          class="ai-toggle-btn"
-          :class="{ active: showFindings }"
-          @click="showFindings = true"
-          title="取证发现（右键表格行标记）"
-        >
-          <AppIcon class="ai-toggle-icon" name="star" />
-          <span class="ai-toggle-text">发现</span>
+          <span class="ai-toggle-text">取证</span>
+          <span v-if="findingsStore.items.length" class="topbar-casebook-badge">
+            {{ findingsStore.items.length > 99 ? '99+' : findingsStore.items.length }}
+          </span>
         </button>
         <button
           class="ai-toggle-btn"
@@ -275,6 +260,9 @@
 
     <SystemSettingsModal
       v-if="showSystemSettings"
+      :engine-id="store.selectedEngine"
+      :global-args="store.globalArgs"
+      @update:global-args="store.saveGlobalArgs"
       @close="showSystemSettings = false"
       @saved="onSystemSettingsSaved"
     />
@@ -285,14 +273,9 @@
       @packages-changed="store.fetchPlugins('all')"
     />
 
-    <NotepadPanel
-      :show="showNotepad"
-      @close="showNotepad = false"
-    />
-
-    <FindingsPanel
-      :show="showFindings"
-      @close="showFindings = false"
+    <CasebookPanel
+      :show="showCasebook"
+      @close="showCasebook = false"
     />
 
     <PluginParamsModal
@@ -307,14 +290,6 @@
 
     <ConfirmDialog />
 
-    <!-- Global Args Panel -->
-    <ArgsPanel
-      :show="store.showArgsPanel"
-      :engine-id="store.selectedEngine"
-      :model-value="store.globalArgs"
-      @update:model-value="store.saveGlobalArgs"
-      @close="store.showArgsPanel = false"
-    />
   </div>
 </template>
 
@@ -330,11 +305,9 @@ import AiPanel from './components/AiPanel.vue'
 import DataTable from './components/DataTable.vue'
 import FilterBar from './components/FilterBar.vue'
 import StatusBar from './components/StatusBar.vue'
-import NotepadPanel from './components/NotepadPanel.vue'
-import FindingsPanel from './components/FindingsPanel.vue'
+import CasebookPanel from './components/CasebookPanel.vue'
 import { useFindingsStore } from './stores/findings'
 import PluginParamsModal from './components/PluginParamsModal.vue'
-import ArgsPanel from './components/ArgsPanel.vue'
 
 // Only mounted behind an explicit user action (v-if below), so loading their
 // code on demand keeps them out of the initial bundle.
@@ -364,8 +337,7 @@ const showSymbolManager = ref(false)
 const showLogPanel = ref(false)
 const showSystemSettings = ref(false)
 const showRuleCenter = ref(false)
-const showNotepad = ref(false)
-const showFindings = ref(false)
+const showCasebook = ref(false)
 const showTokenMenu = ref(false)
 const localApiToken = ref(getApiToken())
 const tokenWrapRef = ref(null)
@@ -763,6 +735,30 @@ onBeforeUnmount(() => {
 
 .topbar-log-btn {
   position: relative;
+}
+
+.topbar-casebook-btn {
+  position: relative;
+}
+
+.topbar-casebook-badge {
+  position: absolute;
+  top: 1px;
+  right: 1px;
+  min-width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 3px;
+  border: 1px solid var(--bg-secondary);
+  border-radius: 999px;
+  color: var(--bg-primary);
+  background: var(--text-warning);
+  font-family: var(--font-mono);
+  font-size: 8px;
+  font-weight: 700;
+  line-height: 1;
 }
 
 .symbol-download-progress {

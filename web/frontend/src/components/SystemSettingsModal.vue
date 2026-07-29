@@ -14,7 +14,7 @@
             </span>
             <div>
               <div class="system-settings-title">系统运行设置</div>
-              <div class="system-settings-subtitle">Volatility 执行、符号表与结果缓存</div>
+              <div class="system-settings-subtitle">运行配置、符号表、缓存与插件默认参数</div>
             </div>
             <span class="system-settings-live">即时生效</span>
           </div>
@@ -50,13 +50,80 @@
               </span>
             </button>
 
+            <button
+              v-if="engineId === 'vol3'"
+              class="system-settings-nav-item"
+              :class="{ active: activeCategoryId === PLUGIN_ARGS_CATEGORY_ID }"
+              @click="activeCategoryId = PLUGIN_ARGS_CATEGORY_ID"
+            >
+              <span class="system-settings-nav-mark"></span>
+              <span>
+                <strong>插件参数</strong>
+                <small>{{ configuredArgsCount }} 项已设置</small>
+              </span>
+            </button>
+
             <div class="system-settings-storage">
               <span>保存位置</span>
               <code>{{ storagePath || '.zero/runtime_settings.json' }}</code>
             </div>
           </nav>
 
-          <main v-if="activeCategory" class="system-settings-main">
+          <main
+            v-if="activeCategoryId === PLUGIN_ARGS_CATEGORY_ID"
+            class="system-settings-main"
+          >
+            <div class="system-settings-category-head">
+              <div>
+                <h2>插件默认参数</h2>
+                <p>为常用 Volatility 插件预填参数；运行单个插件前仍可覆盖。</p>
+              </div>
+              <button class="system-settings-reset" @click="resetActiveCategory">
+                清空本页参数
+              </button>
+            </div>
+
+            <div class="plugin-args-summary">
+              <span class="plugin-args-engine">{{ engineId }}</span>
+              <span>仅把当前插件支持的字段带入运行窗口，不支持的字段会自动忽略。</span>
+            </div>
+
+            <div class="plugin-args-groups">
+              <section
+                v-for="group in pluginArgGroups"
+                :key="group.id"
+                class="plugin-args-group"
+              >
+                <header class="plugin-args-group-head">
+                  <div>
+                    <strong>{{ group.label }}</strong>
+                    <p>{{ group.description }}</p>
+                  </div>
+                  <span>{{ group.code }}</span>
+                </header>
+                <div class="plugin-args-grid" :class="{ single: group.fields.length === 1 }">
+                  <label
+                    v-for="field in group.fields"
+                    :key="field.key"
+                    class="plugin-arg-field"
+                  >
+                    <span class="plugin-arg-label">
+                      <strong>{{ field.label }}</strong>
+                      <code>{{ field.flag }}</code>
+                    </span>
+                    <input
+                      v-model="argsValues[field.key]"
+                      type="text"
+                      :placeholder="field.placeholder"
+                    />
+                    <small>{{ field.help }}</small>
+                  </label>
+                </div>
+              </section>
+            </div>
+          </main>
+
+          <main v-else-if="activeCategory" class="system-settings-main">
             <div class="system-settings-category-head">
               <div>
                 <h2>{{ activeCategory.label }}</h2>
@@ -155,12 +222,66 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref, watch } from 'vue'
 import AppIcon from './AppIcon.vue'
 import { getRuntimeSettings, saveRuntimeSettings } from '../api'
 import { useEscClose } from '../composables/useEscClose'
 
-const emit = defineEmits(['close', 'saved'])
+const props = defineProps({
+  engineId: { type: String, default: 'vol3' },
+  globalArgs: { type: Object, default: () => ({}) },
+})
+
+const emit = defineEmits(['close', 'saved', 'update:globalArgs'])
+const PLUGIN_ARGS_CATEGORY_ID = 'plugin_args'
+const EMPTY_ARGS = () => ({
+  dump_dir: '',
+  pid: '',
+  offset: '',
+  base: '',
+  name: '',
+  key: '',
+  regex: '',
+})
+const pluginArgGroups = [
+  {
+    id: 'output',
+    code: 'OUT',
+    label: '导出目录',
+    description: '适用于 dlldump、procdump、memdump 等导出类插件。',
+    fields: [
+      {
+        key: 'dump_dir',
+        label: 'dump_dir',
+        flag: '--dump-dir',
+        placeholder: '例如 saved_results/vol3/dumps',
+        help: '相对路径基于项目根目录解析，目录不存在时自动创建。',
+      },
+    ],
+  },
+  {
+    id: 'process',
+    code: 'PROC',
+    label: '进程与对象定位',
+    description: '预填进程、内核对象或基地址，便于连续验证同一目标。',
+    fields: [
+      { key: 'pid', label: 'pid', flag: '--pid', placeholder: '进程 PID', help: '整数，可用于 handles、malfind 等插件。' },
+      { key: 'offset', label: 'offset', flag: '--offset', placeholder: '对象偏移，如 0x…', help: '支持插件所需的十六进制对象偏移。' },
+      { key: 'base', label: 'base', flag: '--base', placeholder: '基地址，如 0x…', help: '模块或映像基地址。' },
+      { key: 'name', label: 'name', flag: '--name', placeholder: '对象或模块名称', help: '按名称缩小插件检查范围。' },
+    ],
+  },
+  {
+    id: 'search',
+    code: 'FIND',
+    label: '注册表与搜索',
+    description: '复用注册表路径和正则条件，减少重复输入。',
+    fields: [
+      { key: 'key', label: 'key', flag: '--key', placeholder: 'SOFTWARE\\Microsoft\\Windows\\…', help: '注册表键路径，无需 HKEY_LOCAL_MACHINE 前缀。' },
+      { key: 'regex', label: 'regex', flag: '--regex', placeholder: '例如 \\.pdf$', help: '用于支持正则筛选的插件。' },
+    ],
+  },
+]
 const categories = ref([])
 const activeCategoryId = ref('')
 const storagePath = ref('')
@@ -170,6 +291,8 @@ const loadError = ref('')
 const saveStatus = ref({ type: '', text: '' })
 const formValues = reactive({})
 const originalValues = ref({})
+const argsValues = reactive(EMPTY_ARGS())
+const originalArgs = ref(EMPTY_ARGS())
 
 useEscClose(() => true, () => emit('close'))
 
@@ -177,14 +300,26 @@ const activeCategory = computed(
   () => categories.value.find((category) => category.id === activeCategoryId.value) || null,
 )
 
-const dirty = computed(
+const runtimeDirty = computed(
   () => JSON.stringify(formValues) !== JSON.stringify(originalValues.value),
+)
+const argsDirty = computed(
+  () => JSON.stringify(argsValues) !== JSON.stringify(originalArgs.value),
+)
+const dirty = computed(() => runtimeDirty.value || argsDirty.value)
+const configuredArgsCount = computed(
+  () => Object.values(argsValues).filter((value) => String(value || '').trim()).length,
 )
 
 function assignForm(values) {
   for (const key of Object.keys(formValues)) delete formValues[key]
   Object.assign(formValues, values || {})
   originalValues.value = { ...(values || {}) }
+}
+
+function assignArgs(values) {
+  Object.assign(argsValues, EMPTY_ARGS(), values || {})
+  originalArgs.value = { ...argsValues }
 }
 
 async function loadSettings() {
@@ -195,7 +330,11 @@ async function loadSettings() {
     categories.value = data.categories || []
     storagePath.value = data.storage || ''
     assignForm(data.settings || {})
-    if (!categories.value.some((category) => category.id === activeCategoryId.value)) {
+    assignArgs(props.globalArgs)
+    const categoryExists =
+      categories.value.some((category) => category.id === activeCategoryId.value) ||
+      (props.engineId === 'vol3' && activeCategoryId.value === PLUGIN_ARGS_CATEGORY_ID)
+    if (!categoryExists) {
       activeCategoryId.value = categories.value[0]?.id || ''
     }
   } catch (error) {
@@ -206,6 +345,11 @@ async function loadSettings() {
 }
 
 function resetActiveCategory() {
+  if (activeCategoryId.value === PLUGIN_ARGS_CATEGORY_ID) {
+    Object.assign(argsValues, EMPTY_ARGS())
+    saveStatus.value = { type: '', text: '' }
+    return
+  }
   for (const field of activeCategory.value?.fields || []) {
     formValues[field.key] = field.default
   }
@@ -217,10 +361,23 @@ async function saveSettings() {
   saving.value = true
   saveStatus.value = { type: '', text: '' }
   try {
-    const data = await saveRuntimeSettings({ ...formValues })
-    assignForm(data.settings || formValues)
+    let savedSettings = { ...formValues }
+    if (runtimeDirty.value) {
+      const data = await saveRuntimeSettings({ ...formValues })
+      savedSettings = data.settings || formValues
+      assignForm(savedSettings)
+    }
+    if (argsDirty.value) {
+      const cleanArgs = {}
+      for (const [key, value] of Object.entries(argsValues)) {
+        const cleaned = String(value || '').trim()
+        if (cleaned) cleanArgs[key] = cleaned
+      }
+      emit('update:globalArgs', cleanArgs)
+      assignArgs(cleanArgs)
+    }
     saveStatus.value = { type: 'success', text: '设置已保存并应用' }
-    emit('saved', data.settings || {})
+    emit('saved', savedSettings)
   } catch (error) {
     saveStatus.value = { type: 'error', text: error?.message || '保存设置失败' }
   } finally {
@@ -237,6 +394,14 @@ function rangeText(field) {
   if (field.min == null && field.max == null) return ''
   return `范围 ${field.min ?? '不限'}–${field.max ?? '不限'}${field.unit || ''}`
 }
+
+watch(
+  () => props.globalArgs,
+  (values) => {
+    if (!argsDirty.value) assignArgs(values)
+  },
+  { deep: true },
+)
 
 onMounted(loadSettings)
 </script>
@@ -664,6 +829,141 @@ onMounted(loadSettings)
   font-size: 10px;
 }
 
+.plugin-args-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  padding: 9px 11px;
+  color: var(--text-muted);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  font-size: 10px;
+}
+
+.plugin-args-engine {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  color: var(--accent-bright);
+  border: 1px solid var(--accent-dim);
+  border-radius: 3px;
+  background: var(--accent-glow);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.plugin-args-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.plugin-args-group {
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+}
+
+.plugin-args-group:focus-within {
+  border-color: var(--accent-dim);
+}
+
+.plugin-args-group-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 12px 9px;
+  border-bottom: 1px solid var(--border-subtle);
+  background: var(--bg-tertiary);
+}
+
+.plugin-args-group-head strong {
+  display: block;
+  color: var(--text-primary);
+  font-size: 11px;
+}
+
+.plugin-args-group-head p {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-size: 9px;
+}
+
+.plugin-args-group-head > span {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+
+.plugin-args-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+  padding: 11px 12px 12px;
+}
+
+.plugin-args-grid.single {
+  grid-template-columns: 1fr;
+}
+
+.plugin-arg-field {
+  min-width: 0;
+}
+
+.plugin-arg-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 5px;
+}
+
+.plugin-arg-label strong {
+  color: var(--text-secondary);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.plugin-arg-label code {
+  color: var(--accent-bright);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.plugin-arg-field input {
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  color: var(--text-primary);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  outline: none;
+  background: var(--bg-elevated);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.plugin-arg-field input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+
+.plugin-arg-field input::placeholder {
+  color: var(--text-muted);
+}
+
+.plugin-arg-field small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: 8px;
+  line-height: 1.35;
+}
+
 .system-settings-footer {
   min-height: 54px;
   display: flex;
@@ -730,6 +1030,7 @@ onMounted(loadSettings)
   .system-settings-storage { display: none; }
   .system-settings-main { padding: 14px; }
   .system-setting-card { grid-template-columns: 1fr; gap: 10px; }
+  .plugin-args-grid { grid-template-columns: 1fr; }
   .system-setting-control { align-items: stretch; }
   .system-setting-switch { justify-content: flex-start; }
   .system-settings-live { display: none; }

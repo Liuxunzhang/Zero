@@ -435,7 +435,7 @@ function markRowAsFinding() {
     row,
     filterText: store.filterText,
   })
-  store.pushMessage(added ? '已标记为发现，可在顶栏「发现」面板查看' : '该行已在发现列表中', added ? 'success' : 'info')
+  store.pushMessage(added ? '已标记为发现，可在顶栏「取证」工作簿查看' : '该行已在发现列表中', added ? 'success' : 'info')
   closeMenu()
 }
 

@@ -685,9 +685,6 @@ export const useAppStore = defineStore("app", () => {
     regex: '',
   })
 
-  // ArgsPanel visibility
-  const showArgsPanel = ref(false)
-
   function _loadGlobalArgs() {
     try {
       const raw = localStorage.getItem(GLOBAL_ARGS_KEY)
@@ -696,6 +693,7 @@ export const useAppStore = defineStore("app", () => {
   }
 
   function saveGlobalArgs(values) {
+    for (const key of Object.keys(globalArgs)) globalArgs[key] = ''
     Object.assign(globalArgs, values)
     localStorage.setItem(GLOBAL_ARGS_KEY, JSON.stringify({ ...globalArgs }))
   }
@@ -832,6 +830,6 @@ export const useAppStore = defineStore("app", () => {
     pushMessage, clearMessages, init, reloadAllPlugins, fetchEngineSettings,
     pluginArgsModal, openPluginWithArgs, runPluginWithParams, runPluginWithPayload,
     forceRerunCurrentPlugin, lastRunPayload,
-    globalArgs, showArgsPanel, saveGlobalArgs,
+    globalArgs, saveGlobalArgs,
   }
 })
