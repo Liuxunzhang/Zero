@@ -49,6 +49,13 @@ Volatility 工具声明为 sequential，同一 engine 使用异步锁串行执�
 分页结果快照按镜像和会话存放。dump 工具非幂等，服务重启时只标记 interrupted，
 不会自动重跑。
 
+Agent 模式包含“可执行未决项”终止门：如果模型未调用工具，却在答案中以
+“无法确认/建议下一步”等措辞引用了可用取证插件，当前答案会标记为
+`verification_required` 并从前端撤回，运行时自动追加一个不落盘的补证指令，
+要求模型先 `list_plugins`、再执行精确插件。只有插件不存在、调用失败/超时或
+预算耗尽时才允许保留未决项。单次 Run 最多触发两次该补证回合，避免异常模型
+形成无限循环。
+
 取消顺序为：设置 run cancel event → `cancel_plugin(engine_id)` 硬中断 Volatility
 worker → 取消 SDK task → 写入 aborted 部分回答和终止事件。
 

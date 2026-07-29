@@ -4,7 +4,7 @@ import os
 from types import SimpleNamespace
 
 from web.backend.ai_runtime.context import ContextManager, EvidenceStore, message_groups
-from web.backend.ai_runtime.loop import AgentLoop, RunBudget
+from web.backend.ai_runtime.loop import AgentLoop, RunBudget, requires_evidence_followup
 from web.backend.ai_runtime.models import (
     AssistantMessage,
     TextBlock,
@@ -549,6 +549,106 @@ def test_agent_loop_state_machine_executes_tool_then_finishes(tmp_path):
         isinstance(message, ToolResultMessage) and not message.is_error
         for message in store.messages(meta["id"])
     )
+
+
+def test_actionable_uncertainty_requires_tool_followup():
+    sample = AssistantMessage(content=[TextBlock(text=(
+        "## 无法确认的点\n"
+        "如需进一步验证，建议对 Python PID 4904 使用 "
+        "linux.malfind.Malfind，并使用 linux.bash.Bash 检查历史命令。"
+    ))])
+    assert requires_evidence_followup(sample) is True
+    assert requires_evidence_followup(AssistantMessage(content=[
+        TextBlock(text="当前无法确认文件是否被篡改，镜像中没有文件哈希。"),
+    ])) is False
+
+
+def test_agent_loop_retracts_recommendation_draft_and_runs_tools(tmp_path):
+    store = ConversationStore(tmp_path / "conversations")
+    meta = store.create(engine_id="vol3", image_id="image")
+    store.append_message(meta["id"], UserMessage("检查可疑进程"))
+    registry = ToolRegistry()
+    invoked = []
+    registry.register(ToolDefinition(
+        "list_plugins",
+        "catalog",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        lambda arguments, _context: invoked.append(arguments) or {
+            "plugins": [{"plugin_name": "linux.malfind.Malfind"}],
+        },
+    ))
+    requests = []
+
+    class Adapter:
+        def __init__(self, events):
+            self.events = events
+
+        async def stream(self, request):
+            requests.append(request)
+            for item in self.events:
+                yield item
+
+        async def close(self):
+            return None
+
+    adapters = [
+        Adapter([
+            ProviderEvent("text_delta", {"text": (
+                "## 无法确认的点\n建议使用 linux.malfind.Malfind 继续检查。"
+            )}),
+            ProviderEvent("message_end", {"stop_reason": "stop"}),
+        ]),
+        Adapter([
+            ProviderEvent("tool_call", {
+                "tool_call_id": "catalog",
+                "name": "list_plugins",
+                "arguments": {},
+                "complete": True,
+            }),
+            ProviderEvent("message_end", {"stop_reason": "tool_use"}),
+        ]),
+        Adapter([
+            ProviderEvent("text_delta", {"text": "已完成目录核验并形成结论。"}),
+            ProviderEvent("message_end", {"stop_reason": "stop"}),
+        ]),
+    ]
+    loop = AgentLoop(
+        conversations=store,
+        context=ContextManager(store),
+        tools=registry,
+        adapter_factory=lambda _snapshot: adapters.pop(0),
+    )
+    emitted = []
+
+    async def emit(kind, data):
+        emitted.append((kind, data))
+
+    result = asyncio.run(loop.run(
+        run_id="run",
+        conversation_id=meta["id"],
+        engine_id="vol3",
+        image_id="image",
+        snapshot_factory=lambda disabled: snapshot(
+            "openai_chat",
+            () if disabled else tuple(registry.declarations()),
+        ),
+        emit=emit,
+        cancel_event=asyncio.Event(),
+        budget=RunBudget(max_turns=5, max_tool_calls=3, max_seconds=60),
+        agent_mode=True,
+    ))
+
+    assistants = [
+        message for message in store.messages(meta["id"])
+        if isinstance(message, AssistantMessage)
+    ]
+    assert result["status"] == "completed"
+    assert invoked == [{}]
+    assert assistants[0].status == "verification_required"
+    assert assistants[-1].status == "complete"
+    assert [kind for kind, _data in emitted].count("verification_required") == 1
+    assert isinstance(requests[1].messages[-1], UserMessage)
+    assert "立即调用工具补证" in requests[1].messages[-1].content
 
 
 def test_agent_loop_retries_transient_provider_without_replaying_tools(tmp_path):

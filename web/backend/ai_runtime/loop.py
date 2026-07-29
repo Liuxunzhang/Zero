@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
@@ -28,6 +29,38 @@ Emit = Callable[[str, dict[str, Any]], Awaitable[None]]
 SnapshotFactory = Callable[[bool], TurnSnapshot]
 AdapterFactory = Callable[[TurnSnapshot], ProviderAdapter]
 EvidenceRecorder = Callable[[str, str, ToolResultMessage], Any]
+
+
+_ACTIONABLE_UNCERTAINTY_MARKERS = (
+    "无法确认",
+    "不能确认",
+    "尚无法",
+    "需要补证",
+    "需进一步验证",
+    "建议进一步",
+    "建议使用",
+    "建议运行",
+    "下一步",
+)
+_ACTIONABLE_TOOL_REFERENCE = re.compile(
+    r"(?:linux|windows)\.[A-Za-z0-9_]+\.[A-Za-z0-9_]+"
+    r"|`?(?:list_plugins|run_plugin|describe_plugin)`?"
+    r"|\b(?:malfind|pslist|psscan|pstree|bash|netstat|sockstat|sockscan|lsof|"
+    r"dlllist|cmdline|vadinfo|envars|handles|maps)\b",
+    re.IGNORECASE,
+)
+
+
+def requires_evidence_followup(assistant: AssistantMessage) -> bool:
+    """Detect an Agent answer that deferred an executable verification."""
+
+    text = "\n".join(
+        block.text for block in assistant.content if isinstance(block, TextBlock)
+    )
+    return (
+        any(marker in text for marker in _ACTIONABLE_UNCERTAINTY_MARKERS)
+        and _ACTIONABLE_TOOL_REFERENCE.search(text) is not None
+    )
 
 
 class PartialTurnCancelled(asyncio.CancelledError):
@@ -127,6 +160,8 @@ class AgentLoop:
         await emit("run_start", {"budget": budget.to_dict()})
         final_reason = "completed"
         continue_truncated_output = False
+        verification_followup = False
+        verification_followups_used = 0
         try:
             while True:
                 if cancel_event.is_set():
@@ -171,6 +206,22 @@ class AgentLoop:
                         "然后用最短篇幅收束剩余结论。"
                     )))
                     continue_truncated_output = False
+                if verification_followup:
+                    # Keep the superseded draft in model context so it knows
+                    # which gaps it named, then force execution rather than
+                    # another recommendation-only answer.
+                    from .models import UserMessage
+
+                    messages.append(UserMessage(content=(
+                        "你刚才把当前工具可以核验的事项留在“无法确认/建议下一步”中，"
+                        "但这是 Agent 模式，不是仅给建议的对话模式。该草稿不会作为最终答复展示。"
+                        "现在立即调用工具补证：若尚未核验目录，先调用 list_plugins；"
+                        "然后使用目录中的精确插件名执行相关只读插件。"
+                        "不要再次让用户自行运行插件，也不要在未尝试工具前输出同一未决项。"
+                        "只有插件不存在、工具实际失败/超时或运行预算耗尽时，"
+                        "最终答复才可保留该项，并写明已尝试的工具和失败原因。"
+                    )))
+                    verification_followup = False
                 if final_phase:
                     # Synthetic instruction is not persisted as user history.
                     from .models import UserMessage
@@ -220,6 +271,18 @@ class AgentLoop:
                 except ModelTurnError as exc:
                     self.conversations.append_message(conversation_id, exc.assistant)
                     raise exc.original
+                needs_verification = (
+                    agent_mode
+                    and not final_phase
+                    and not calls
+                    and bool(snapshot.tools)
+                    and verification_followups_used < 2
+                    and budget.tool_calls_used < budget.max_tool_calls
+                    and budget.turns_used < budget.max_turns
+                    and requires_evidence_followup(assistant)
+                )
+                if needs_verification:
+                    assistant.status = "verification_required"
                 self.conversations.append_message(conversation_id, assistant)
                 if self.provider_states and calls and continuation_state:
                     self.provider_states.set(
@@ -237,6 +300,27 @@ class AgentLoop:
                     },
                     "usage": assistant.usage.to_dict(),
                 })
+                if needs_verification:
+                    verification_followups_used += 1
+                    verification_followup = True
+                    discarded_chars = sum(
+                        len(block.text)
+                        for block in assistant.content
+                        if isinstance(block, TextBlock)
+                    )
+                    await emit("verification_required", {
+                        "attempt": verification_followups_used,
+                        "max_attempts": 2,
+                        "discarded_chars": discarded_chars,
+                        "budget": budget.to_dict(),
+                    })
+                    await emit("turn_end", {
+                        "turn": budget.turns_used,
+                        "stop_reason": "verification_required",
+                        "continuing": True,
+                        "budget": budget.to_dict(),
+                    })
+                    continue
                 if (
                     assistant.stop_reason == "length"
                     and not calls

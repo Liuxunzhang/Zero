@@ -403,7 +403,10 @@ Request:
 读取历史事件并继续等待新事件。事件类型包括 `run_start`、`turn_start`、
 `context`、`text_delta`、`thinking_summary_delta`、`tool_start`、
 `tool_progress`、`tool_end`、`retry`、`compaction`、`usage`、
-`budget_exhausted`、`turn_end` 和 `run_end`。
+`verification_required`、`budget_exhausted`、`turn_end` 和 `run_end`。
+
+收到 `verification_required` 时，客户端应清空尚未落定的回答文本：Runtime
+发现模型把可执行补证写成了建议，已撤回该草稿并继续进入工具调用回合。
 
 ### GET `/api/ai/runs/{id}`
 

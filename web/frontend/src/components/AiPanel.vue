@@ -188,7 +188,7 @@
         <div class="ai-welcome-title">从证据出发，不替异常下定义</div>
         <div class="ai-welcome-text">
           当前镜像、插件结果和工具回执组成同一条证据链。<br/>
-          Agent 会先核验插件目录，再执行补证；证据不足时明确保持未知。
+          Agent 会核验插件目录并自动执行补证；只有工具不可用、失败或预算耗尽时才保留未决项。
         </div>
         <div class="ai-quick-actions">
           <button class="ai-quick-btn" @click="sendQuick('严格基于当前插件输出做低误报研判。先列已确认事实；只有同一对象具备至少两个独立异常证据时才列为可疑，否则明确说明证据不足。')" :disabled="streaming">
@@ -618,6 +618,7 @@ const runStatusLabel = computed(() => {
 })
 
 const streamingStageLabel = computed(() => {
+  if (aiRun.current.verifications > 0 && aiRun.current.lastEventType !== 'run_end') return '自动补证'
   if (aiRun.current.continuations > 0 && aiRun.current.lastEventType !== 'run_end') return '自动续写'
   const tools = Object.values(aiRun.current.tools || {})
   const runningTool = tools.find(tool => tool.status === 'running')
@@ -681,6 +682,11 @@ function handleRunEvent(event) {
   const payload = event.data || {}
   if (event.type === 'text_delta') {
     streamBuffer.value += payload.text || ''
+    scrollToBottom()
+  } else if (event.type === 'verification_required') {
+    // A recommendation-only draft was superseded; the Agent is continuing
+    // with real plugins, so keep it out of the visible final answer.
+    streamBuffer.value = ''
     scrollToBottom()
   } else if (event.type === 'tool_start') {
     const idx = chatMessages.value.length

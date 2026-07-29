@@ -81,4 +81,18 @@ describe('AI run event reducer', () => {
     expect(state.stopReason).toBe('stop')
     expect(state.context.usage.output_tokens).toBe(8192)
   })
+
+  it('retracts a recommendation-only draft while automatic verification continues', () => {
+    const state = initialRunState()
+    reduceRunEvent(state, event(1, 'text_delta', {
+      text: '建议使用 linux.malfind.Malfind',
+    }))
+    reduceRunEvent(state, event(2, 'verification_required', {
+      attempt: 1,
+      budget: { turns_used: 1 },
+    }))
+    expect(state.text).toBe('')
+    expect(state.verifications).toBe(1)
+    expect(state.budget.turns_used).toBe(1)
+  })
 })

@@ -25,6 +25,7 @@ export function initialRunState() {
     compaction: null,
     stopReason: '',
     continuations: 0,
+    verifications: 0,
     lastEventType: '',
     error: '',
   }
@@ -82,6 +83,11 @@ export function reduceRunEvent(state, event) {
       break
     case 'output_continuation':
       state.continuations = Math.max(state.continuations, Number(data.attempt || 0))
+      state.budget = data.budget || state.budget
+      break
+    case 'verification_required':
+      state.text = ''
+      state.verifications = Math.max(state.verifications, Number(data.attempt || 0))
       state.budget = data.budget || state.budget
       break
     case 'context':

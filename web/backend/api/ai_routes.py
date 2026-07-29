@@ -1538,6 +1538,10 @@ async def get_conversation(conv_id: str):
                 "ts": message.created_at,
             })
         elif isinstance(message, RuntimeAssistantMessage):
+            # Recommendation-only Agent drafts are retained for the next model
+            # turn, but the evidence-backed answer supersedes them in the UI.
+            if message.status == "verification_required":
+                continue
             text = "".join(
                 block.text
                 for block in message.content

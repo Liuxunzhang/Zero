@@ -127,7 +127,13 @@ class AssistantMessage:
     model: str = ""
     request_id: str = ""
     usage: Usage = field(default_factory=Usage)
-    status: Literal["complete", "aborted", "interrupted", "error"] = "complete"
+    status: Literal[
+        "complete",
+        "aborted",
+        "interrupted",
+        "error",
+        "verification_required",
+    ] = "complete"
 
 
 @dataclass(slots=True)

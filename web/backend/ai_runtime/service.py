@@ -426,11 +426,24 @@ class AgentRuntime:
             if capabilities.get("reasoning", True)
             else "off"
         )
+        system_prompt = ai._resolve_system_prompt()
+        if declarations:
+            system_prompt = (
+                f"{system_prompt.rstrip()}\n\n"
+                "【Agent 执行契约（优先级高于输出模板）】\n"
+                "1. Agent 的职责是执行补证，而不是把可执行动作留给用户。当前镜像中的"
+                "只读插件能核验的疑点，必须在最终答复前实际调用。\n"
+                "2. 不得在最终答复中写“建议使用/运行某插件”来代替工具调用。插件名不确定时"
+                "先调用 list_plugins，再复制目录返回的精确 plugin_name 调用 run_plugin。\n"
+                "3. 只有相关插件不存在、工具已实际失败或超时、或运行预算耗尽，才可保留"
+                "未决项；必须同时写明已尝试的工具与具体失败原因。\n"
+                "4. 最终答复只呈现补证后的结论。不要要求用户手工执行本 Agent 已具备的工具。"
+            )
         return TurnSnapshot.create(
             provider=profile["protocol"],
             model=str(profile.get("model") or ""),
             protocol=profile["protocol"],
-            system_prompt=ai._resolve_system_prompt(),
+            system_prompt=system_prompt,
             reasoning_level=reasoning_level,
             max_output_tokens=max_output,
             tools=declarations,
