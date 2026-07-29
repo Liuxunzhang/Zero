@@ -44,6 +44,8 @@ class ImageLoadRequest(BaseModel):
 
 class ImageSymbolDownloadRequest(BaseModel):
     path: str
+    engine: str = "vol3"
+    os_family: str = ""
     download: bool = False
     use_gh_proxy: bool = False
     paths: list[str] = Field(default_factory=list)
@@ -164,7 +166,18 @@ def load_image(req: ImageLoadRequest):
         success = svc.load_image(req.path, engine_id=req.engine)
         if not success:
             raise HTTPException(400, "Failed to load image")
-        return {"ok": True, "path": req.path, "engine": req.engine}
+        status_getter = getattr(svc, "get_image_status", None)
+        status = (
+            status_getter(engine_id=req.engine)
+            if callable(status_getter)
+            else {}
+        )
+        return {
+            "ok": True,
+            "path": req.path,
+            "engine": req.engine,
+            "os_family": str((status or {}).get("os_family") or ""),
+        }
     except FileNotFoundError as e:
         raise HTTPException(404, str(e))
     except ValueError as e:
@@ -177,6 +190,17 @@ def load_image(req: ImageLoadRequest):
 @router.post("/image/symbols/auto")
 def auto_download_image_symbols(req: ImageSymbolDownloadRequest):
     """Stream symbol detection or an operator-confirmed download as NDJSON."""
+    os_family = req.os_family.strip().lower()
+    if not os_family:
+        try:
+            status = get_service().get_image_status(engine_id=req.engine)
+            os_family = str((status or {}).get("os_family") or "").strip().lower()
+        except Exception:
+            # Backward-compatible clients may omit the family before an engine
+            # has been initialized. The symbol service remains Linux-only.
+            os_family = "linux"
+    if os_family and os_family not in {"linux", "windows"}:
+        raise HTTPException(400, "os_family must be 'linux' or 'windows'")
     if len(req.paths) > 100:
         raise HTTPException(400, "too many symbol paths, max 100 per request")
     image_path = Path(req.path).expanduser().resolve()
@@ -194,6 +218,21 @@ def auto_download_image_symbols(req: ImageSymbolDownloadRequest):
 
     def worker() -> None:
         try:
+            if os_family == "windows":
+                events.put({
+                    "type": "result",
+                    "data": {
+                        "enabled": False,
+                        "status": "managed_by_volatility",
+                        "os_family": "windows",
+                        "engine": req.engine,
+                        "reason": (
+                            "Windows PDB symbols are resolved and downloaded "
+                            "automatically by Volatility."
+                        ),
+                    },
+                })
+                return
             symbol_service = get_symbol_service()
             if req.download and req.paths:
                 download_result = symbol_service.download_symbols(
@@ -222,6 +261,7 @@ def auto_download_image_symbols(req: ImageSymbolDownloadRequest):
             else:
                 result = symbol_service.auto_download_for_image(
                     str(image_path),
+                    os_family=os_family or "linux",
                     download=req.download,
                     use_gh_proxy=req.use_gh_proxy,
                     progress_callback=publish_progress,

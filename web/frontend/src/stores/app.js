@@ -198,6 +198,17 @@ export const useAppStore = defineStore("app", () => {
 
   async function prepareImageSymbols(path, engineId) {
     if (engineId !== "vol3") return
+    const family = engineStates[engineId]?.osFamily || "linux"
+    if (family === "windows") {
+      symbolDownloadBusy.value = false
+      symbolDownloadProgress.value = null
+      symbolDownloadStage.value = ""
+      pushMessage(
+        "[" + engineId + "] Windows PDB 符号由 Volatility 自动获取，已跳过 Linux 符号表检查",
+        "info",
+      )
+      return
+    }
     symbolDownloadBusy.value = true
     symbolDownloadProgress.value = null
     symbolDownloadStage.value = "checking_kernel_cache"
@@ -219,7 +230,10 @@ export const useAppStore = defineStore("app", () => {
         }
       }
 
-      const analysis = await autoDownloadImageSymbols(path, progressHandler)
+      const analysis = await autoDownloadImageSymbols(path, progressHandler, {
+        engine: engineId,
+        osFamily: family,
+      })
       if (analysis?.status !== "available") {
         pushAutoSymbolMessage(analysis, engineId)
         return
@@ -256,6 +270,8 @@ export const useAppStore = defineStore("app", () => {
       symbolDownloadStage.value = "downloading"
       const useGhProxy = choice === "gh-proxy"
       const downloadResult = await autoDownloadImageSymbols(path, progressHandler, {
+        engine: engineId,
+        osFamily: family,
         download: true,
         useGhProxy,
         paths: candidates,
@@ -288,14 +304,16 @@ export const useAppStore = defineStore("app", () => {
     let loadedPath = ""
     imageLoadBusy.value = true
     try {
-      await apiLoadImage(path, engineId)
+      const loadResult = await apiLoadImage(path, engineId)
       st.imagePath = path
       st.imageLoaded = true
+      if (loadResult?.os_family) st.osFamily = loadResult.os_family
       // Canonicalize to the backend's resolved absolute path so consumers
       // keyed by image path (findings) are stable across reloads.
       try {
         const status = await getImageStatus(engineId)
         if (status?.path) st.imagePath = status.path
+        if (status?.os_family) st.osFamily = status.os_family
       } catch { /* keep the typed path */ }
       st.columns = []
       st.rows = []

@@ -282,6 +282,9 @@ centos8_proxy
 
 默认情况下，加载 `vol3` 镜像后会先按镜像绝对路径、大小和修改时间读取已持久化的内核版本。命中时跳过大镜像 banner 扫描，直接检查对应符号表；未命中时才流式扫描有效的 `Linux version ...` banner，并从全部候选中选择最可信的 kernel release，识别成功后写入 `.zero/images/kernel_versions.json`。该检测不启动 Volatility，也不会把镜像整体读入内存。检测完成后先检查本地符号表，已存在则直接使用；缺失时弹窗提供“直接下载”“gh-proxy 下载”和“暂不下载”。下载阶段会显示圆形进度。
 
+该流程仅用于 Linux。选择 Windows 镜像时，Zero 会跳过内核 banner、预制符号表
+检查和下载提示；Windows PDB 由 Volatility 在运行 Windows 插件时自动获取。
+
 - 只根据**完整 kernel release**匹配；候选过多时不会盲目批量下载。
 - 本地精确 release 匹配发生在远程索引请求之前；远程索引复用磁盘缓存。
 - 未发现 banner、没有匹配项、网络/下载失败都不会阻止镜像加载，状态会显示在消息栏。

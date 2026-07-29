@@ -94,6 +94,8 @@ export async function autoDownloadImageSymbols(path, onProgress, options = {}) {
     },
     body: JSON.stringify({
       path,
+      engine: options.engine || 'vol3',
+      os_family: options.osFamily || '',
       download: Boolean(options.download),
       use_gh_proxy: Boolean(options.useGhProxy),
       paths: Array.isArray(options.paths) ? options.paths : [],

@@ -53,7 +53,8 @@ Response：
 {
   "ok": true,
   "path": "/path/to/memory.raw",
-  "engine": "vol3"
+  "engine": "vol3",
+  "os_family": "linux"
 }
 ```
 
@@ -68,7 +69,11 @@ Response：
 
 `stage` 依次为 `detecting`、`matching`、`downloading`。远端未提供 `Content-Length` 时，`percent` 和 `total_bytes` 为 `null`，前端显示不定进度圆环。
 
-常见结果 `status`：`available`、`downloaded`、`present`、`partial`、`not_detected`、`scan_limit_reached`、`no_match`、`ambiguous`、`remote_unavailable`、`scan_failed`、`download_failed`。可通过 `zero/config.py` 的 `AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD` 关闭加载后检查。
+请求应携带 `engine` 和 `os_family`。当 `os_family=windows` 时，不执行 Zero
+本地/远程符号流程，直接返回 `enabled=false,status=managed_by_volatility`；
+Windows PDB 由 Volatility 在插件运行时自动解析和下载。
+
+Linux 常见结果 `status`：`available`、`downloaded`、`present`、`partial`、`not_detected`、`scan_limit_reached`、`no_match`、`ambiguous`、`remote_unavailable`、`scan_failed`、`download_failed`。可通过 `zero/config.py` 的 `AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD` 关闭加载后检查。
 
 ### GET `/api/image/status?engine=vol3`
 

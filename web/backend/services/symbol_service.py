@@ -545,6 +545,7 @@ class SymbolService:
         self,
         image_path: str,
         *,
+        os_family: str = "linux",
         download: bool = False,
         use_gh_proxy: bool = False,
         progress_callback: _ProgressCallback = None,
@@ -557,6 +558,19 @@ class SymbolService:
         and returns remote candidates.  A download occurs only when
         ``download=True`` so the GUI can ask the operator first.
         """
+        family = str(os_family or "linux").strip().lower()
+        if family == "windows":
+            return self._auto_base_result(
+                enabled=False,
+                status="managed_by_volatility",
+                os_family="windows",
+                reason=(
+                    "Windows PDB symbols are resolved and downloaded "
+                    "automatically by Volatility."
+                ),
+            )
+        if family != "linux":
+            raise ValueError("os_family must be 'linux' or 'windows'")
         if not _config_bool("AUTO_DOWNLOAD_LINUX_SYMBOLS_ON_LOAD", True):
             return self._auto_base_result(enabled=False, status="disabled")
 

@@ -52,6 +52,35 @@ def test_concurrent_refresh_makes_one_network_call(service, monkeypatch):
     assert len(service._state(ref)["remote_index"]) == 1
 
 
+def test_windows_image_uses_volatility_managed_symbols_without_scanning(
+    service, monkeypatch, tmp_path
+):
+    image = tmp_path / "windows.raw"
+    image.write_bytes(b"Windows memory without a Linux banner")
+
+    def must_not_scan(*_args, **_kwargs):
+        raise AssertionError("Windows image must not enter the Linux symbol flow")
+
+    monkeypatch.setattr(svc_mod, "detect_linux_kernel", must_not_scan)
+    monkeypatch.setattr(service, "list_local_symbols", must_not_scan)
+
+    out = service.auto_download_for_image(
+        str(image),
+        os_family="windows",
+        download=True,
+    )
+
+    assert out == {
+        "enabled": False,
+        "status": "managed_by_volatility",
+        "os_family": "windows",
+        "reason": (
+            "Windows PDB symbols are resolved and downloaded "
+            "automatically by Volatility."
+        ),
+    }
+
+
 def test_search_keys_track_index_and_filter(service, monkeypatch):
     monkeypatch.setattr(
         service,

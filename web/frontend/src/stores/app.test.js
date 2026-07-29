@@ -146,6 +146,26 @@ describe('app store pagination & filter logic', () => {
     expect(s.symbolDownloadProgress).toBe(null)
   })
 
+  it('skips Zero symbol preparation for Windows images', async () => {
+    apiLoadImage.mockResolvedValue({ ok: true, os_family: 'windows' })
+    getImageStatus.mockResolvedValue({
+      path: '/tmp/windows.raw',
+      os_family: 'windows',
+    })
+    getEngineSettings.mockResolvedValue({ settings: {} })
+
+    const s = useAppStore()
+    s.engineStates.vol3.osFamily = 'windows'
+    await s.loadImage('/tmp/windows.raw')
+
+    expect(autoDownloadImageSymbols).not.toHaveBeenCalled()
+    expect(s.symbolDownloadBusy).toBe(false)
+    expect(s.messages.map(message => message.text)).toEqual([
+      '[vol3] 镜像已加载: /tmp/windows.raw',
+      '[vol3] Windows PDB 符号由 Volatility 自动获取，已跳过 Linux 符号表检查',
+    ])
+  })
+
   it('waits for confirmation and forwards the gh-proxy choice', async () => {
     apiLoadImage.mockResolvedValue({ ok: true })
     getImageStatus.mockResolvedValue({ path: '/tmp/debian.raw' })
@@ -182,6 +202,8 @@ describe('app store pagination & filter logic', () => {
       '/tmp/debian.raw',
       expect.any(Function),
       {
+        engine: 'vol3',
+        osFamily: 'linux',
         download: true,
         useGhProxy: true,
         paths: ['Debian/kernel.json.xz'],

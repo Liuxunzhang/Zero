@@ -45,12 +45,21 @@ def test_load_image_returns_before_auto_symbol_download(client, tmp_path, monkey
             assert engine_id == "vol3"
             return True
 
+        def get_image_status(self, engine_id="vol3"):
+            assert engine_id == "vol3"
+            return {"os_family": "linux"}
+
     monkeypatch.setattr(routes, "get_service", lambda: FakeEngineService())
 
     r = client.post("/api/image/load", json={"path": str(image)})
 
     assert r.status_code == 200
-    assert r.json() == {"ok": True, "path": str(image), "engine": "vol3"}
+    assert r.json() == {
+        "ok": True,
+        "path": str(image),
+        "engine": "vol3",
+        "os_family": "linux",
+    }
     assert "symbol_download" not in r.json()
 
 
@@ -67,11 +76,13 @@ def test_auto_symbol_download_streams_progress_after_load(client, tmp_path, monk
             self,
             path,
             *,
+            os_family="linux",
             download=False,
             use_gh_proxy=False,
             progress_callback=None,
         ):
             assert path == str(image.resolve())
+            assert os_family == "linux"
             assert download is False
             assert use_gh_proxy is False
             progress_callback(
@@ -90,7 +101,10 @@ def test_auto_symbol_download_streams_progress_after_load(client, tmp_path, monk
 
     monkeypatch.setattr(routes, "get_symbol_service", lambda: FakeSymbolService())
 
-    r = client.post("/api/image/symbols/auto", json={"path": str(image)})
+    r = client.post(
+        "/api/image/symbols/auto",
+        json={"path": str(image), "os_family": "linux"},
+    )
 
     assert r.status_code == 200
     events = [json.loads(line) for line in r.text.splitlines()]
@@ -98,6 +112,50 @@ def test_auto_symbol_download_streams_progress_after_load(client, tmp_path, monk
     assert events[0]["data"]["percent"] == 50.0
     assert events[1]["type"] == "result"
     assert events[1]["data"]["status"] == "available"
+
+
+def test_windows_image_skips_zero_symbol_service(client, tmp_path, monkeypatch):
+    import json
+
+    from web.backend.api import routes
+
+    image = tmp_path / "windows.raw"
+    image.write_bytes(b"windows image")
+
+    def symbol_service_must_not_load():
+        raise AssertionError("Windows image must not use Zero symbol downloads")
+
+    class FakeEngineService:
+        def get_image_status(self, engine_id="vol3"):
+            assert engine_id == "vol3"
+            return {"os_family": "windows"}
+
+    monkeypatch.setattr(routes, "get_service", lambda: FakeEngineService())
+    monkeypatch.setattr(routes, "get_symbol_service", symbol_service_must_not_load)
+
+    r = client.post(
+        "/api/image/symbols/auto",
+        json={
+            "path": str(image),
+            "engine": "vol3",
+        },
+    )
+
+    assert r.status_code == 200
+    events = [json.loads(line) for line in r.text.splitlines()]
+    assert events == [{
+        "type": "result",
+        "data": {
+            "enabled": False,
+            "status": "managed_by_volatility",
+            "os_family": "windows",
+            "engine": "vol3",
+            "reason": (
+                "Windows PDB symbols are resolved and downloaded "
+                "automatically by Volatility."
+            ),
+        },
+    }]
 
 
 def test_confirmed_image_symbol_download_forwards_proxy_choice(
