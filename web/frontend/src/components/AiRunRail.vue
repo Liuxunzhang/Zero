@@ -124,7 +124,7 @@ const contextLabel = computed(() => {
 
 const turnLabel = computed(() => {
   const budget = props.run.budget || {}
-  return `${budget.turns_used || 0}/${budget.max_turns || 12}`
+  return `${budget.turns_used || 0}/${budget.max_turns || 16}`
 })
 
 const toolLabel = computed(() => `${completeTools.value}/${tools.value.length || 0}`)

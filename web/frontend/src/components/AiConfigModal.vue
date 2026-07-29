@@ -107,7 +107,7 @@
                     <span class="model-metrics">
                       <span><b>{{ formatCompact(profile.context_window) }}</b><small>上下文</small></span>
                       <span><b>{{ formatCompact(profile.max_output_tokens) }}</b><small>响应</small></span>
-                      <span><b>{{ profile.agent_budget?.max_tool_calls ?? 20 }}</b><small>工具</small></span>
+                      <span><b>{{ profile.agent_budget?.max_tool_calls ?? 32 }}</b><small>工具</small></span>
                     </span>
                     <code>{{ profile.model }}</code>
                   </button>
@@ -442,7 +442,7 @@ const newProfile = ref({
   max_output_tokens: 4096,
   temperature: null,
   reasoning_level: 'off',
-  agent_budget: { max_turns: 12, max_tool_calls: 20, max_seconds: 1800 },
+  agent_budget: { max_turns: 16, max_tool_calls: 32, max_seconds: 1800 },
   capabilities: { tools: true, reasoning: true, thinking_summary: true, usage: true },
 })
 const newPrompt = ref({ name: '', content: '' })
@@ -651,7 +651,7 @@ function startEditProfile(profile) {
     temperature: profile.temperature ?? null,
     reasoning_level: profile.reasoning_level || 'off',
     agent_budget: {
-      max_turns: 12, max_tool_calls: 20, max_seconds: 1800,
+      max_turns: 16, max_tool_calls: 32, max_seconds: 1800,
       ...(profile.agent_budget || {}),
     },
     capabilities: {
@@ -678,7 +678,7 @@ function cancelEditProfile() {
     protocol: 'openai_chat', context_window: 65536,
     output_token_limit: 4096, max_output_tokens: 4096, temperature: null,
     reasoning_level: 'off',
-    agent_budget: { max_turns: 12, max_tool_calls: 20, max_seconds: 1800 },
+    agent_budget: { max_turns: 16, max_tool_calls: 32, max_seconds: 1800 },
     capabilities: { tools: true, reasoning: true, thinking_summary: true, usage: true },
   }
 }
@@ -705,8 +705,8 @@ function profilePayload(profile) {
     ...profile,
     temperature: profile.temperature === '' ? null : profile.temperature,
     agent_budget: {
-      max_turns: Number(profile.agent_budget?.max_turns || 12),
-      max_tool_calls: Number(profile.agent_budget?.max_tool_calls ?? 20),
+      max_turns: Number(profile.agent_budget?.max_turns || 16),
+      max_tool_calls: Number(profile.agent_budget?.max_tool_calls ?? 32),
       max_seconds: Number(profile.agent_budget?.max_seconds || 1800),
     },
   }

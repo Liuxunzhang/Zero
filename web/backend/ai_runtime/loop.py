@@ -78,8 +78,8 @@ class ModelTurnError(RuntimeError):
 
 @dataclass(slots=True)
 class RunBudget:
-    max_turns: int = 12
-    max_tool_calls: int = 20
+    max_turns: int = 16
+    max_tool_calls: int = 32
     max_seconds: int = 30 * 60
     max_output_continuations: int = 2
     turns_used: int = 0
@@ -180,9 +180,14 @@ class AgentLoop:
                     })
 
                 snapshot = snapshot_factory(final_phase or not agent_mode)
-                budget.turns_used += 1
+                turn_number = budget.turns_used + 1
+                # The mandatory tools-disabled summary is a closure phase, not
+                # another budgeted reasoning turn. Keep counters at their cap
+                # instead of reporting confusing values such as 9/8.
+                if not final_phase:
+                    budget.turns_used = turn_number
                 await emit("turn_start", {
-                    "turn": budget.turns_used,
+                    "turn": turn_number,
                     "provider": snapshot.provider,
                     "protocol": snapshot.protocol,
                     "model": snapshot.model,
@@ -226,9 +231,22 @@ class AgentLoop:
                     # Synthetic instruction is not persisted as user history.
                     from .models import UserMessage
 
+                    reason_details = {
+                        "turn_budget": (
+                            f"模型轮次已用 {budget.max_turns}/{budget.max_turns}"
+                        ),
+                        "tool_budget": (
+                            f"工具调用已用 {budget.tool_calls_used}/{budget.max_tool_calls}"
+                        ),
+                        "time_budget": (
+                            f"运行时间已用 {budget.elapsed_seconds:.1f}/{budget.max_seconds} 秒"
+                        ),
+                    }
                     messages.append(UserMessage(content=(
-                        "运行预算已耗尽。禁止再调用工具；请基于已有证据输出最终总结："
+                        f"运行预算已耗尽，具体原因：{reason_details.get(exhausted, exhausted)}。"
+                        "禁止再调用工具；请基于已有证据输出最终总结："
                         "结论概览、已执行动作、关键证据及来源、假设、未决问题。"
+                        "提及未执行动作时必须沿用上述具体预算原因，不得只写笼统的“预算耗尽”。"
                     )))
                 try:
                     provider_state = (
@@ -315,7 +333,7 @@ class AgentLoop:
                         "budget": budget.to_dict(),
                     })
                     await emit("turn_end", {
-                        "turn": budget.turns_used,
+                        "turn": turn_number,
                         "stop_reason": "verification_required",
                         "continuing": True,
                         "budget": budget.to_dict(),
@@ -337,7 +355,7 @@ class AgentLoop:
                         "budget": budget.to_dict(),
                     })
                     await emit("turn_end", {
-                        "turn": budget.turns_used,
+                        "turn": turn_number,
                         "stop_reason": assistant.stop_reason,
                         "continuing": True,
                         "budget": budget.to_dict(),
@@ -346,7 +364,7 @@ class AgentLoop:
                 if final_phase or not calls:
                     final_reason = exhausted or assistant.stop_reason or "completed"
                     await emit("turn_end", {
-                        "turn": budget.turns_used,
+                        "turn": turn_number,
                         "stop_reason": assistant.stop_reason,
                         "budget": budget.to_dict(),
                     })
@@ -417,7 +435,7 @@ class AgentLoop:
                         "details": result.details,
                     })
                 await emit("turn_end", {
-                    "turn": budget.turns_used,
+                    "turn": turn_number,
                     "stop_reason": assistant.stop_reason,
                     "budget": budget.to_dict(),
                 })

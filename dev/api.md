@@ -385,15 +385,16 @@ Request:
 
 ### POST `/api/ai/conversations/{id}/runs`
 
-创建后台运行，立即返回 `run_id`。默认预算为 12 turns、20 次工具调用、1800 秒。
+创建后台运行，立即返回 `run_id`。预算默认取活动 Profile；当前内置 Flash 为
+16 turns、32 次工具调用、1800 秒，Pro 为 24 turns、48 次工具调用、3600 秒。
 
 ```json
 {
   "message": "排查当前镜像中的可疑进程",
   "engine_id": "vol3",
   "mode": "agent",
-  "max_turns": 12,
-  "max_tool_calls": 20,
+  "max_turns": 16,
+  "max_tool_calls": 32,
   "max_seconds": 1800
 }
 ```

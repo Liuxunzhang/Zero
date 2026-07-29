@@ -98,8 +98,8 @@
             <div class="ai-run-inspector">
               <div><span>运行状态</span><b>{{ runStatusLabel }}</b></div>
               <div><span>上下文占用</span><b>{{ runtimeContextLabel }}</b></div>
-              <div><span>模型轮次</span><b>{{ aiRun.current.budget.turns_used || 0 }} / {{ aiRun.current.budget.max_turns || 12 }}</b></div>
-              <div><span>工具调用</span><b>{{ aiRun.current.budget.tool_calls_used || 0 }} / {{ aiRun.current.budget.max_tool_calls || 20 }}</b></div>
+              <div><span>模型轮次</span><b>{{ aiRun.current.budget.turns_used || 0 }} / {{ aiRun.current.budget.max_turns || 16 }}</b></div>
+              <div><span>工具调用</span><b>{{ aiRun.current.budget.tool_calls_used || 0 }} / {{ aiRun.current.budget.max_tool_calls || 32 }}</b></div>
               <div><span>自动续写</span><b>{{ aiRun.current.continuations || 0 }} 次</b></div>
               <div><span>结束原因</span><b>{{ aiRun.current.stopReason || '—' }}</b></div>
             </div>

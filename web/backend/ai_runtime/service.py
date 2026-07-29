@@ -67,7 +67,7 @@ BUILTIN_MODEL_CATALOG = [
         "max_output_tokens": 8_192,
         "temperature": 0.1,
         "reasoning_level": "off",
-        "agent_budget": {"max_turns": 8, "max_tool_calls": 12, "max_seconds": 900},
+        "agent_budget": {"max_turns": 16, "max_tool_calls": 32, "max_seconds": 1800},
     },
     {
         "name": "DeepSeek V4 Pro · 深度分析",
@@ -81,9 +81,14 @@ BUILTIN_MODEL_CATALOG = [
         "max_output_tokens": 16_384,
         "temperature": None,
         "reasoning_level": "high",
-        "agent_budget": {"max_turns": 12, "max_tool_calls": 20, "max_seconds": 1800},
+        "agent_budget": {"max_turns": 24, "max_tool_calls": 48, "max_seconds": 3600},
     },
 ]
+
+_LEGACY_BUILTIN_BUDGETS = {
+    "deepseek-v4-flash": {"max_turns": 8, "max_tool_calls": 12, "max_seconds": 900},
+    "deepseek-v4-pro": {"max_turns": 12, "max_tool_calls": 20, "max_seconds": 1800},
+}
 
 
 def infer_protocol(profile: dict[str, Any]) -> str:
@@ -121,7 +126,7 @@ def _catalog_defaults(profile: dict[str, Any]) -> dict[str, Any]:
 
 def _normalize_agent_budget(value: Any, fallback: dict[str, int] | None = None) -> dict[str, int]:
     raw = value if isinstance(value, dict) else {}
-    defaults = fallback or {"max_turns": 12, "max_tool_calls": 20, "max_seconds": 1800}
+    defaults = fallback or {"max_turns": 16, "max_tool_calls": 32, "max_seconds": 1800}
     limits = {
         "max_turns": (1, 100),
         "max_tool_calls": (0, 200),
@@ -173,8 +178,14 @@ def normalize_profile(profile: dict[str, Any]) -> dict[str, Any]:
     normalized["reasoning_level"] = (
         reasoning if reasoning in {"off", "low", "medium", "high", "max"} else "off"
     )
+    raw_budget = normalized.get("agent_budget")
+    model_key = str(normalized.get("model") or "").strip().lower()
+    # Upgrade only the exact previous built-in presets. Any user-customized
+    # values remain authoritative.
+    if raw_budget == _LEGACY_BUILTIN_BUDGETS.get(model_key):
+        raw_budget = defaults.get("agent_budget")
     normalized["agent_budget"] = _normalize_agent_budget(
-        normalized.get("agent_budget"),
+        raw_budget,
         defaults.get("agent_budget") if defaults else None,
     )
     capabilities = dict(normalized.get("capabilities") or {})
@@ -512,10 +523,10 @@ class AgentRuntime:
         defaults = self.active_profile().get("agent_budget") or {}
         budget = RunBudget(
             max_turns=max(1, min(100, int(
-                defaults.get("max_turns", 12) if max_turns is None else max_turns
+                defaults.get("max_turns", 16) if max_turns is None else max_turns
             ))),
             max_tool_calls=max(0, min(200, int(
-                defaults.get("max_tool_calls", 20)
+                defaults.get("max_tool_calls", 32)
                 if max_tool_calls is None else max_tool_calls
             ))),
             max_seconds=max(1, min(24 * 3600, int(

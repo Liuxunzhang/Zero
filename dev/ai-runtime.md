@@ -65,8 +65,9 @@ Profile 同时记录供应商硬限制和推荐运行预算。`ai_max_tokens=aut
 Profile 的 `max_output_tokens`，`max` 使用 `output_token_limit`，正整数会被硬
 上限限幅。Run 未显式传预算时使用 Profile 的 `agent_budget`。
 
-默认 DeepSeek Flash 配置关闭 thinking、使用 8K 输出和 8/12/900 Agent 预算；
-Pro 配置使用 high thinking、16K 输出和 12/20/1800 预算。两者共享
+默认 DeepSeek Flash 配置关闭 thinking、使用 8K 输出和 16/32/1800 Agent 预算；
+Pro 配置使用 high thinking、16K 输出和 24/48/3600 预算。旧版内置预算会在
+运行时自动迁移，用户自定义预算不受影响。两者共享
 `credential_id=deepseek`，密钥只保存在 `.zero/ai/credentials.json`。
 
 ## 与本地 pi 参考的关系

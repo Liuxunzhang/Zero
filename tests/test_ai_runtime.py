@@ -110,8 +110,40 @@ def test_deepseek_profiles_use_documented_balanced_defaults():
     assert flash["output_token_limit"] == pro["output_token_limit"] == 384_000
     assert flash["max_output_tokens"] == 8_192
     assert flash["reasoning_level"] == "off"
+    assert flash["agent_budget"] == {
+        "max_turns": 16,
+        "max_tool_calls": 32,
+        "max_seconds": 1800,
+    }
     assert pro["max_output_tokens"] == 16_384
     assert pro["reasoning_level"] == "high"
+    assert pro["agent_budget"] == {
+        "max_turns": 24,
+        "max_tool_calls": 48,
+        "max_seconds": 3600,
+    }
+
+
+def test_legacy_builtin_budgets_upgrade_without_overwriting_custom_values():
+    legacy = normalize_profile({
+        "model": "deepseek-v4-flash",
+        "agent_budget": {"max_turns": 8, "max_tool_calls": 12, "max_seconds": 900},
+    })
+    custom = normalize_profile({
+        "model": "deepseek-v4-flash",
+        "agent_budget": {"max_turns": 9, "max_tool_calls": 15, "max_seconds": 1200},
+    })
+
+    assert legacy["agent_budget"] == {
+        "max_turns": 16,
+        "max_tool_calls": 32,
+        "max_seconds": 1800,
+    }
+    assert custom["agent_budget"] == {
+        "max_turns": 9,
+        "max_tool_calls": 15,
+        "max_seconds": 1200,
+    }
 
 
 def test_deepseek_thinking_parameters_and_tool_state_round_trip():
@@ -649,6 +681,78 @@ def test_agent_loop_retracts_recommendation_draft_and_runs_tools(tmp_path):
     assert [kind for kind, _data in emitted].count("verification_required") == 1
     assert isinstance(requests[1].messages[-1], UserMessage)
     assert "立即调用工具补证" in requests[1].messages[-1].content
+
+
+def test_budget_final_summary_reports_exact_exhaustion_without_overcount(tmp_path):
+    store = ConversationStore(tmp_path / "conversations")
+    meta = store.create(engine_id="vol3", image_id="image")
+    store.append_message(meta["id"], UserMessage("检查"))
+    registry = ToolRegistry()
+    registry.register(ToolDefinition(
+        "echo",
+        "echo",
+        {"type": "object", "properties": {}, "additionalProperties": False},
+        lambda _arguments, _context: {"ok": True},
+    ))
+    requests = []
+
+    class Adapter:
+        def __init__(self, events):
+            self.events = events
+
+        async def stream(self, request):
+            requests.append(request)
+            for item in self.events:
+                yield item
+
+        async def close(self):
+            return None
+
+    adapters = [
+        Adapter([
+            ProviderEvent("tool_call", {
+                "tool_call_id": "echo",
+                "name": "echo",
+                "arguments": {},
+                "complete": True,
+            }),
+            ProviderEvent("message_end", {"stop_reason": "tool_use"}),
+        ]),
+        Adapter([
+            ProviderEvent("text_delta", {"text": "最终总结"}),
+            ProviderEvent("message_end", {"stop_reason": "stop"}),
+        ]),
+    ]
+    loop = AgentLoop(
+        conversations=store,
+        context=ContextManager(store),
+        tools=registry,
+        adapter_factory=lambda _snapshot: adapters.pop(0),
+    )
+
+    async def emit(_kind, _data):
+        return None
+
+    result = asyncio.run(loop.run(
+        run_id="run",
+        conversation_id=meta["id"],
+        engine_id="vol3",
+        image_id="image",
+        snapshot_factory=lambda disabled: snapshot(
+            "openai_chat",
+            () if disabled else tuple(registry.declarations()),
+        ),
+        emit=emit,
+        cancel_event=asyncio.Event(),
+        budget=RunBudget(max_turns=1, max_tool_calls=5, max_seconds=60),
+        agent_mode=True,
+    ))
+
+    final_instruction = requests[1].messages[-1]
+    assert isinstance(final_instruction, UserMessage)
+    assert "模型轮次已用 1/1" in final_instruction.content
+    assert result["reason"] == "turn_budget"
+    assert result["budget"]["turns_used"] == 1
 
 
 def test_agent_loop_retries_transient_provider_without_replaying_tools(tmp_path):
